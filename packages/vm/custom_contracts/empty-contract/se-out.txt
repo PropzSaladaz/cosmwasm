@@ -1,0 +1,41 @@
+I ----------------------------
+
+_deps: DepsMut
+_env: Env
+_info: MessageInfo
+_msg: InstantiateMsg
+
+
+[PC_1] True
+=> SET(AARiYW5rQURNSU4=): 1000
+<- None
+
+E ----------------------------
+
+_deps: DepsMut
+_env: Env
+_info: MessageInfo
+_msg: ExecuteMsg
+> AddUser:
+	- admin
+> AddOne:
+> Transfer:
+	- from
+	- to
+
+
+[PC_1] Type(_msg) == AddUser
+=> [PC_2]
+<- [PC_3]
+
+[PC_2] GET(AARiYW5r= @ _msg.admin) == null
+=> SET(AARiYW5r= @ _msg.admin): 100
+<- None
+
+[PC_3] Type(_msg) == AddOne
+=> SET(AARiYW5rQURNSU4=): GET(AARiYW5rQURNSU4=) + 1
+<- [PC_4]
+
+[PC_4] Type(_msg) == Transfer
+=> None
+<- None

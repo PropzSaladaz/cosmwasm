@@ -1,0 +1,92 @@
+WHITESPACE = _{ white_space }
+
+white_space = _{ " " | "\t" | NEWLINE }
+
+main = {
+    SOI ~
+    section+ ~
+    EOI
+}
+
+section = { white_space* ~ 
+            header ~
+            inputs ~ 
+            attr_defs ~
+            path_cond_nodes ~
+            white_space*
+}
+    // header specifying the entry point
+    header = { section_type ~ "-"+ }
+        section_type = _{ instantiate | execute | query } // One for each SC entry point
+            instantiate = { "I" }
+            execute     = { "E" }
+            query       = { "Q" }
+
+    // definition of input names & types
+    inputs = { input{3,4} }
+        input = { rust_identifier ~ ":" ~ input_type }
+            input_type = _{ deps_mut | env | msg_info | custom }
+                deps_mut    = { "DepsMut" }
+                env         = { "Env" }
+                msg_info    = { "MessageInfo" }
+                custom      = { rust_identifier }
+
+    // offset for custom contract message
+    attr_defs = { attr_def* }
+        attr_def = { ">" ~ rust_identifier ~ ":" ~ subtype_def*}
+            subtype_def = { "-" ~ rust_identifier ~ ":" ~ type}
+                type = _{ string_t | int_t | float_t }
+                    string_t = { "string" }
+                    int_t = { "int" }
+                    float_t = { "float" }
+
+    // path conditions
+    path_cond_nodes = { path_cond_node+ }
+        path_cond_node = { path_cond ~ pos_branches ~ neg_branches }
+            path_cond = { path_cond_id ~ bool_expr } // boolean condition for the path
+                path_cond_id = { "[PC_" ~ int ~ "]" }
+                bool_expr = { rel_expr | always_true }
+                    always_true = { "True" }
+                    rel_expr = { comparison | type_checking }
+                        comparison = { (expr ~ rel_operator ~ expr) }
+                        type_checking = { (var_type ~ equal ~ rust_identifier) | (var_type ~ ne ~ rust_identifier) }
+                            var_type = _{ "Type(" ~ variable ~ ")" }
+                            rel_operator = _{ gte | lte | equal | ne | lt | gt }
+                                gte     = { ">=" }  // Greater than or equal
+                                lte     = { "<=" }  // Less than or equal
+                                equal   = { "==" }  // Equal
+                                ne      = { "!=" }  // Not equal
+                                lt      = { "<" }   // Less than
+                                gt      = { ">" }   // Greater than
+            pos_branches = { ("=>" ~ path_data)+ } // case where branch condition is positive
+            neg_branches = { ("<-" ~ path_data)+ } // case where branch condition is negative
+                path_data = _{ (path_cond_id | storage_write | storage_read | none ) }
+                    none = { "None" }
+                    storage_write = { "SET(" ~ key ~ "):" ~ expr }
+    
+
+
+
+                
+expr     =   { prefix* ~ primary ~ (infix ~ prefix* ~ primary)* }
+    infix    =  _{ add | sub | mul | div | pow }
+        add    =   { "+" } // Addition
+        sub    =   { "-" } // Subtraction
+        mul    =   { "*" } // Multiplication
+        div    =   { "/" } // Division
+        pow    =   { "^" } // Exponentiation
+    prefix   =  _{ neg }
+        neg    =   { "-" } // Negation
+    primary  =  _{ float | int | storage_read | variable | "(" ~ expr ~ ")" }
+        int     = @{ ((ASCII_NONZERO_DIGIT ~ ASCII_DIGIT+) | (ASCII_DIGIT ~ !ASCII_DIGIT)) } // Integer
+        float  = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }  // float
+        storage_read = { "GET(" ~ key ~ ")" } // GET()
+        variable = { attr_accessor | rust_identifier } // anything that can be used to store some value
+            attr_accessor = { rust_identifier ~ ("." ~ rust_identifier)+ }  // accessing fields of structs - a.b
+
+// anything that can be used as a rust variable name
+rust_identifier = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHA | ASCII_DIGIT)* }
+
+base64 = @{ (ASCII_ALPHA | ASCII_DIGIT | "+" | "/")+ ~ "="{0,2} }
+
+key = { "=" ~ ((base64 ~ "@" ~ expr) | base64) }

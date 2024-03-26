@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 #[cfg(feature = "iterator")]
 use std::ops::{Bound, RangeBounds};
+use std::str::from_utf8;
 
 #[cfg(feature = "iterator")]
 use cosmwasm_std::{Order, Record};
@@ -60,6 +61,10 @@ impl MockStorage {
 
 impl Storage for MockStorage {
     fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
+        
+        // TODO
+        println!("Got item from: {:?}", key);
+
         let gas_info = GasInfo::with_externally_used(key.len() as u64);
         (Ok(self.data.get(key).cloned()), gas_info)
     }
@@ -125,6 +130,7 @@ impl Storage for MockStorage {
     }
 
     fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()> {
+        println!("Inserted item at: {:?}", key);
         self.data.insert(key.to_vec(), value.to_vec());
         let gas_info = GasInfo::with_externally_used((key.len() + value.len()) as u64);
         (Ok(()), gas_info)

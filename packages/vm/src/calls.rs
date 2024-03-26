@@ -112,6 +112,7 @@ where
     let data = call_instantiate_raw(instance, &env, &info, msg)?;
     let result: ContractResult<Response<U>> =
         from_slice(&data, deserialization_limits::RESULT_INSTANTIATE)?;
+ 
     Ok(result)
 }
 
@@ -199,7 +200,7 @@ where
     A: BackendApi + 'static,
     S: Storage + 'static,
     Q: Querier + 'static,
-{
+{   
     let env = to_vec(env)?;
     let data = call_query_raw(instance, &env, msg)?;
     let result: ContractResult<QueryResponse> =

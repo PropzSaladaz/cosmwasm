@@ -19,6 +19,7 @@ mod size;
 mod static_analysis;
 pub mod testing;
 mod wasm_backend;
+mod symb_exec;
 
 pub use crate::backend::{
     Backend, BackendApi, BackendError, BackendResult, GasInfo, Querier, Storage,
@@ -56,3 +57,5 @@ pub mod internals {
     pub use crate::instance::instance_from_module;
     pub use crate::wasm_backend::{compile, make_compiling_engine, make_runtime_engine};
 }
+
+pub use crate::symb_exec::{SCProfile, SCProfileParser};
