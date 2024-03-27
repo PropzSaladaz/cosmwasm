@@ -1,15 +1,17 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-pub type Float = f32;
-pub type Integer = i32;
+use num::traits::ToBytes;
 
-#[derive(Debug)]
+pub type Float = f64;
+pub type Integer = i64;
+
+#[derive(Debug, Copy, Clone)]
 pub enum Number {
     Float(Float),
     Int(Integer),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Identifier {
     Variable(String),
     // attribute accessors - var1.field1 will be represented
@@ -18,7 +20,7 @@ pub enum Identifier {
 }
 
 /// Represents arithmetic binary operators
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Op {
     Add,
     Subtract,
@@ -27,9 +29,17 @@ pub enum Op {
     Power
 }
 
+#[derive(Debug, Clone)]
+pub enum Type {
+    String,
+    Float,
+    Int,
+    Custom(String),
+}
+
 /// Represents an arbitrary expression. Can be defined recursively, and
 /// when parsed, will respect associativity rules.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     // Used to define enum matching for the custom message type
     MessageType(String),
@@ -42,6 +52,19 @@ pub enum Expr {
         lhs: Box<Expr>,
         op: Op,
         rhs: Box<Expr>,
+    }
+}
+
+impl Expr {
+    pub fn as_bytes(&self) -> Option<Vec<u8>> {
+        match self {
+            Expr::Number(n) => match n {
+                Number::Int(i) => Some(i.to_le_bytes().to_vec()),
+                Number::Float(f) => Some(f.to_le_bytes().to_vec()),
+            },
+            Expr::String(s) => unsafe { return Some(s.clone().as_mut_vec().to_vec()); },
+            other => None
+        }
     }
 }
 
@@ -107,7 +130,7 @@ pub enum PathCondition {
 /// Represents a storage key. 
 /// Can either be represented in Bytes if the SE-output is in base64,
 /// or in the form of an expression otherwise to be computed at runtime.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Key {
     Bytes(Vec<u8>),
     Expression {
@@ -152,13 +175,9 @@ pub enum PathConditionNode {
     None,
 }
 
-#[derive(Debug)]
-pub enum Type {
-    String,
-    Float,
-    Int,
-    Custom(String),
-}
+
+pub type ArgTypes = HashMap<String, InputType>;
+pub type CustomArgTypes = HashMap<String, HashMap<String, Type>>;
 
 /// Represents all info related to each entry point:
 /// 
@@ -166,7 +185,7 @@ pub enum Type {
 #[derive(Debug)]
 pub struct EntryPointProfile {
     /// Maps all input variable names to their types.
-    pub inputs: HashMap<String, InputType>,
+    pub inputs: ArgTypes,
     
     /// Stores type_defs for each atribute within each custom message type:
     /// ```
@@ -179,7 +198,7 @@ pub struct EntryPointProfile {
     /// ```
     /// 
     /// These type_defs refer only to the input variable of type Custom
-    pub type_defs: HashMap<String, HashMap<String, Type>>,
+    pub type_defs: CustomArgTypes,
 
     /// Root condition node in the tree
     pub root_path_cond: Option<CondNodeRef>,
@@ -233,5 +252,30 @@ impl EntryPointProfile {
 
     pub fn is_custom_subtype(&self, var_name: &String) -> bool {
         return self.type_defs.contains_key(var_name);
+    }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expr_as_bytes() {
+        let expr = Expr::Number(Number::Int(1000));
+        assert_eq!(expr.as_bytes(), Some((1000 as Integer).to_le_bytes().to_vec()));
+
+        let expr = Expr::Number(Number::Float(2.654));
+        assert_eq!(expr.as_bytes(), Some((2.654 as Float).to_le_bytes().to_vec()));
+
+        let expr = Expr::String(String::from("Hey man"));
+        assert_eq!(expr.as_bytes(), Some(b"Hey man".to_vec()));
+
+        let expr = Expr::Identifier(Identifier::AttrAccessor(vec![]));
+        assert_eq!(expr.as_bytes(), None);
+
+        let expr = Expr::MessageType("abc".to_owned());
+        assert_eq!(expr.as_bytes(), None);
     }
 }

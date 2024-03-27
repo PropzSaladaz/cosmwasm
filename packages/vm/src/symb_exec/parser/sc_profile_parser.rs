@@ -118,7 +118,7 @@ impl SCProfileParser {
         parser.sc_profile
     }
 
-    pub fn parse_header(&mut self, header: Pair<Rule>) -> EntryPoint {
+    pub fn parse_header(&mut self, header: Pair<Rule>) {
         let entry_point = match header.into_inner().next().unwrap().as_rule() {
             Rule::instantiate   => EntryPoint::Instantiate,
             Rule::execute       => EntryPoint::Execute,
@@ -128,7 +128,6 @@ impl SCProfileParser {
 
         self.current_entry_point = Some(entry_point);
         self.current_entry_point_profile = EntryPointProfile::new();
-        entry_point
     }
 
     pub fn parse_inputs(&mut self, inputs: Pair<Rule>) {
