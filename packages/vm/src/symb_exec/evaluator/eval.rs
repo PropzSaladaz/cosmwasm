@@ -30,6 +30,10 @@ impl<'a> SEContext<'a> {
     }
 }
 
+pub trait StorageAccessor {
+    fn get(&self, key: &Vec<u8>) -> Option<Vec<u8>>;
+}
+
 /// Used for expression evaluation - either using arithmetic or logical 
 /// operations
 pub trait Eval {
@@ -44,57 +48,52 @@ pub trait Eval {
 
     /// Takes an input closure to which we send the Key of the storage read (if any),
     /// and we get the bytes representing its value
-    fn eval<F: Fn(&Vec<u8>) -> Vec<u8> + Clone>(&self, app_closure: &F, variable_context: &SEContext) -> Self::Output;
+    fn eval<F: StorageAccessor>(&self, storage: &F, variable_context: &SEContext) -> Self::Output;
+
+    /// Applies a binary operation given the specified Operand types, as well 
+    /// as the Operator and Output type
     fn op(lhs: &Self::Operand, op: &Self::Operator, rhs: &Self::Operand) -> Self::OpOut;
     
-    /// Parses a Key into bytes.
+    /// Parses a Key into bytes and uses the ```storage``` to get the actual value bytes given the key bytes.
     /// 
-    /// Uses the ```app_closure``` to get the actual value bytes given the key bytes.
     /// Currently converts all data to Int type - TODO
-    fn eval_storage_read<F>(&self, key: &Key, app_closure: &F, variable_context: &SEContext) -> Expr 
-    where F: Fn(&Vec<u8>) -> Vec<u8> + Clone
+    fn eval_storage_read<F: StorageAccessor>(&self, key: &Key, storage: &F, variable_context: &SEContext) -> Expr 
     {
-        let mut bytes;
+        let bytes;
         match key {
-            Key::Bytes(key) => bytes = app_closure(key),
+            Key::Bytes(key) => bytes = storage.get(key),
             Key::Expression { base, expr } => {
-                bytes = base.clone();
-                match expr.eval(app_closure, variable_context) {
-                    Expr::Number(val) => match val {
-                        Number::Float(f) => bytes.append(&mut f.to_le_bytes().to_vec()),
-                        Number::Int(i)   => bytes.append(&mut i.to_le_bytes().to_vec())
-                    },
-                    Expr::Identifier(id) => bytes.append(&mut self.parse_identifier(&id, variable_context)),
-
-                    // TODO - currently assuming a key can only be either a number or an identifier
-                    r => unreachable!("Expected Number, or identifier, got {:?}", r), 
-                };
+                let mut bytes_tmp = base.clone();
+                let expr = expr.eval(storage, variable_context);
+                let mut option_bytes = expr.as_bytes();
+                match &mut option_bytes {
+                    Some(bytes) => bytes_tmp.append(bytes),
+                    None => unreachable!("Could not convert expression to bytes"),
+                } 
+                bytes = storage.get(&bytes_tmp);
             }
         };
-        Expr::Number(Number::Int(Integer::from_be_bytes((*bytes).try_into().unwrap())))
+
+        // TODO maybe convert null bytes into a null expr type
+        // TODO - currently converting all data to Int
+        Expr::Number(Number::Int(Integer::from_le_bytes((bytes.unwrap()).try_into().unwrap())))
     }
 
     /// Converts an identifier to the respective primitive type.
     /// This convertion is based on the received custom message, as well as on the
-    /// Cosmwasm context types
-    /// TODO - should return Expr & not bytes -> could be string, int, etc
+    /// Cosmwasm context types.
+    /// 
     /// TODO - we are currently only checking attr accessors in the custom msg
-    fn parse_identifier(&self, id: &Identifier, variable_context: &SEContext) -> Vec<u8> {
+    fn parse_identifier(&self, id: &Identifier, variable_context: &SEContext) -> Expr {
         match id {
             // fetch 1st identifier in the access sequence & check which type it is from the inputs
             Identifier::AttrAccessor(attrs) => {
                 let variable = attrs.get(0).unwrap();
                 match variable_context.get_var_type(variable) {
-                    Some(InputType::DepsMut)     => vec![0x00],
-                    Some(InputType::Env)         => vec![0x00],
-                    Some(InputType::MessageInfo) => vec![0x00],
-                    Some(InputType::Custom)      => {
-                        let expr = self.parse_custom_msg_identifier(&attrs[1..], variable_context);
-                        match expr.as_bytes() {
-                            Some(bytes) => bytes,
-                            None => unreachable!("Expected bytes from primitive expression type. Expression used is not primitive (number/string)")
-                        }
-                    },
+                    Some(InputType::DepsMut)     => todo!(),
+                    Some(InputType::Env)         => todo!(),
+                    Some(InputType::MessageInfo) => todo!(),
+                    Some(InputType::Custom)      => self.parse_custom_msg_identifier(&attrs[1..], variable_context),
                     None => unreachable!("Variables should always reference one of the inputs...")
                 }
             }
@@ -102,6 +101,12 @@ pub trait Eval {
         }
     }
 
+    /// Parses a variable/attribute accessor referencing to some field in the custom
+    /// json message given as input to the Smart Contract.
+    /// 
+    /// Evaluates from a slice of strings to the corresponding primitive value.
+    /// 
+    /// TODO - Currently only supporting Number & String
     fn parse_custom_msg_identifier(&self, attrs: &[String], variable_context: &SEContext) -> Expr {
         // get the actual object with contents (get rid of message type)
         let mut val = Some(match &variable_context.custom_msg {
@@ -143,11 +148,16 @@ pub trait Eval {
 
 #[cfg(test)]
 mod tests {
-    use crate::symb_exec::parser::nodes::ArgTypes;
+    use std::collections::HashMap;
 
-    use super::{Eval, SEContext};
+    use crate::symb_exec::testing::mock::*;
+
+    use super::super::super::parser::nodes::*;
+
+    use super::*;
 
 
+    /// Simulates some concrete implementor - used to test default Eval methods
     struct DefaultImpl {}
     impl Eval for DefaultImpl {
         type Output = i32;
@@ -155,7 +165,7 @@ mod tests {
         type Operator = i32;
         type OpOut = i32;
     
-        fn eval<F: Fn(&Vec<u8>) -> Vec<u8> + Clone>(&self, _: &F, _: &super::SEContext) -> Self::Output {
+        fn eval<F: StorageAccessor>(&self, _: &F, _: &super::SEContext) -> Self::Output {
             todo!()
         }
     
@@ -164,27 +174,113 @@ mod tests {
         }
     }
 
-    fn default_context(arg_types: &ArgTypes) -> SEContext {
-        SEContext::new(br#"
-            {
-                "Adduser": {
-                    "admin": "name1",
-                    "balance": 2,
-                    "fee": 2.543,
-                    "neg": -5,
-                    "InternalObj": {
-                        "field1": "still works",
-                    }
-                }
-            }"#, 
-            arg_types
+    #[test]
+    fn eval_parse_custom_msg_identifier() {
+        let imp = DefaultImpl {};
+        let arg_types = ArgTypes::new();
+        let ctx = mock_context(&arg_types);
+
+        let expr = imp.parse_custom_msg_identifier(
+            &["InternalObj".to_owned(), "field1".to_owned()], 
+            &ctx);
+        
+        assert_eq!(expr, Expr::String(String::from("still works")));
+
+        let expr = imp.parse_custom_msg_identifier(
+            &["admin".to_owned()], 
+            &ctx);
+        
+        assert_eq!(expr, Expr::String(String::from("name1")));
+
+        let expr = imp.parse_custom_msg_identifier(
+            &["balance".to_owned()], 
+            &ctx);
+        
+        assert_eq!(expr, Expr::Number(Number::Int(2)));
+
+        let expr = imp.parse_custom_msg_identifier(
+            &["fee".to_owned()], 
+            &ctx);
+        
+        assert_eq!(expr, Expr::Number(Number::Float(2.543)));
+
+
+        let expr = imp.parse_custom_msg_identifier(
+            &["neg".to_owned()], 
+            &ctx);
+        
+        assert_eq!(expr, Expr::Number(Number::Int(-5)));
+    }
+
+    #[test]
+    fn eval_parse_identifier() {
+        let imp = DefaultImpl {};
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+
+        let expr = imp.parse_identifier(
+            // msg.balance - from mock_arg_types, we defined "msg" as the variable name
+            // for the user custom message, thus we look into the attribute "balance" of
+            // user custom message.
+            &Identifier::AttrAccessor(vec!["msg".to_owned(), "balance".to_owned()]),
+            &ctx);
+        
+        assert_eq!(expr, Expr::Number(Number::Int(2)));
+
+        // TODO - test the other cases -> when searching for the input var in 
+        // the other input args instead of user's json message only 
+    }
+
+    #[test]
+    fn eval_storage_read_base_bytes() {
+        let imp = DefaultImpl {};
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+
+        let key_raw = vec![1u8];
+        let key_val_raw = vec![10u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let storage = mock_storage(HashMap::from([(key_raw.clone(), key_val_raw)]));
+
+        let key = Key::Bytes(key_raw.to_vec());
+
+        let expr = imp.eval_storage_read(&key, &storage, &ctx);
+
+        assert_eq!(
+            expr,
+            // TODO - Currently explicitly converting storage reads to Int
+            Expr::Number(Number::Int(Integer::from_le_bytes([10u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8])))
         )
     }
 
     #[test]
-    fn parse_custom_msg_identifier() {
-        let def = DefaultImpl {};
+    fn eval_storage_read_expression() {
+        let imp = DefaultImpl {};
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
 
+        let key_raw = vec![1u8];
+        let key_val_raw = vec![10u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let expr_bytes = "name1".as_bytes();
+        // Get(base @ "msg.admin")
+        let mut expected_key = key_raw.clone();
+        expected_key.append(&mut expr_bytes.to_vec());
+        
+        let storage = mock_storage(HashMap::from([(expected_key, key_val_raw)]));
 
+        let key = Key::Expression { 
+            base: key_raw.to_vec(), 
+            expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                "msg".to_owned(), 
+                "admin".to_owned()
+            ])))
+        };
+
+        let expr = imp.eval_storage_read(&key, &storage, &ctx);
+
+        assert_eq!(
+            expr,
+            // TODO - Currently explicitly converting storage reads to Int
+            Expr::Number(Number::Int(Integer::from_le_bytes([10u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8])))
+        )
     }
 }

@@ -37,8 +37,10 @@ pub enum Type {
     Custom(String),
 }
 
-/// Represents an arbitrary expression. Can be defined recursively, and
+/// Represents a arithmetic expression. Can be defined recursively, and
 /// when parsed, will respect associativity rules.
+/// 
+/// When defined as BinOp, can only use arithmetic operations (+, -, /, *)
 #[derive(Debug, Clone)]
 pub enum Expr {
     // Used to define enum matching for the custom message type
@@ -63,7 +65,7 @@ impl Expr {
                 Number::Float(f) => Some(f.to_le_bytes().to_vec()),
             },
             Expr::String(s) => unsafe { return Some(s.clone().as_mut_vec().to_vec()); },
-            other => None
+            _ => None
         }
     }
 }
