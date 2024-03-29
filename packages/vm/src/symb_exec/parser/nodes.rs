@@ -35,6 +35,7 @@ pub enum Type {
     Float,
     Int,
     Custom(String),
+    Expr(Box<Expr>),
 }
 
 /// Represents a arithmetic expression. Can be defined recursively, and

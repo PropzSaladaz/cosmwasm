@@ -15,7 +15,7 @@ pub fn mock_arg_types() -> ArgTypes {
 pub fn mock_context(arg_types: &ArgTypes) -> SEContext {
     SEContext::new(br#"
         {
-            "Adduser": {
+            "AddUser": {
                 "admin": "name1",
                 "balance": 2,
                 "fee": 2.543,

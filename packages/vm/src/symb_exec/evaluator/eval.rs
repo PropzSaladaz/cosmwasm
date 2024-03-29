@@ -1,6 +1,6 @@
 use serde_json::{Value};
 
-use crate::symb_exec::parser::nodes::{ArgTypes, Expr, Identifier, InputType, Integer, Number};
+use crate::symb_exec::parser::nodes::{ArgTypes, Expr, Identifier, InputType, Integer, Number, Type};
 
 use super::super::parser::nodes::Key;
 
@@ -144,6 +144,42 @@ pub trait Eval {
             other => unreachable!("Value should be primitive (int, uint, float, string), got {:?}", other),
         };
     }
+
+
+    /// Fetch the type given a identifier.
+    /// It is either an input variable, which can include the 
+    /// cosmwas contract input types (DepsMut, etc), and also the custom type.
+    /// 
+    /// If it refers to the custom input type, then the type refers to the enum variant
+    /// of the message and not the message itself.
+    /// 
+    /// It can also be a primitive type inside an attr accessor such as `msg.field1`
+    fn parse_type(&self, id: &Identifier, variable_context: &SEContext) -> Expr {
+        match id {
+            Identifier::Variable(v) => {
+                match variable_context.get_var_type(v) {
+                    Some(InputType::DepsMut)     => Expr::Type(Type::Custom("DepsMut".to_owned())),
+                    Some(InputType::Env)         => Expr::Type(Type::Custom("Env".to_owned())),
+                    Some(InputType::MessageInfo) => Expr::Type(Type::Custom("MessageInfo".to_owned())),
+                    Some(InputType::Custom)      =>  {
+                        match &variable_context.custom_msg {
+                            Value::Object(v) => {
+                                if let Some((key, _)) = v.into_iter().next() {
+                                    Expr::Type(Type::Custom(key.to_owned()))
+                                } else { unreachable!("Custom msg should always have at least 1 object") }
+                            },
+                            v => unreachable!("Expecting json object, got {:?}", v)
+                        }
+                    }
+                    None => unreachable!("Variables should always reference one of the inputs...")
+                }
+            },
+            Identifier::AttrAccessor(_) => {
+                Expr::Type(Type::Expr(
+                    Box::new(self.parse_identifier(id, variable_context))))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -282,5 +318,32 @@ mod tests {
             // TODO - Currently explicitly converting storage reads to Int
             Expr::Number(Number::Int(Integer::from_le_bytes([10u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8])))
         )
+    }
+
+    #[test]
+    fn eval_parse_type() {
+        let imp = DefaultImpl {};
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+
+        let id = Identifier::Variable("msg".to_owned());
+        let expr = imp.parse_type(&id, &ctx);
+
+        assert_eq!(expr, Expr::Type(Type::Custom("AddUser".to_owned())));
+
+        let id = Identifier::Variable("deps".to_owned());
+        let expr = imp.parse_type(&id, &ctx);
+
+        assert_eq!(expr, Expr::Type(Type::Custom("DepsMut".to_owned())));
+
+        let id = Identifier::Variable("env".to_owned());
+        let expr = imp.parse_type(&id, &ctx);
+
+        assert_eq!(expr, Expr::Type(Type::Custom("Env".to_owned())));
+
+        let id = Identifier::Variable("info".to_owned());
+        let expr = imp.parse_type(&id, &ctx);
+
+        assert_eq!(expr, Expr::Type(Type::Custom("MessageInfo".to_owned())));
     }
 }

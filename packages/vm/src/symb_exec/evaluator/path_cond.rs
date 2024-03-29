@@ -7,7 +7,7 @@ impl Eval for PathCondition {
     type Operator = RelOp;
     type OpOut = bool;
 
-    fn eval<F: StorageAccessor>(&self, app_closure: &F, variable_context: &SEContext) -> Self::Output 
+    fn eval<F: StorageAccessor>(&self, storage: &F, variable_context: &SEContext) -> Self::Output 
     {
         match &self {
             Self::RelBinOp { 
@@ -15,32 +15,11 @@ impl Eval for PathCondition {
                 rel_op, 
                 rhs 
             } => match (&**lhs, &**rhs) {
-                ( Expr::Number(a), Expr::Number(b)) 
-                => Self::op(&**lhs, rel_op, &**rhs),
-
-                ( Expr::Number(a), Expr::StorageRead(key) ) 
-                => {
-                    // TODO EXPLICIT CONVERSION TO INT!!!!! - Assuming everything is int
-                    let val = self.eval_storage_read(key, app_closure, &variable_context);
-                    Self::op(&**lhs, rel_op, &val)
+                (a, b) => {
+                    let lhs = a.eval(storage, variable_context);
+                    let rhs = b.eval(storage, variable_context);
+                    Self::op(&lhs, rel_op, &rhs)
                 }
-
-                ( Expr::StorageRead(key), Expr::Number(a) ) 
-                => {
-                    // TODO EXPLICIT CONVERSION TO INT!!!!! - Assuming everything is int
-                    let val = self.eval_storage_read(key, app_closure, &variable_context);
-                    Self::op(&val, rel_op, &**rhs)
-                }
-
-                ( Expr::StorageRead(key_a), Expr::StorageRead(key_b) ) 
-                => {
-                    // TODO EXPLICIT CONVERSION TO INT!!!!! - Assuming everything is int
-                    let val_a = self.eval_storage_read(key_a, app_closure, &variable_context);
-                    let val_b = self.eval_storage_read(key_b, app_closure, &variable_context);
-                    Self::op(&val_a, rel_op, &val_b)
-                }
-                // TODO No Identifiers supported Yet!                
-                expr => unreachable!("Invalid type used for relational operation: {:?}", expr)
             } ,
             Self::Bool(b) => *b
         }
@@ -55,5 +34,48 @@ impl Eval for PathCondition {
             RelOp::Equal => lhs == rhs,
             RelOp::Ne    => lhs != rhs,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::symb_exec::{
+        evaluator::{
+            eval::Eval, path_cond::{Expr, Identifier, PathCondition, RelOp}
+        }, 
+        testing::mock::*
+    };
+
+
+    #[test]
+    fn path_cond_true() {
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+        let storage = mock_storage(HashMap::new());
+
+        assert!(PathCondition::Bool(true).eval(&storage, &ctx));
+    }
+
+
+    #[test]
+    fn path_cond_type() {
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+        let storage = mock_storage(HashMap::new());
+        // let cond = PathCondition::RelBinOp { 
+        //     lhs: Box::new(Expr::Type(
+        //          Box::new(Expr::Identifier(
+        //                         Identifier::Variable("msg".to_owned())
+        //                  ))
+        //         )), 
+        //     rel_op: RelOp::Equal, 
+        //     rhs: Box::new(Expr::Identifier(
+        //                         Identifier::Variable("AddUser".to_owned())
+        //         )) 
+        // };
+
+        // assert!(cond.eval(&storage, &ctx));
     }
 }

@@ -9,7 +9,11 @@ impl PartialEq for Expr {
             }, 
             (Expr::String(a), Expr::String(b)) => {
                 a == b
-            }
+            },
+            // type checking
+            (Expr::Type(Type::Custom(a)), Expr::Type(Type::Custom(b))) => {
+                a == b
+            },
             content => unreachable!("Expected primitive types only, got {:?}", content),
         }
     }
@@ -35,9 +39,9 @@ impl Eval for Expr {
     type Operator = Op;
     type OpOut = Number;
 
-    /// Evaluate an expression at runtime - Evalautes storage reads through the input app_closure
+    /// Evaluate an expression at runtime - Evalautes storage reads through the input storage
     /// Anything evaluated through an expression returns a number or a string
-    fn eval<F: StorageAccessor>(&self, app_closure: &F, variable_context: &SEContext) -> Self::Output 
+    fn eval<F: StorageAccessor>(&self, storage: &F, variable_context: &SEContext) -> Self::Output 
     {
         match self {
             Self::BinOp { 
@@ -46,11 +50,11 @@ impl Eval for Expr {
                 rhs 
             } => match (&**lhs, &**rhs) { (a, b) => 
                 {
-                    let num_a = match a.eval(app_closure, variable_context) {
+                    let num_a = match a.eval(storage, variable_context) {
                         Expr::Number(num) => num,
                         nan => unreachable!("Expected a number, found {:?}", nan),
                     };
-                    let num_b = match b.eval(app_closure, variable_context) {
+                    let num_b = match b.eval(storage, variable_context) {
                         Expr::Number(num) => num,
                         nan => unreachable!("Expected a number, found {:?}", nan),
                     };
@@ -67,11 +71,27 @@ impl Eval for Expr {
                 }
             },
 
-            Self::StorageRead(key) => self.eval_storage_read(key, app_closure, variable_context),
+            Self::Type(ty) => {
+                match ty {
+                    Type::Expr(e) => match &**e {
+                        Expr::Identifier(i) => self.parse_type(&i, variable_context),
+                        Expr::Number(n) => match n {
+                            Number::Float(_) => Expr::Type(Type::Float),
+                            Number::Int(_) => Expr::Type(Type::Int),
+                        },
+                        Expr::String(_) => Expr::Type(Type::String),
+                        other => Expr::Type(Type::Expr(Box::new(other.eval(storage, variable_context))))
+                    },
+                    leaf_type => Expr::Type(leaf_type.clone()), 
+                }
+            },
+
+            Self::StorageRead(key) => self.eval_storage_read(key, storage, variable_context),
 
             Self::MessageType(id) => Expr::MessageType(id.clone()),
-            Self::Type(ty) => Expr::Type(ty.clone()),
+
             Self::String(s) => Expr::String(s.clone()),
+
             Self::Number(numb) => Expr::Number(numb.clone()),
         }
     }
@@ -135,6 +155,23 @@ mod tests {
         );
 
         assert!(Expr::String(String::from("hello")) > Expr::String(String::from("h")));
+    }
+
+    #[test]
+    fn expr_cmp_type() {
+        assert_eq!(
+            Expr::Type(Type::Custom("AddUser".to_owned())),
+            Expr::Identifier(Identifier::Variable("AddUser".to_owned()))
+        );
+        assert_eq!(
+            Expr::Identifier(Identifier::Variable("AddUser".to_owned())),
+            Expr::Type(Type::Custom("AddUser".to_owned()))
+        );
+
+        assert_ne!(
+            Expr::Identifier(Identifier::Variable("int".to_owned())),
+            Expr::Type(Type::Custom("AddUser".to_owned()))
+        );
     }
 
     #[test]
@@ -236,5 +273,32 @@ mod tests {
             init.eval(&storage, &context), 
             Expr::Number(Number::Float(31.5))
         );
+    }
+
+    #[test]
+    fn expr_type() {
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+        let storage = mock_storage(HashMap::new());
+
+        let expr = Expr::Type(
+            Type::Expr(Box::new(
+                Expr::Identifier(Identifier::AttrAccessor(
+                vec!["msg".to_owned(), "admin".to_owned()])))));
+        let expr = expr.eval(&storage, &ctx);
+
+        assert_eq!(expr, Expr::Type(Type::String));
+
+        // let id = Identifier::AttrAccessor(
+        //     vec!["msg".to_owned(), "balance".to_owned()]);
+        // let expr = imp.parse_type(&id, &ctx);
+
+        // assert_eq!(expr, Expr::Type(Type::Int));
+
+        // let id = Identifier::AttrAccessor(
+        //     vec!["msg".to_owned(), "fee".to_owned()]);
+        // let expr = imp.parse_type(&id, &ctx);
+
+        // assert_eq!(expr, Expr::Type(Type::Float));
     }
 }
