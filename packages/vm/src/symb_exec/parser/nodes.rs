@@ -29,7 +29,7 @@ pub enum Op {
     Power
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     String,
     Float,
@@ -50,6 +50,7 @@ pub enum Expr {
     StorageRead(Key),
     Number(Number),
     String(String),
+    Null,
     Type(Type),
     BinOp {
         lhs: Box<Expr>,

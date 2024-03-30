@@ -41,12 +41,16 @@ impl Eval for PathCondition {
 mod tests {
     use std::collections::HashMap;
 
+    use num::traits::ToBytes;
+
     use crate::symb_exec::{
         evaluator::{
-            eval::Eval, path_cond::{Expr, Identifier, PathCondition, RelOp}
+            eval::Eval, path_cond::{Expr, Identifier, Key, Number, PathCondition, RelOp}
         }, 
         testing::mock::*
     };
+
+    use super::Type;
 
 
     #[test]
@@ -64,18 +68,136 @@ mod tests {
         let arg_types = mock_arg_types();
         let ctx = mock_context(&arg_types);
         let storage = mock_storage(HashMap::new());
-        // let cond = PathCondition::RelBinOp { 
-        //     lhs: Box::new(Expr::Type(
-        //          Box::new(Expr::Identifier(
-        //                         Identifier::Variable("msg".to_owned())
-        //                  ))
-        //         )), 
-        //     rel_op: RelOp::Equal, 
-        //     rhs: Box::new(Expr::Identifier(
-        //                         Identifier::Variable("AddUser".to_owned())
-        //         )) 
-        // };
+        let cond = PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::Type(Type::Expr(
+                 Box::new(Expr::Identifier(
+                                Identifier::Variable("msg".to_owned()))))
+                )), 
+            rel_op: RelOp::Equal, 
+            rhs: Box::new(Expr::Identifier(
+                                Identifier::Variable("AddUser".to_owned())
+                )) 
+        };
 
-        // assert!(cond.eval(&storage, &ctx));
+        assert!(cond.eval(&storage, &ctx));
+
+        let cond = PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::Type(Type::Expr(
+                 Box::new(Expr::Identifier(
+                                Identifier::Variable("msg".to_owned()))))
+                )), 
+            rel_op: RelOp::Equal, 
+            rhs: Box::new(Expr::Identifier(
+                                Identifier::Variable("AddOne".to_owned())
+                )) 
+        };
+
+        assert!(!cond.eval(&storage, &ctx));
+
+
+        let cond = PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::Type(Type::Expr(
+                 Box::new(Expr::Identifier(
+                                Identifier::AttrAccessor(vec![
+                                    "msg".to_owned(),
+                                    "balance".to_owned()
+                                    ]))))
+                )), 
+            rel_op: RelOp::Equal, 
+            rhs: Box::new(Expr::Type(Type::Expr(
+                Box::new(Expr::Number(Number::Int(0))))
+                )) 
+        };
+
+        assert!(cond.eval(&storage, &ctx));
+    }
+
+    #[test]
+    fn path_cond_equality() {
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+        let storage = mock_storage(HashMap::from([
+            (vec![1u8], 1i64.to_le_bytes().to_vec())
+        ]));
+
+        let cond = PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::StorageRead(Key::Bytes(vec![0u8]))), // is not in storage
+            rel_op: RelOp::Equal, 
+            rhs: Box::new(Expr::Null)
+        };
+
+        assert!(cond.eval(&storage, &ctx));
+
+        let cond = PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::StorageRead(Key::Bytes(vec![1u8]))), // is in storage
+            rel_op: RelOp::Ne, 
+            rhs: Box::new(Expr::Null)
+        };
+
+        assert!(cond.eval(&storage, &ctx));
+
+        let cond = PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                "msg".to_owned(),
+                "balance".to_owned(),
+            ]))), // is in storage
+            rel_op: RelOp::Equal, 
+            rhs: Box::new(Expr::Number(Number::Int(2)))
+        };
+
+        assert!(cond.eval(&storage, &ctx));
+
+        let cond = PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                "msg".to_owned(),
+                "admin".to_owned(),
+            ]))), // is in storage
+            rel_op: RelOp::Equal, 
+            rhs: Box::new(Expr::String("name1".to_owned()))
+        };
+
+        assert!(cond.eval(&storage, &ctx));
+    }
+
+    #[test]
+    fn path_cond_inequality() {
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+        let storage = mock_storage(HashMap::from([
+            (vec![1u8], 1i64.to_le_bytes().to_vec())
+        ]));
+
+        let cond = PathCondition::RelBinOp {
+            lhs: Box::new(Expr::StorageRead(Key::Bytes(vec![1u8]))), // is in storage
+            rel_op: RelOp::Lte, 
+            rhs: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                "msg".to_owned(),
+                "balance".to_owned(),
+            ]))),
+        };
+
+        assert!(cond.eval(&storage, &ctx));
+
+        let cond = PathCondition::RelBinOp {
+            lhs: Box::new(Expr::StorageRead(Key::Bytes(vec![1u8]))), // is in storage
+            rel_op: RelOp::Lt, 
+            rhs: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                "msg".to_owned(),
+                "fee".to_owned(),
+            ]))),
+        };
+
+        assert!(cond.eval(&storage, &ctx));
+
+        let cond = PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                "msg".to_owned(),
+                "admin".to_owned(),
+            ]))),
+            rel_op: RelOp::Gt, 
+            rhs: Box::new(Expr::String("n".to_owned()))
+        };
+
+        assert!(cond.eval(&storage, &ctx));
     }
 }

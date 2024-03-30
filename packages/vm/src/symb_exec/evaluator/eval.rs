@@ -74,9 +74,13 @@ pub trait Eval {
             }
         };
 
-        // TODO maybe convert null bytes into a null expr type
         // TODO - currently converting all data to Int
-        Expr::Number(Number::Int(Integer::from_le_bytes((bytes.unwrap()).try_into().unwrap())))
+        match bytes {
+            Some(bytes) => Expr::Number(Number::Int(Integer::from_le_bytes(
+                [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6] , bytes[7]]))),
+            None => Expr::Null,
+        }
+        
     }
 
     /// Converts an identifier to the respective primitive type.
@@ -97,7 +101,11 @@ pub trait Eval {
                     None => unreachable!("Variables should always reference one of the inputs...")
                 }
             }
-            Identifier::Variable(_) => unreachable!("Why would variables be needed ???"),
+            Identifier::Variable(_) => {
+                // TODO - maybe should look first in context to try match the variable &
+                // only then return a string
+                Expr::Identifier(id.clone())
+            },
         }
     }
 
@@ -175,8 +183,14 @@ pub trait Eval {
                 }
             },
             Identifier::AttrAccessor(_) => {
-                Expr::Type(Type::Expr(
-                    Box::new(self.parse_identifier(id, variable_context))))
+                match self.parse_identifier(id, variable_context) {
+                    Expr::Number(n) => match n {
+                        Number::Float(_) => Expr::Type(Type::Float),
+                        Number::Int(_) => Expr::Type(Type::Int),
+                    },
+                    Expr::String(_) => Expr::Type(Type::String),
+                    other => unreachable!("Attr accessors should have primitive types, got {:?}", other)
+                }
             }
         }
     }

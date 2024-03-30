@@ -4,17 +4,28 @@ use super::eval::{Eval, SEContext, StorageAccessor};
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Expr::Null, Expr::Null) => true,
+            (Expr::Null, _) => false,
+            (_, Expr::Null) => false,
+            
             (Expr::Number(a), Expr::Number(b)) => {
                 a == b
             }, 
             (Expr::String(a), Expr::String(b)) => {
                 a == b
             },
-            // type checking
-            (Expr::Type(Type::Custom(a)), Expr::Type(Type::Custom(b))) => {
+            // Type checking between 2 types - "Type(a) == Type(b)"
+            (Expr::Type(a), Expr::Type(b)) => {
                 a == b
             },
-            content => unreachable!("Expected primitive types only, got {:?}", content),
+            // Type checking for custom types - "Type(msg) == SomeType"
+            (Expr::Type(Type::Custom(a)), Expr::Identifier(Identifier::Variable(b))) => {
+                a == b
+            },
+            (Expr::Identifier(Identifier::Variable(b)), Expr::Type(Type::Custom(a))) => {
+                a == b
+            },
+            other => unreachable!("Trying to compare incompatible types: {:?}", other)
         }
     }
 }
@@ -67,32 +78,35 @@ impl Eval for Expr {
                 match tmp {
                     Expr::Number(n) => Expr::Number(n),
                     Expr::String(s) => Expr::String(s),
-                    other => unreachable!("Expecting only primitive (number/string) types as Expr::Identifier, got {:?}", other)
+                    Expr::Identifier(id) => Expr::Identifier(id),
+                    other => unreachable!("Expecting only primitive (number/string/Identifier) types as Expr::Identifier, got {:?}", other)
                 }
             },
 
             Self::Type(ty) => {
                 match ty {
                     Type::Expr(e) => match &**e {
-                        Expr::Identifier(i) => self.parse_type(&i, variable_context),
                         Expr::Number(n) => match n {
                             Number::Float(_) => Expr::Type(Type::Float),
                             Number::Int(_) => Expr::Type(Type::Int),
                         },
                         Expr::String(_) => Expr::Type(Type::String),
+                        Expr::Identifier(i) => self.parse_type(&i, variable_context),
                         other => Expr::Type(Type::Expr(Box::new(other.eval(storage, variable_context))))
                     },
                     leaf_type => Expr::Type(leaf_type.clone()), 
                 }
             },
 
-            Self::StorageRead(key) => self.eval_storage_read(key, storage, variable_context),
+            Self::StorageRead(key)   => self.eval_storage_read(key, storage, variable_context),
 
             Self::MessageType(id) => Expr::MessageType(id.clone()),
 
-            Self::String(s) => Expr::String(s.clone()),
+            Self::String(s)       => Expr::String(s.clone()),
 
-            Self::Number(numb) => Expr::Number(numb.clone()),
+            Self::Number(numb)    => Expr::Number(numb.clone()),
+            
+            Self::Null                     => Expr::Null,
         }
     }
 
@@ -289,16 +303,20 @@ mod tests {
 
         assert_eq!(expr, Expr::Type(Type::String));
 
-        // let id = Identifier::AttrAccessor(
-        //     vec!["msg".to_owned(), "balance".to_owned()]);
-        // let expr = imp.parse_type(&id, &ctx);
+        let expr = Expr::Type(
+            Type::Expr(Box::new(
+                Expr::Identifier(Identifier::AttrAccessor(
+                vec!["msg".to_owned(), "balance".to_owned()])))));
+        let expr = expr.eval(&storage, &ctx);
 
-        // assert_eq!(expr, Expr::Type(Type::Int));
+        assert_eq!(expr, Expr::Type(Type::Int));
 
-        // let id = Identifier::AttrAccessor(
-        //     vec!["msg".to_owned(), "fee".to_owned()]);
-        // let expr = imp.parse_type(&id, &ctx);
+        let expr = Expr::Type(
+            Type::Expr(Box::new(
+                Expr::Identifier(Identifier::AttrAccessor(
+                vec!["msg".to_owned(), "fee".to_owned()])))));
+        let expr = expr.eval(&storage, &ctx);
 
-        // assert_eq!(expr, Expr::Type(Type::Float));
+        assert_eq!(expr, Expr::Type(Type::Float));
     }
 }
