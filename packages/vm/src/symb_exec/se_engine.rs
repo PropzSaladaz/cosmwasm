@@ -1,0 +1,72 @@
+pub trait SEEngineParse {
+    fn parse_smart_contract(contract: &[u8]) -> SEProfile;
+}
+
+pub struct SEProfile {
+    pub status: SEStatus,
+    pub profile: String,
+}
+
+pub enum SEStatus {
+    Incomplete, // PathExplosion
+    Complete, 
+}
+
+
+// ---------------------------------------------------------------
+//                      MOCK
+// ---------------------------------------------------------------
+
+pub struct SEEngine {}
+
+impl SEEngineParse for SEEngine {
+    fn parse_smart_contract(_: &[u8]) -> SEProfile {
+        SEProfile {
+            status: SEStatus::Complete,
+            profile: r#"I ----------------------------
+
+_deps: DepsMut
+_env: Env
+_info: MessageInfo
+_msg: InstantiateMsg
+
+
+[PC_1] True
+=> SET(=AARiYW5rQURNSU4=): 1000
+<- None
+
+E ----------------------------
+
+_deps: DepsMut
+_env: Env
+_info: MessageInfo
+_msg: ExecuteMsg
+> AddUser:
+    - admin: string
+> AddOne:
+> Transfer:
+    - from: string
+    - to: string
+
+
+[PC_1] Type(_msg) == AddUser
+=> [PC_2]
+<- [PC_3]
+
+[PC_2] GET(=AARiYW5r @ _msg.admin) == null
+=> SET(=AARiYW5r @ _msg.admin): 100
+=> GET(=AARiYW5r @ _msg.admin)
+<- None
+
+[PC_3] Type(_msg) == AddOne
+=> SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+=> GET(=AARiYW5rQURNSU4=)
+<- [PC_4]
+
+[PC_4] Type(_msg) == Transfer
+=> None
+<- None"#
+            .to_owned()
+        }
+    }
+}

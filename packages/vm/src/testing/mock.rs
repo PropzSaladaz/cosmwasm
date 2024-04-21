@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock};
+
 use bech32::{decode, encode, FromBase32, ToBase32, Variant};
 use cosmwasm_std::{
     Addr, BlockInfo, Coin, ContractInfo, Env, MessageInfo, Timestamp, TransactionInfo,
@@ -6,8 +8,9 @@ use sha2::{Digest, Sha256};
 
 use super::querier::MockQuerier;
 use super::storage::MockStorage;
-use crate::backend::unwrap_or_return_with_gas;
-use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo};
+use super::MockStoragePartitioned;
+use crate::backend::{unwrap_or_return_with_gas, ConcurrentBackend};
+use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, Storage};
 
 pub const MOCK_CONTRACT_ADDR: &str = "cosmwasmcontract"; // TODO: use correct address
 const GAS_COST_HUMANIZE: u64 = 44; // TODO: these seem very low
@@ -25,6 +28,22 @@ pub fn mock_backend(contract_balance: &[Coin]) -> Backend<MockApi, MockStorage, 
         querier: MockQuerier::new(&[(MOCK_CONTRACT_ADDR, contract_balance)]),
     }
 }
+
+
+
+/// TODO
+/// All external requirements that can be injected for unit tests.
+/// It sets the given balance for the contract itself, nothing else
+pub fn mock_persistent_backend<S: Storage>(contract_balance: &[Coin], storage: Arc<RwLock<S>>) -> ConcurrentBackend<MockApi, S, MockQuerier> {
+    ConcurrentBackend {
+        api: MockApi::default(),
+        storage: storage,
+        querier: Arc::new(RwLock::new(MockQuerier::new(&[(MOCK_CONTRACT_ADDR, contract_balance)]))),
+    }
+}
+
+
+
 
 /// Initializes the querier along with the mock_dependencies.
 /// Sets all balances provided (yoy must explicitly set contract balance if desired)

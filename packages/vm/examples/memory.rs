@@ -1,12 +1,13 @@
 // Run with
 // cargo run --features dhat-heap --example memory --release
 
+use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 use tempfile::TempDir;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use cosmwasm_std::{coins, Checksum, Empty};
-use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, MockApi, MockQuerier, MockStorage};
+use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned};
 use cosmwasm_vm::{
     call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, InstanceOptions,
     Size,
@@ -126,7 +127,7 @@ fn app() {
     let after = SystemTime::now().duration_since(start_time).unwrap();
     eprintln!("Done compiling after {after:?}");
 
-    let cache: Cache<MockApi, MockStorage, MockQuerier> = unsafe { Cache::new(options).unwrap() };
+    let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> = unsafe { Cache::new(options).unwrap() };
     for round in 0..ROUNDS {
         for _ in 0..ROUND_LEN {
             if SystemTime::now()
@@ -144,8 +145,10 @@ fn app() {
             }
 
             for idx in 0..contracts.len() {
+                let partitioned_storage = MockStoragePartitioned::default();
+                let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
                 let mut instance = cache
-                    .get_instance(&checksums[idx], mock_backend(&[]), DEFAULT_INSTANCE_OPTIONS)
+                    .get_instance(&checksums[idx], backend, DEFAULT_INSTANCE_OPTIONS)
                     .unwrap();
 
                 instance.set_debug_handler(|_msg, info| {

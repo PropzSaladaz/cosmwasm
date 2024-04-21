@@ -1,30 +1,34 @@
+use cosmwasm_std::Storage;
+
 use super::super::parser::nodes::*;
-use super::eval::{Eval, SEContext, StorageAccessor};
+use super::eval::{Eval, SEContext};
 
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Expr::Null, Expr::Null) => true,
-            (Expr::Null, _) => false,
+            (Expr::Null, _) |
             (_, Expr::Null) => false,
+
+            (Expr::Number(a), Expr::Number(b)) => a == b, 
+            (Expr::String(a), Expr::String(b)) => a == b,
             
-            (Expr::Number(a), Expr::Number(b)) => {
-                a == b
-            }, 
-            (Expr::String(a), Expr::String(b)) => {
-                a == b
-            },
             // Type checking between 2 types - "Type(a) == Type(b)"
-            (Expr::Type(a), Expr::Type(b)) => {
-                a == b
-            },
+            (Expr::Type(a), Expr::Type(b)) => a == b,
+            
             // Type checking for custom types - "Type(msg) == SomeType"
-            (Expr::Type(Type::Custom(a)), Expr::Identifier(Identifier::Variable(b))) => {
-                a == b
+            (Expr::Type(Type::Custom(a)), Expr::Identifier(Identifier::Variable(b))) |
+            (Expr::Identifier(Identifier::Variable(b)), Expr::Type(Type::Custom(a))) => a == b,
+
+            (Expr::Identifier(a), Expr::Identifier(b)) => a == b,
+
+            (Expr::BinOp { lhs: lhs1, op: op1, rhs: rhs1 }, 
+             Expr::BinOp { lhs: lhs2, op: op2, rhs: rhs2 }) => {
+                lhs1 == lhs2 && op1 == op2 && rhs1 == rhs2
             },
-            (Expr::Identifier(Identifier::Variable(b)), Expr::Type(Type::Custom(a))) => {
-                a == b
-            },
+
+            (Expr::StorageRead(a), Expr::StorageRead(b)) => a == b,
+
             other => unreachable!("Trying to compare incompatible types: {:?}", other)
         }
     }
@@ -39,7 +43,7 @@ impl PartialOrd for Expr {
             (Expr::String(a), Expr::String(b)) => {
                 a.partial_cmp(b)
             }
-            content => unreachable!("Expected primitive types only, got {:?}", content),
+            content => unreachable!("Expected comparison between 2 primitive types of same type, got {:?}", content),
         }
     }
 }
@@ -52,7 +56,7 @@ impl Eval for Expr {
 
     /// Evaluate an expression at runtime - Evalautes storage reads through the input storage
     /// Anything evaluated through an expression returns a number or a string
-    fn eval<F: StorageAccessor>(&self, storage: &F, variable_context: &SEContext) -> Self::Output 
+    fn eval(&self, storage: &dyn Storage, variable_context: &SEContext) -> Self::Output 
     {
         match self {
             Self::BinOp { 

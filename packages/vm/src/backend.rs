@@ -1,4 +1,5 @@
-use std::fmt::Debug;
+use std::sync::RwLock;
+use std::{fmt::Debug, sync::Arc};
 use std::ops::AddAssign;
 use std::string::FromUtf8Error;
 use thiserror::Error;
@@ -74,6 +75,7 @@ impl AddAssign for GasInfo {
     }
 }
 
+
 /// Holds all external dependencies of the contract.
 /// Designed to allow easy dependency injection at runtime.
 /// This cannot be copied or cloned since it would behave differently
@@ -82,6 +84,16 @@ pub struct Backend<A: BackendApi, S: Storage, Q: Querier> {
     pub api: A,
     pub storage: S,
     pub querier: Q,
+}
+
+/// TODO
+/// Note the commend on the Backend struct above. Here we can clone
+/// as we will only clone the Arc, not the storage itself.
+#[derive(Clone)]
+pub struct ConcurrentBackend<A: BackendApi, S: Storage, Q: Querier> {
+    pub api: A,
+    pub storage: Arc<RwLock<S>>,
+    pub querier: Arc<RwLock<Q>>,
 }
 
 /// Access to the VM's backend storage, i.e. the chain

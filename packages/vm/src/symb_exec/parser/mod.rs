@@ -1,3 +1,5 @@
-pub mod grammar;
+mod grammar;
 pub mod nodes;
-pub mod sc_profile_parser;
+mod sc_profile_parser;
+
+pub use sc_profile_parser::{SCProfile, SCProfileParser};

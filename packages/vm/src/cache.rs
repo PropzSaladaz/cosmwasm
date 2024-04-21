@@ -9,7 +9,7 @@ use wasmer::{Module, Store};
 
 use cosmwasm_std::Checksum;
 
-use crate::backend::{Backend, BackendApi, Querier, Storage};
+use crate::backend::{ BackendApi, ConcurrentBackend, Querier, Storage};
 use crate::capabilities::required_capabilities_from_module;
 use crate::compatibility::check_wasm;
 use crate::errors::{VmError, VmResult};
@@ -358,14 +358,14 @@ where
     pub fn get_instance(
         &self,
         checksum: &Checksum,
-        backend: Backend<A, S, Q>,
+        backend: ConcurrentBackend<A, S, Q>,
         options: InstanceOptions,
     ) -> VmResult<Instance<A, S, Q>> {
         let (module, store) = self.get_module(checksum)?;
         let instance = Instance::from_module(
             store,
             &module,
-            backend,
+            &backend,
             options.gas_limit,
             None,
             Some(&self.instantiation_lock),
@@ -546,10 +546,11 @@ mod tests {
     use crate::calls::{call_execute, call_instantiate};
     use crate::capabilities::capabilities_from_csv;
     use crate::errors::VmError;
-    use crate::testing::{mock_backend, mock_env, mock_info, MockApi, MockQuerier, MockStorage};
+    use crate::testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned};
     use cosmwasm_std::{coins, Empty};
     use std::fs::{create_dir_all, remove_dir_all, OpenOptions};
     use std::io::Write;
+    use std::sync::{Arc, RwLock};
     use tempfile::TempDir;
 
     const TESTING_GAS_LIMIT: u64 = 500_000_000; // ~0.5ms
@@ -675,7 +676,8 @@ mod tests {
         let cache = unsafe { Cache::new(make_testing_options()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let _ = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -825,7 +827,8 @@ mod tests {
     fn get_instance_finds_cached_module() {
         let cache = unsafe { Cache::new(make_testing_options()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let _instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -839,11 +842,18 @@ mod tests {
     fn get_instance_finds_cached_modules_and_stores_to_memory() {
         let cache = unsafe { Cache::new(make_testing_options()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
-        let backend1 = mock_backend(&[]);
-        let backend2 = mock_backend(&[]);
-        let backend3 = mock_backend(&[]);
-        let backend4 = mock_backend(&[]);
-        let backend5 = mock_backend(&[]);
+
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend1 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend2 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend3 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend4 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend5 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+
 
         // from file system
         let _instance1 = cache
@@ -908,7 +918,8 @@ mod tests {
         remove_dir_all(options.base_dir.join(CACHE_DIR).join(MODULES_DIR)).unwrap();
 
         // The first get_instance recompiles the Wasm (miss)
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let _instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -918,7 +929,8 @@ mod tests {
         assert_eq!(cache.stats().misses, 1);
 
         // The second get_instance finds the module in cache (hit)
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let _instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -935,8 +947,10 @@ mod tests {
 
         // from file system
         {
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
-                .get_instance(&checksum, mock_backend(&[]), TESTING_OPTIONS)
+                .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 0);
             assert_eq!(cache.stats().hits_memory_cache, 0);
@@ -961,8 +975,10 @@ mod tests {
 
         // from memory
         {
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
-                .get_instance(&checksum, mock_backend(&[]), TESTING_OPTIONS)
+                .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 0);
             assert_eq!(cache.stats().hits_memory_cache, 1);
@@ -988,9 +1004,10 @@ mod tests {
         // from pinned memory
         {
             cache.pin(&checksum).unwrap();
-
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
-                .get_instance(&checksum, mock_backend(&[]), TESTING_OPTIONS)
+                .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 1);
             assert_eq!(cache.stats().hits_memory_cache, 1);
@@ -1021,8 +1038,10 @@ mod tests {
 
         // from file system
         {
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
-                .get_instance(&checksum, mock_backend(&[]), TESTING_OPTIONS)
+                .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 0);
             assert_eq!(cache.stats().hits_memory_cache, 0);
@@ -1055,8 +1074,10 @@ mod tests {
 
         // from memory
         {
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
-                .get_instance(&checksum, mock_backend(&[]), TESTING_OPTIONS)
+                .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 0);
             assert_eq!(cache.stats().hits_memory_cache, 1);
@@ -1090,9 +1111,10 @@ mod tests {
         // from pinned memory
         {
             cache.pin(&checksum).unwrap();
-
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
-                .get_instance(&checksum, mock_backend(&[]), TESTING_OPTIONS)
+                .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 1);
             assert_eq!(cache.stats().hits_memory_cache, 1);
@@ -1134,7 +1156,8 @@ mod tests {
         remove_dir_all(options.base_dir.join(CACHE_DIR).join(MODULES_DIR)).unwrap();
 
         // Recompiles the Wasm (miss on all caches)
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1151,8 +1174,11 @@ mod tests {
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
         // these differentiate the two instances of the same contract
-        let backend1 = mock_backend(&[]);
-        let backend2 = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend1 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend2 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+
 
         // instantiate instance 1
         let mut instance = cache
@@ -1210,8 +1236,10 @@ mod tests {
         let cache = unsafe { Cache::new(make_testing_options()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
-        let backend1 = mock_backend(&[]);
-        let backend2 = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend1 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend2 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
 
         // Init from module cache
         let mut instance1 = cache
@@ -1249,8 +1277,10 @@ mod tests {
         let cache = unsafe { Cache::new(make_testing_options()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
-        let backend1 = mock_backend(&[]);
-        let backend2 = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend1 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend2 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
 
         // Init from module cache
         let options = InstanceOptions { gas_limit: 10 };
@@ -1415,7 +1445,8 @@ mod tests {
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
         // check not pinned
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1440,7 +1471,8 @@ mod tests {
         assert_eq!(cache.stats().misses, 0);
 
         // check pinned
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1454,7 +1486,8 @@ mod tests {
         cache.unpin(&checksum).unwrap();
 
         // verify unpinned
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1475,7 +1508,7 @@ mod tests {
     #[test]
     fn pin_recompiles_module() {
         let options = make_testing_options();
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(options.clone()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
@@ -1490,7 +1523,8 @@ mod tests {
         assert_eq!(cache.stats().misses, 1);
 
         // After the compilation in pin, the module can be used from pinned memory cache
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();

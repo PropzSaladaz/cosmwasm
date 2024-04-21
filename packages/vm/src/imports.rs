@@ -607,6 +607,7 @@ mod tests {
     };
     use hex_literal::hex;
     use std::ptr::NonNull;
+    use std::sync::{Arc, RwLock};
     use wasmer::{imports, Function, FunctionEnv, Instance as WasmerInstance, Store};
 
     use crate::backend::{BackendError, Storage};
@@ -712,7 +713,7 @@ mod tests {
         storage.set(KEY2, VALUE2).0.expect("error setting");
         let querier: MockQuerier<Empty> =
             MockQuerier::new(&[(INIT_ADDR, &coins(INIT_AMOUNT, INIT_DENOM))]);
-        env.move_in(storage, querier);
+        env.move_in(Arc::new(RwLock::new(storage)), Arc::new(RwLock::new(querier)));
     }
 
     fn write_data(

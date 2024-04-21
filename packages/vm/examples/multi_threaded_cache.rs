@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use tempfile::TempDir;
 
 use cosmwasm_std::{coins, Empty};
-use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, MockApi, MockQuerier, MockStorage};
+use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned};
 use cosmwasm_vm::{
     call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, InstanceOptions,
     Size,
@@ -32,7 +32,7 @@ pub fn main() {
         DEFAULT_MEMORY_LIMIT,
     );
 
-    let cache: Cache<MockApi, MockStorage, MockQuerier> = unsafe { Cache::new(options).unwrap() };
+    let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> = unsafe { Cache::new(options).unwrap() };
     let cache = Arc::new(cache);
 
     let checksum = cache.save_wasm(CONTRACT).unwrap();
@@ -50,8 +50,10 @@ pub fn main() {
         let cache = Arc::clone(&cache);
 
         threads.push(thread::spawn(move || {
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
-                .get_instance(&checksum, mock_backend(&[]), DEFAULT_INSTANCE_OPTIONS)
+                .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();
             println!("Done instantiating contract {i}");
 

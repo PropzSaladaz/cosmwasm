@@ -61,11 +61,11 @@ impl MockStorage {
 
 impl Storage for MockStorage {
     fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
-        
-        // TODO
-        println!("Got item from: {:?}", key);
-
         let gas_info = GasInfo::with_externally_used(key.len() as u64);
+
+        // TODO
+        println!("Got item: {:?}    from: {:?}", self.data.get(key).cloned(), String::from_utf8(key.to_owned()));
+
         (Ok(self.data.get(key).cloned()), gas_info)
     }
 
@@ -130,7 +130,7 @@ impl Storage for MockStorage {
     }
 
     fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()> {
-        println!("Inserted item at: {:?}", key);
+        println!("Inserted item: {:?}     at: {:?}", value, String::from_utf8(key.to_owned()));
         self.data.insert(key.to_vec(), value.to_vec());
         let gas_info = GasInfo::with_externally_used((key.len() + value.len()) as u64);
         (Ok(()), gas_info)

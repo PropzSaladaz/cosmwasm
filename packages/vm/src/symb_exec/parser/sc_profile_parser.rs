@@ -26,7 +26,7 @@ use super::nodes::*;
 #[grammar = "symb_exec/parser/symb_exec.pest"]
 pub struct SEParser;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct SCProfile {
     pub entry_point: HashMap<EntryPoint, EntryPointProfile>,
 }
@@ -348,10 +348,17 @@ impl SCProfileParser {
                             Rule::gt    => RelOp::Gt,
                             rule => unreachable!("Expected rel_operator, found {:?}", rule),
                         };
-                        let expr_r = self.parse_expr(expr_inner.next().unwrap().into_inner());
+
+                        let expr_r_tmp = expr_inner.next().unwrap();
+                        let expr_r = match expr_r_tmp.as_rule() {
+                            Rule::expr => self.parse_expr(expr_r_tmp.into_inner()),
+                            Rule::null => Expr::Null,
+                            rule => unreachable!("Expecting expr or null, got {:?}", rule)
+                        };
         
                         PathCondition::RelBinOp { lhs: Box::new(expr_l), rel_op: rel_op, rhs: Box::new(expr_r) }
                     },
+                    
                     Rule::type_checking => {
                         let mut expr_inner = expr_inner.into_inner();
                         let expr_l = Expr::MessageType(expr_inner.next().unwrap().as_str().to_owned());
@@ -453,7 +460,7 @@ impl SCProfileParser {
 
 #[cfg(test)]
 mod tests {
-    use crate::SCProfileParser;
+    use super::SCProfileParser;
 
     #[test]
     fn parse_int() {
@@ -467,13 +474,13 @@ _deps: DepsMut
 _env: Env
 _info: MessageInfo
 _msg: ExecuteMsg
-
 > AddUser:
-    - admin: string
+	- admin: string
 > AddOne:
 > Transfer:
-    - from: string
-    - to: string
+	- from: string
+	- to: string
+
 
 [PC_1] Type(_msg) == AddUser
 => [PC_2]
@@ -481,10 +488,12 @@ _msg: ExecuteMsg
 
 [PC_2] GET(=AARiYW5r @ _msg.admin) == null
 => SET(=AARiYW5r @ _msg.admin): 100
+=> GET(=AARiYW5r @ _msg.admin)
 <- None
 
 [PC_3] Type(_msg) == AddOne
 => SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+=> GET(=AARiYW5rQURNSU4=)
 <- [PC_4]
 
 [PC_4] Type(_msg) == Transfer

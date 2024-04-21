@@ -1,5 +1,7 @@
+use cosmwasm_std::Storage;
+
 use super::super::parser::nodes::*;
-use super::eval::{Eval, SEContext, StorageAccessor};
+use super::eval::{Eval, SEContext};
 
 impl Eval for PathCondition {
     type Output = bool;
@@ -7,7 +9,7 @@ impl Eval for PathCondition {
     type Operator = RelOp;
     type OpOut = bool;
 
-    fn eval<F: StorageAccessor>(&self, storage: &F, variable_context: &SEContext) -> Self::Output 
+    fn eval(&self, storage: &dyn Storage, variable_context: &SEContext) -> Self::Output 
     {
         match &self {
             Self::RelBinOp { 
@@ -40,8 +42,6 @@ impl Eval for PathCondition {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-
-    use num::traits::ToBytes;
 
     use crate::symb_exec::{
         evaluator::{
@@ -120,6 +120,7 @@ mod tests {
             (vec![1u8], 1i64.to_le_bytes().to_vec())
         ]));
 
+        // Get(bytes) == Null, when bytes is not in storage
         let cond = PathCondition::RelBinOp { 
             lhs: Box::new(Expr::StorageRead(Key::Bytes(vec![0u8]))), // is not in storage
             rel_op: RelOp::Equal, 
@@ -128,6 +129,7 @@ mod tests {
 
         assert!(cond.eval(&storage, &ctx));
 
+        // Get(bytes) != Null, when bytes is in storage
         let cond = PathCondition::RelBinOp { 
             lhs: Box::new(Expr::StorageRead(Key::Bytes(vec![1u8]))), // is in storage
             rel_op: RelOp::Ne, 
@@ -136,6 +138,7 @@ mod tests {
 
         assert!(cond.eval(&storage, &ctx));
 
+        // msg.balance == 2
         let cond = PathCondition::RelBinOp { 
             lhs: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
                 "msg".to_owned(),
@@ -147,6 +150,7 @@ mod tests {
 
         assert!(cond.eval(&storage, &ctx));
 
+        // msg.admin == "name1"
         let cond = PathCondition::RelBinOp { 
             lhs: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
                 "msg".to_owned(),
@@ -166,7 +170,8 @@ mod tests {
         let storage = mock_storage(HashMap::from([
             (vec![1u8], 1i64.to_le_bytes().to_vec())
         ]));
-
+        
+        // 1 <= msg.balance
         let cond = PathCondition::RelBinOp {
             lhs: Box::new(Expr::StorageRead(Key::Bytes(vec![1u8]))), // is in storage
             rel_op: RelOp::Lte, 
@@ -178,6 +183,7 @@ mod tests {
 
         assert!(cond.eval(&storage, &ctx));
 
+        // 1 < msg.fee
         let cond = PathCondition::RelBinOp {
             lhs: Box::new(Expr::StorageRead(Key::Bytes(vec![1u8]))), // is in storage
             rel_op: RelOp::Lt, 
@@ -189,6 +195,7 @@ mod tests {
 
         assert!(cond.eval(&storage, &ctx));
 
+        // msg.admin > "n"
         let cond = PathCondition::RelBinOp { 
             lhs: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
                 "msg".to_owned(),

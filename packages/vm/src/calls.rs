@@ -112,7 +112,6 @@ where
     let data = call_instantiate_raw(instance, &env, &info, msg)?;
     let result: ContractResult<Response<U>> =
         from_slice(&data, deserialization_limits::RESULT_INSTANTIATE)?;
- 
     Ok(result)
 }
 

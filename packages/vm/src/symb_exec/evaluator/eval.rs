@@ -1,6 +1,7 @@
+use cosmwasm_std::Storage;
 use serde_json::{Value};
 
-use crate::symb_exec::parser::nodes::{ArgTypes, Expr, Identifier, InputType, Integer, Number, Type};
+use crate::symb_exec::parser::nodes::{ArgTypes, CosmwasmInputs, Expr, Identifier, InputType, Integer, Number, Type};
 
 use super::super::parser::nodes::Key;
 
@@ -8,30 +9,31 @@ use super::super::parser::nodes::Key;
 /// 
 /// Whenever there is an indentifier - ```var1``` or ```var1.field1```, we look
 /// into all fields of SEContext to find a match, and get the corresponding
-/// primitive type
-pub struct SEContext<'a> {
+/// primitive type.
+pub struct SEContext<'a, 'b> {
+    // stores the full custom msg, the input variable names
     pub custom_msg: Value,
+    
+    // mapping between input identifier - input type
     pub arg_types: &'a ArgTypes,
-    // TODO - need a way to also store the cosmwasm input types for each entry point
+
+    // stores the actual dynamic inputs of the entry call, passed by the VM
+    pub cosmwasm_types: CosmwasmInputs<'b>
 }
 
-impl<'a> SEContext<'a> {
+impl<'a, 'b> SEContext<'a, 'b> {
     pub fn default(arg_types: &'a ArgTypes) -> Self {
-        SEContext { custom_msg: Value::Null, arg_types}
+        SEContext { custom_msg: Value::Null, arg_types, cosmwasm_types: CosmwasmInputs::Mock}
     }
 
-    pub fn new(custom_msg: &[u8], arg_types: &'a ArgTypes) -> Self {
+    pub fn new(custom_msg: &[u8], arg_types: &'a ArgTypes, cosmwasm_types: CosmwasmInputs<'b>) -> Self {
         let val: Value = serde_json::from_slice(custom_msg).expect("Failed to deserialize execute message");
-        SEContext { custom_msg: val , arg_types }
+        SEContext { custom_msg: val , arg_types , cosmwasm_types }
     }
 
     pub fn get_var_type(&self, var_name: &String) -> Option<&InputType> {
         self.arg_types.get(var_name)
     }
-}
-
-pub trait StorageAccessor {
-    fn get(&self, key: &Vec<u8>) -> Option<Vec<u8>>;
 }
 
 /// Used for expression evaluation - either using arithmetic or logical 
@@ -48,7 +50,7 @@ pub trait Eval {
 
     /// Takes an input closure to which we send the Key of the storage read (if any),
     /// and we get the bytes representing its value
-    fn eval<F: StorageAccessor>(&self, storage: &F, variable_context: &SEContext) -> Self::Output;
+    fn eval(&self, storage: &dyn Storage, variable_context: &SEContext) -> Self::Output;
 
     /// Applies a binary operation given the specified Operand types, as well 
     /// as the Operator and Output type
@@ -57,7 +59,7 @@ pub trait Eval {
     /// Parses a Key into bytes and uses the ```storage``` to get the actual value bytes given the key bytes.
     /// 
     /// Currently converts all data to Int type - TODO
-    fn eval_storage_read<F: StorageAccessor>(&self, key: &Key, storage: &F, variable_context: &SEContext) -> Expr 
+    fn eval_storage_read(&self, key: &Key, storage: &dyn Storage, variable_context: &SEContext) -> Expr 
     {
         let bytes;
         match key {
@@ -101,8 +103,12 @@ pub trait Eval {
                     None => unreachable!("Variables should always reference one of the inputs...")
                 }
             }
+
+            // TODO - Currently, if we have an identifier that isn't an attribute accessor, we assume
+            // it will be used to identify some type. This is used in expressions like: Type(_msg) == DepsMut
+            // where we use this Identifier branch to describe the "DepsMut" type
             Identifier::Variable(_) => {
-                // TODO - maybe should look first in context to try match the variable &
+                // TODO - we should look first in context to try match the variable &
                 // only then return a string
                 Expr::Identifier(id.clone())
             },
@@ -215,7 +221,7 @@ mod tests {
         type Operator = i32;
         type OpOut = i32;
     
-        fn eval<F: StorageAccessor>(&self, _: &F, _: &super::SEContext) -> Self::Output {
+        fn eval(&self, _: &dyn Storage, _: &super::SEContext) -> Self::Output {
             todo!()
         }
     

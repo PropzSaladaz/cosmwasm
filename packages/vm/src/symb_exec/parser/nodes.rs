@@ -1,17 +1,19 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
+use cosmwasm_std::{DepsMut, Env, MessageInfo};
 use num::traits::ToBytes;
+use serde::Serialize;
 
 pub type Float = f64;
 pub type Integer = i64;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Serialize)]
 pub enum Number {
     Float(Float),
     Int(Integer),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Identifier {
     Variable(String),
     // attribute accessors - var1.field1 will be represented
@@ -20,7 +22,7 @@ pub enum Identifier {
 }
 
 /// Represents arithmetic binary operators
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Op {
     Add,
     Subtract,
@@ -29,7 +31,7 @@ pub enum Op {
     Power
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Type {
     String,
     Float,
@@ -42,7 +44,7 @@ pub enum Type {
 /// when parsed, will respect associativity rules.
 /// 
 /// When defined as BinOp, can only use arithmetic operations (+, -, /, *)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum Expr {
     // Used to define enum matching for the custom message type
     MessageType(String),
@@ -73,7 +75,7 @@ impl Expr {
 }
 
 /// Represents different Smart Contract entry points
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum EntryPoint {
     Instantiate,
     Execute,
@@ -83,12 +85,28 @@ pub enum EntryPoint {
 
 /// Represents all possible pre-defined input types, and also 
 /// a Custom type for the SC's custom messages
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Serialize)]
 pub enum InputType {
     DepsMut,
     Env,
     MessageInfo,
     Custom,
+}
+
+/// Used to store the inputs received as arguments for each entry point
+/// so that they may be used when evaluating a profile tree
+pub enum CosmwasmInputs<'a> {
+    Instantiate {
+        deps:   &'a DepsMut<'a>,
+        env:    &'a Env,
+        info:   &'a MessageInfo,
+    },
+    Execute {
+        deps:   &'a DepsMut<'a>,
+        env:    &'a Env,
+        info:   &'a MessageInfo
+    },
+    Mock
 }
 
 #[derive(Debug)]
@@ -109,7 +127,7 @@ pub enum TypeMessageInfo {
 }
 
 /// Represents all relational operators: >=, <=, ==, !=, <, > 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Serialize)]
 pub enum RelOp {
     Gte,
     Lte,
@@ -121,7 +139,7 @@ pub enum RelOp {
 
 /// Represents a path condition.
 /// Is either always True, or is a comparison between 2 expressions
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Serialize)]
 pub enum PathCondition {
     Bool(bool),
     RelBinOp {
@@ -134,7 +152,7 @@ pub enum PathCondition {
 /// Represents a storage key. 
 /// Can either be represented in Bytes if the SE-output is in base64,
 /// or in the form of an expression otherwise to be computed at runtime.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Key {
     Bytes(Vec<u8>),
     Expression {
@@ -144,7 +162,7 @@ pub enum Key {
 }
 
 /// Represents either a read or write to be stored as a RWS
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ReadWrite {
     Write {
         key: Key,
@@ -159,7 +177,7 @@ pub type CondNodeRef = Rc<RefCell<Box<PathConditionNode>>>;
 /// Each node has 1 condition and at least 1 positive and 1 negative branch.
 /// 
 /// If the node has information about the RWS, then it can have >1 child branches (positive/negative)
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum PathConditionNode {
     /// Represents a full node associated to a condition, and both child branches.
     ConditionNode {
@@ -186,7 +204,7 @@ pub type CustomArgTypes = HashMap<String, HashMap<String, Type>>;
 /// Represents all info related to each entry point:
 /// 
 /// Inputs, type_defs, and Path conditions (RWS)
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct EntryPointProfile {
     /// Maps all input variable names to their types.
     pub inputs: ArgTypes,

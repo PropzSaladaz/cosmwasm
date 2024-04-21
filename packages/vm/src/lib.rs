@@ -19,7 +19,10 @@ mod size;
 mod static_analysis;
 pub mod testing;
 mod wasm_backend;
+
 mod symb_exec;
+mod msg_handler;
+mod vm_manager;
 
 pub use crate::backend::{
     Backend, BackendApi, BackendError, BackendResult, GasInfo, Querier, Storage,
@@ -46,6 +49,10 @@ pub use crate::instance::{DebugInfo, GasReport, Instance, InstanceOptions};
 pub use crate::serde::{from_slice, to_vec};
 pub use crate::size::Size;
 
+pub use crate::symb_exec::{SCProfile, SCProfileParser};
+pub use crate::msg_handler::{MessageHandler, Message};
+pub use crate::vm_manager::{SCManager, VMMessage, InstantiatedEntryPoint};
+
 #[doc(hidden)]
 pub mod internals {
     //! We use the internals module for exporting types that are only
@@ -58,4 +65,3 @@ pub mod internals {
     pub use crate::wasm_backend::{compile, make_compiling_engine, make_runtime_engine};
 }
 
-pub use crate::symb_exec::{SCProfile, SCProfileParser};

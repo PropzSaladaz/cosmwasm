@@ -2,6 +2,7 @@
 use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::ops::DerefMut;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
@@ -215,6 +216,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
             Ok(func.clone())
         })?;
         self.increment_call_depth()?;
+
         let res = func.call(store, args).map_err(|runtime_err| -> VmError {
             self.with_wasmer_instance::<_, Never>(|instance| {
                 let err: VmError = match get_remaining_points(store, instance) {
@@ -264,7 +266,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
         C: FnOnce(&mut S) -> VmResult<T>,
     {
         self.with_context_data_mut(|context_data| match context_data.storage.as_mut() {
-            Some(data) => callback(data),
+            Some(data) => callback(data.write().unwrap().borrow_mut()),
             None => Err(VmError::uninitialized_context_data("storage")),
         })
     }
@@ -274,7 +276,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
         C: FnOnce(&mut Q) -> VmResult<T>,
     {
         self.with_context_data_mut(|context_data| match context_data.querier.as_mut() {
-            Some(querier) => callback(querier),
+            Some(querier) => callback(querier.write().unwrap().deref_mut()),
             None => Err(VmError::uninitialized_context_data("querier")),
         })
     }
@@ -377,7 +379,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
 
     /// Moves owned instances of storage and querier into the env.
     /// Should be followed by exactly one call to move_out when the instance is finished.
-    pub fn move_in(&self, storage: S, querier: Q) {
+    pub fn move_in(&self, storage: Arc<RwLock<S>>, querier: Arc<RwLock<Q>>) {
         self.with_context_data_mut(|context_data| {
             context_data.storage = Some(storage);
             context_data.querier = Some(querier);
@@ -386,7 +388,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
 
     /// Returns the original storage and querier as owned instances, and closes any remaining
     /// iterators. This is meant to be called when recycling the instance.
-    pub fn move_out(&self) -> (Option<S>, Option<Q>) {
+    pub fn move_out(&self) -> (Option<Arc<RwLock<S>>>, Option<Arc<RwLock<Q>>>) {
         self.with_context_data_mut(|context_data| {
             (context_data.storage.take(), context_data.querier.take())
         })
@@ -395,10 +397,10 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
 
 pub struct ContextData<S, Q> {
     gas_state: GasState,
-    storage: Option<S>,
+    storage: Option<Arc<RwLock<S>>>,
     storage_readonly: bool,
     call_depth: usize,
-    querier: Option<Q>,
+    querier: Option<Arc<RwLock<Q>>>,
     debug_handler: Option<Rc<RefCell<DebugHandlerFn>>>,
     /// A non-owning link to the wasmer instance
     wasmer_instance: Option<NonNull<WasmerInstance>>,
@@ -525,7 +527,7 @@ mod tests {
             .expect("error setting value");
         let querier: MockQuerier<Empty> =
             MockQuerier::new(&[(INIT_ADDR, &coins(INIT_AMOUNT, INIT_DENOM))]);
-        env.move_in(storage, querier);
+        env.move_in(Arc::new(RwLock::new(storage)), Arc::new(RwLock::new(querier)));
     }
 
     #[test]
@@ -543,7 +545,7 @@ mod tests {
         assert!(s.is_some());
         assert!(q.is_some());
         assert_eq!(
-            s.unwrap().get(INIT_KEY).0.unwrap(),
+            s.unwrap().read().unwrap().get(INIT_KEY).0.unwrap(),
             Some(INIT_VALUE.to_vec())
         );
 

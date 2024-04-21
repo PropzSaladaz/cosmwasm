@@ -3,7 +3,9 @@
 //! use cosmwasm_vm::testing::X
 use cosmwasm_std::Coin;
 use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 
+use crate::backend::ConcurrentBackend;
 use crate::capabilities::capabilities_from_csv;
 use crate::compatibility::check_wasm;
 use crate::instance::{Instance, InstanceOptions};
@@ -13,6 +15,7 @@ use crate::{Backend, BackendApi, Querier, Storage};
 use super::mock::{MockApi, MOCK_CONTRACT_ADDR};
 use super::querier::MockQuerier;
 use super::storage::MockStorage;
+use super::MockStoragePartitioned;
 
 /// This gas limit is used in integration tests and should be high enough to allow a reasonable
 /// number of contract executions and queries on one instance. For this reason it is significatly
@@ -23,7 +26,7 @@ const DEFAULT_MEMORY_LIMIT: Option<Size> = Some(Size::mebi(16));
 pub fn mock_instance(
     wasm: &[u8],
     contract_balance: &[Coin],
-) -> Instance<MockApi, MockStorage, MockQuerier> {
+) -> Instance<MockApi, MockStoragePartitioned, MockQuerier> {
     mock_instance_with_options(
         wasm,
         MockInstanceOptions {
@@ -37,7 +40,7 @@ pub fn mock_instance_with_failing_api(
     wasm: &[u8],
     contract_balance: &[Coin],
     backend_error: &'static str,
-) -> Instance<MockApi, MockStorage, MockQuerier> {
+) -> Instance<MockApi, MockStoragePartitioned, MockQuerier> {
     mock_instance_with_options(
         wasm,
         MockInstanceOptions {
@@ -51,7 +54,7 @@ pub fn mock_instance_with_failing_api(
 pub fn mock_instance_with_balances(
     wasm: &[u8],
     balances: &[(&str, &[Coin])],
-) -> Instance<MockApi, MockStorage, MockQuerier> {
+) -> Instance<MockApi, MockStoragePartitioned, MockQuerier> {
     mock_instance_with_options(
         wasm,
         MockInstanceOptions {
@@ -66,7 +69,7 @@ pub fn mock_instance_with_balances(
 pub fn mock_instance_with_gas_limit(
     wasm: &[u8],
     gas_limit: u64,
-) -> Instance<MockApi, MockStorage, MockQuerier> {
+) -> Instance<MockApi, MockStoragePartitioned, MockQuerier> {
     mock_instance_with_options(
         wasm,
         MockInstanceOptions {
@@ -124,7 +127,7 @@ impl Default for MockInstanceOptions<'_> {
 pub fn mock_instance_with_options(
     wasm: &[u8],
     options: MockInstanceOptions,
-) -> Instance<MockApi, MockStorage, MockQuerier> {
+) -> Instance<MockApi, MockStoragePartitioned, MockQuerier> {
     check_wasm(wasm, &options.available_capabilities).unwrap();
     let contract_address = MOCK_CONTRACT_ADDR;
 
@@ -144,16 +147,16 @@ pub fn mock_instance_with_options(
         MockApi::default()
     };
 
-    let backend = Backend {
+    let backend = ConcurrentBackend {
         api,
-        storage: MockStorage::default(),
-        querier: MockQuerier::new(&balances),
+        storage: Arc::new(RwLock::new(MockStoragePartitioned::default())),
+        querier: Arc::new(RwLock::new(MockQuerier::new(&balances))),
     };
     let memory_limit = options.memory_limit;
     let options = InstanceOptions {
         gas_limit: options.gas_limit,
     };
-    Instance::from_code(wasm, backend, options, memory_limit).unwrap()
+    Instance::from_code(wasm, &backend, options, memory_limit).unwrap()
 }
 
 /// Creates InstanceOptions for testing

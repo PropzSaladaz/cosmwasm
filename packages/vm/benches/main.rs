@@ -1,14 +1,14 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use rand::Rng;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 
 use cosmwasm_std::{coins, Checksum, Empty};
 use cosmwasm_vm::testing::{
-    mock_backend, mock_env, mock_info, mock_instance_options, MockApi, MockQuerier, MockStorage,
+    mock_backend, mock_env, mock_info, mock_instance_options, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned
 };
 use cosmwasm_vm::{
     call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, Instance,
@@ -39,7 +39,8 @@ fn bench_instance(c: &mut Criterion) {
 
     group.bench_function("compile and instantiate", |b| {
         b.iter(|| {
-            let backend = mock_backend(&[]);
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let (instance_options, memory_limit) = mock_instance_options();
             let _instance =
                 Instance::from_code(HACKATOM, backend, instance_options, memory_limit).unwrap();
@@ -47,7 +48,8 @@ fn bench_instance(c: &mut Criterion) {
     });
 
     group.bench_function("execute init", |b| {
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let much_gas: InstanceOptions = InstanceOptions {
             gas_limit: HIGH_GAS_LIMIT,
         };
@@ -71,7 +73,8 @@ fn bench_instance(c: &mut Criterion) {
     });
 
     group.bench_function("execute execute (release)", |b| {
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let much_gas: InstanceOptions = InstanceOptions {
             gas_limit: HIGH_GAS_LIMIT,
         };
@@ -97,7 +100,8 @@ fn bench_instance(c: &mut Criterion) {
     });
 
     group.bench_function("execute execute (argon2)", |b| {
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let much_gas: InstanceOptions = InstanceOptions {
             gas_limit: HIGH_GAS_LIMIT,
         };
@@ -187,13 +191,15 @@ fn bench_cache(c: &mut Criterion) {
             Size::new(0),
             DEFAULT_MEMORY_LIMIT,
         );
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(non_memcache).unwrap() };
         let checksum = cache.save_wasm(HACKATOM).unwrap();
 
         b.iter(|| {
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let _ = cache
-                .get_instance(&checksum, mock_backend(&[]), DEFAULT_INSTANCE_OPTIONS)
+                .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 0);
             assert_eq!(cache.stats().hits_memory_cache, 0);
@@ -209,14 +215,16 @@ fn bench_cache(c: &mut Criterion) {
             Size::new(0),
             DEFAULT_MEMORY_LIMIT,
         );
-        let mut cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let mut cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(non_memcache).unwrap() };
         cache.set_module_unchecked(true);
         let checksum = cache.save_wasm(HACKATOM).unwrap();
 
         b.iter(|| {
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let _ = cache
-                .get_instance(&checksum, mock_backend(&[]), DEFAULT_INSTANCE_OPTIONS)
+                .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 0);
             assert_eq!(cache.stats().hits_memory_cache, 0);
@@ -227,15 +235,18 @@ fn bench_cache(c: &mut Criterion) {
 
     group.bench_function("instantiate from memory", |b| {
         let checksum = Checksum::generate(HACKATOM);
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(options.clone()).unwrap() };
         // Load into memory
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         cache
-            .get_instance(&checksum, mock_backend(&[]), DEFAULT_INSTANCE_OPTIONS)
+            .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
             .unwrap();
 
         b.iter(|| {
-            let backend = mock_backend(&[]);
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let _ = cache
                 .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();
@@ -248,13 +259,14 @@ fn bench_cache(c: &mut Criterion) {
 
     group.bench_function("instantiate from pinned memory", |b| {
         let checksum = Checksum::generate(HACKATOM);
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(options.clone()).unwrap() };
         // Load into pinned memory
         cache.pin(&checksum).unwrap();
 
         b.iter(|| {
-            let backend = mock_backend(&[]);
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let _ = cache
                 .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();
@@ -277,7 +289,7 @@ fn bench_instance_threads(c: &mut Criterion) {
             DEFAULT_MEMORY_LIMIT,
         );
 
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(options).unwrap() };
         let cache = Arc::new(cache);
 
@@ -327,11 +339,13 @@ fn bench_instance_threads(c: &mut Criterion) {
                         thread::spawn(move || {
                             // Perform measurement internally
                             let t = SystemTime::now();
+                            let partitioned_storage = MockStoragePartitioned::default();
+                            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
                             black_box(
                                 cache
                                     .get_instance(
                                         &checksum,
-                                        mock_backend(&[]),
+                                        backend,
                                         DEFAULT_INSTANCE_OPTIONS,
                                     )
                                     .unwrap(),
@@ -374,12 +388,14 @@ fn bench_combined(c: &mut Criterion) {
         let mut non_memcache = options.clone();
         non_memcache.memory_cache_size = Size::kibi(0);
 
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(non_memcache).unwrap() };
 
         b.iter(|| {
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
-                .get_instance(&checksum, mock_backend(&[]), DEFAULT_INSTANCE_OPTIONS)
+                .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();
             assert_eq!(cache.stats().hits_pinned_memory_cache, 0);
             assert_eq!(cache.stats().hits_memory_cache, 0);
@@ -395,16 +411,19 @@ fn bench_combined(c: &mut Criterion) {
     });
 
     group.bench_function("get instance from memory cache and execute", |b| {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(options.clone()).unwrap() };
 
         // Load into memory
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         cache
-            .get_instance(&checksum, mock_backend(&[]), DEFAULT_INSTANCE_OPTIONS)
+            .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
             .unwrap();
 
         b.iter(|| {
-            let backend = mock_backend(&[]);
+                        let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
                 .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();
@@ -422,14 +441,15 @@ fn bench_combined(c: &mut Criterion) {
     });
 
     group.bench_function("get instance from pinned memory and execute", |b| {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
             unsafe { Cache::new(options.clone()).unwrap() };
 
         // Load into pinned memory
         cache.pin(&checksum).unwrap();
 
         b.iter(|| {
-            let backend = mock_backend(&[]);
+            let partitioned_storage = MockStoragePartitioned::default();
+            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
             let mut instance = cache
                 .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();

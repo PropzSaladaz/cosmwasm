@@ -2,13 +2,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use wasmer::{
     Exports, Function, FunctionEnv, Imports, Instance as WasmerInstance, Module, Store, Value,
 };
 
-use crate::backend::{Backend, BackendApi, Querier, Storage};
+use crate::backend::{BackendApi, ConcurrentBackend, Querier, Storage};
 use crate::capabilities::required_capabilities_from_module;
 use crate::conversion::{ref_to_u32, to_u32};
 use crate::environment::Environment;
@@ -66,7 +66,7 @@ where
     /// e.g. in test code that needs a customized variant of cosmwasm_vm::testing::mock_instance*.
     pub fn from_code(
         code: &[u8],
-        backend: Backend<A, S, Q>,
+        backend: &ConcurrentBackend<A, S, Q>,
         options: InstanceOptions,
         memory_limit: Option<Size>,
     ) -> VmResult<Self> {
@@ -80,12 +80,12 @@ where
     pub(crate) fn from_module(
         mut store: Store,
         module: &Module,
-        backend: Backend<A, S, Q>,
+        backend: &ConcurrentBackend<A, S, Q>,
         gas_limit: u64,
         extra_imports: Option<HashMap<&str, Exports>>,
         instantiation_lock: Option<&Mutex<()>>,
     ) -> VmResult<Self> {
-        let fe = FunctionEnv::new(&mut store, Environment::new(backend.api, gas_limit));
+        let fe = FunctionEnv::new(&mut store, Environment::new(backend.api.clone(), gas_limit));
 
         let mut import_obj = Imports::new();
         let mut env_imports = Exports::new();
@@ -270,7 +270,7 @@ where
             env.memory = Some(memory);
             env.set_wasmer_instance(Some(instance_ptr));
             env.set_gas_left(&mut store, gas_limit);
-            env.move_in(backend.storage, backend.querier);
+            env.move_in(Arc::clone(&backend.storage), Arc::clone(&backend.querier));
         }
 
         Ok(Instance {
@@ -287,7 +287,7 @@ where
     /// Decomposes this instance into its components.
     /// External dependencies are returned for reuse, the rest is dropped.
     #[must_use = "Calling ::recycle() without reusing the returned backend just drops the instance"]
-    pub fn recycle(self) -> Option<Backend<A, S, Q>> {
+    pub fn recycle(self) -> Option<ConcurrentBackend<A, S, Q>> {
         let Instance {
             _inner, fe, store, ..
         } = self;
@@ -295,7 +295,7 @@ where
         let env = fe.as_ref(&store);
         if let (Some(storage), Some(querier)) = env.move_out() {
             let api = env.api.clone();
-            Some(Backend {
+            Some(ConcurrentBackend {
                 api,
                 storage,
                 querier,
@@ -458,7 +458,7 @@ where
 pub fn instance_from_module<A, S, Q>(
     store: Store,
     module: &Module,
-    backend: Backend<A, S, Q>,
+    backend: &ConcurrentBackend<A, S, Q>,
     gas_limit: u64,
     extra_imports: Option<HashMap<&str, Exports>>,
 ) -> VmResult<Instance<A, S, Q>>
@@ -473,7 +473,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
     use std::time::SystemTime;
 
     use super::*;
@@ -481,9 +481,7 @@ mod tests {
     use crate::calls::{call_execute, call_instantiate, call_query};
     use crate::errors::VmError;
     use crate::testing::{
-        mock_backend, mock_env, mock_info, mock_instance, mock_instance_options,
-        mock_instance_with_balances, mock_instance_with_failing_api, mock_instance_with_gas_limit,
-        mock_instance_with_options, MockInstanceOptions,
+        mock_env, mock_info, mock_instance, mock_instance_options, mock_instance_with_balances, mock_instance_with_failing_api, mock_instance_with_gas_limit, mock_instance_with_options, mock_persistent_backend, MockInstanceOptions, MockStoragePartitioned
     };
     use cosmwasm_std::{
         coin, coins, from_json, AllBalanceResponse, BalanceResponse, BankQuery, Empty, QueryRequest,
@@ -498,10 +496,11 @@ mod tests {
 
     #[test]
     fn from_code_works() {
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let (instance_options, memory_limit) = mock_instance_options();
         let _instance =
-            Instance::from_code(CONTRACT, backend, instance_options, memory_limit).unwrap();
+            Instance::from_code(CONTRACT, &backend, instance_options, memory_limit).unwrap();
     }
 
     #[test]
@@ -543,10 +542,11 @@ mod tests {
 
     #[test]
     fn required_capabilities_works() {
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let (instance_options, memory_limit) = mock_instance_options();
         let instance =
-            Instance::from_code(CONTRACT, backend, instance_options, memory_limit).unwrap();
+            Instance::from_code(CONTRACT, &backend, instance_options, memory_limit).unwrap();
         assert_eq!(instance.required_capabilities().len(), 0);
     }
 
@@ -569,9 +569,10 @@ mod tests {
         )
         .unwrap();
 
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let (instance_options, memory_limit) = mock_instance_options();
-        let instance = Instance::from_code(&wasm, backend, instance_options, memory_limit).unwrap();
+        let instance = Instance::from_code(&wasm, &backend, instance_options, memory_limit).unwrap();
         assert_eq!(instance.required_capabilities().len(), 3);
         assert!(instance.required_capabilities().contains("nutrients"));
         assert!(instance.required_capabilities().contains("sun"));
@@ -592,7 +593,8 @@ mod tests {
         )
         .unwrap();
 
-        let backend = mock_backend(&[]);
+        let partitioned_storage = MockStoragePartitioned::default();
+        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
         let engine = make_compiling_engine(memory_limit);
         let module = compile(&engine, &wasm).unwrap();
         let mut store = Store::new(engine);
@@ -624,7 +626,7 @@ mod tests {
         let mut instance = Instance::from_module(
             store,
             &module,
-            backend,
+            &backend,
             instance_options.gas_limit,
             Some(extra_imports),
             None,

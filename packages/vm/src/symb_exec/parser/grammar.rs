@@ -493,6 +493,29 @@ pub mod tests {
             assert_eq!("BlaBla", rhs.as_str());
             assert_eq!(Rule::rust_identifier, rhs.as_rule());
         });
+
+
+        test_parser_f("GET(=AARiYW5r= @ _msg.admin) == null", Rule::bool_expr, |pair| {
+            let pair = pair.clone().into_inner().nth(0).unwrap();
+            assert_eq!("GET(=AARiYW5r= @ _msg.admin) == null", pair.as_str());
+            assert_eq!(Rule::rel_expr, pair.as_rule());
+
+            let pair = pair.clone().into_inner().nth(0).unwrap();
+            assert_eq!("GET(=AARiYW5r= @ _msg.admin) == null", pair.as_str());
+            assert_eq!(Rule::comparison, pair.as_rule());
+
+            let lhs = pair.clone().into_inner().nth(0).unwrap();
+            assert_eq!("GET(=AARiYW5r= @ _msg.admin) ", lhs.as_str());
+            assert_eq!(Rule::expr, lhs.as_rule());
+
+            let op = pair.clone().into_inner().nth(1).unwrap();
+            assert_eq!("==", op.as_str());
+            assert_eq!(Rule::equal, op.as_rule());
+
+            let rhs = pair.clone().into_inner().nth(2).unwrap();
+            assert_eq!("null", rhs.as_str());
+            assert_eq!(Rule::null, rhs.as_rule());
+        });
     }
 
     #[test]
