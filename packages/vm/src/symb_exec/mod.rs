@@ -6,7 +6,7 @@ mod testing;
 
 pub use se_engine::{SEEngine, SEProfile, SEEngineParse};
 pub use parser::{
-    nodes::EntryPoint,
+    nodes::{EntryPoint, ReadWrite},
     SCProfile,
     SCProfileParser
 };

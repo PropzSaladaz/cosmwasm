@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 #[cfg(feature = "iterator")]
 use std::ops::{Bound, RangeBounds};
-use std::str::from_utf8;
+
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "iterator")]
@@ -192,6 +192,34 @@ impl MockStoragePartitioned {
     }
 }
 
+
+/// Implementation of cosmwasm_std::Storage is necessary as this is the storage type
+/// used for smart contract's entry point calls. When parsing the RWS, we need to pass
+/// a DepsMut struct, which is defined in std, thus needing an implementation of
+/// cosmwasm_std::Storage
+impl cosmwasm_std::Storage for MockStoragePartitioned {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        Storage::get(self, key).0.unwrap()
+    }
+
+    fn range<'a>(
+        &'a self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        order: Order,
+    ) -> Box<dyn Iterator<Item = Record> + 'a> {
+        todo!()
+    }
+
+    fn set(&mut self, key: &[u8], value: &[u8]) {
+        Storage::set(self, key, value).0.unwrap()
+    }
+
+    fn remove(&mut self, key: &[u8]) {
+        Storage::remove(self, key).0.unwrap()
+    }
+}
+
 impl Storage for MockStoragePartitioned {
     fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
         
@@ -333,7 +361,6 @@ mod tests {
 
         let mut part = ValueType::Single(vec![255]);
         part.partition(0); // 1 partition
-        println!("{:?}", part);
         assert_eq!(part.read(), vec![255]);
 
         let mut part = ValueType::Single(vec![255]);
@@ -357,12 +384,10 @@ mod tests {
 
         let mut part = ValueType::Single(vec![63, 144, 177, 255]);
         part.partition(2); // 4 partitions
-        println!("{:#?}", part);
         assert_eq!(part.read(), vec![63, 144, 177, 255]);
 
         let mut part = ValueType::Single(vec![63, 144, 177, 255]);
         part.partition(4); // 4 partitions
-        println!("{:#?}", part);
         assert_eq!(part.read(), vec![63, 144, 177, 255]);
     }
 

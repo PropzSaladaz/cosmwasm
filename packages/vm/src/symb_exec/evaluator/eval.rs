@@ -1,7 +1,7 @@
 use cosmwasm_std::Storage;
 use serde_json::{Value};
 
-use crate::symb_exec::parser::nodes::{ArgTypes, CosmwasmInputs, Expr, Identifier, InputType, Integer, Number, Type};
+use crate::symb_exec::{parser::nodes::{ArgTypes, CosmwasmInputs, Expr, Identifier, InputType, Integer, Number, Type}, ReadWrite};
 
 use super::super::parser::nodes::Key;
 
@@ -154,8 +154,8 @@ pub trait Eval {
             },
             Some(Value::String(s)) => return Expr::String(s.clone()),
 
-            None => unreachable!("Value should never be None!"), 
-            other => unreachable!("Value should be primitive (int, uint, float, string), got {:?}", other),
+            None => unreachable!("Attribute does not exist in custom message"), 
+            other => unreachable!("Value should be primitive (int, float, string), got {:?}", other),
         };
     }
 
@@ -197,6 +197,57 @@ pub trait Eval {
                     Expr::String(_) => Expr::Type(Type::String),
                     other => unreachable!("Attr accessors should have primitive types, got {:?}", other)
                 }
+            }
+        }
+    }
+}
+
+
+impl ReadWrite {
+    /// Used to evaluate final RWS keys into catual values.
+    /// RWS is first built into a well-structured tree, like so:
+    /// ```
+    /// Expr::StorageRead(Key::Expression { 
+    ///     base: key_raw.to_vec(), 
+    ///     expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+    ///         "msg".to_owned(), 
+    ///         "admin".to_owned()
+    ///     ]
+    /// ))
+    /// ```
+    /// 
+    /// This evaluation turns key expressions into values. In the above example, turns `msg.admin` into `"name1"` by
+    /// fetching the value of `msg.admin` from the current variable_context.
+    /// 
+    /// In the general case, it turns Get(base @ expr) into Get(bytes), by evaluating `expr`
+    /// and appending it to the base. This way we have concrete keys.
+    pub fn eval(&mut self, storage: &dyn Storage, variable_context: &SEContext) -> Self {   
+        match self {
+            Self::Read(key) => Self::Read(key.eval(storage, variable_context)),
+            Self::Write { 
+                key, 
+                value 
+            } => Self::Write { 
+                key: key.eval(storage, variable_context), 
+                value: value.clone()
+            }
+        }
+    }
+}
+
+impl Key {
+    pub fn eval(&mut self, storage: &dyn Storage, variable_context: &SEContext) -> Self {
+        match self {
+            Key::Bytes(b) => Key::Bytes(b.clone()),
+            Key::Expression { base, expr } => {
+                let mut bytes_tmp = base.clone();
+                let expr = expr.eval(storage, variable_context);
+                let mut option_bytes = expr.as_bytes();
+                match &mut option_bytes {
+                    Some(bytes) => bytes_tmp.append(bytes),
+                    None => unreachable!("Could not convert expression to bytes"),
+                };
+                Key::Bytes(bytes_tmp)
             }
         }
     }
@@ -365,5 +416,95 @@ mod tests {
         let expr = imp.parse_type(&id, &ctx);
 
         assert_eq!(expr, Expr::Type(Type::Custom("MessageInfo".to_owned())));
+
+        let id = Identifier::AttrAccessor(vec![
+            "msg".to_owned(), "admin".to_owned()]);
+        let expr = imp.parse_type(&id, &ctx);
+
+        assert_eq!(expr, Expr::Type(Type::String));
+
+        let id = Identifier::AttrAccessor(vec![
+            "msg".to_owned(), "balance".to_owned()]);
+        let expr = imp.parse_type(&id, &ctx);
+
+        assert_eq!(expr, Expr::Type(Type::Int));
+
+        let id = Identifier::AttrAccessor(vec![
+            "msg".to_owned(), "fee".to_owned()]);
+        let expr = imp.parse_type(&id, &ctx);
+
+        assert_eq!(expr, Expr::Type(Type::Float));
+    }
+
+    #[test]
+    fn eval_rws() {
+        let arg_types = mock_arg_types();
+        let ctx = mock_context(&arg_types);
+
+        let key_raw = vec![1u8];
+        // number 1 in big-endian
+        let key_val_raw = vec![1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let expr_bytes = "name1".as_bytes();
+        // Get(base @ "msg.admin")
+        let mut expected_key = key_raw.clone();
+        expected_key.append(&mut expr_bytes.to_vec());
+        
+        let storage = mock_storage(HashMap::from([(expected_key.clone(), key_val_raw)]));
+
+        let mut rws = vec![
+            // Get(1u8 @ msg.admin)
+            ReadWrite::Read(Key::Expression { 
+                base: key_raw.to_vec(), 
+                expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                    "msg".to_owned(), 
+                    "admin".to_owned()
+                ])))
+            }),
+            // Set(1u8 @ msg.admin): Get(@ 1) + 1
+            ReadWrite::Write { 
+                key: Key::Expression { 
+                    base: key_raw.to_vec(), 
+                    expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                        "msg".to_owned(), 
+                        "admin".to_owned()
+                    ]))) 
+                }, 
+                value: Expr::BinOp { 
+                    lhs: Box::new(Expr::StorageRead(Key::Expression { 
+                        base: key_raw.to_vec(), 
+                        expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                            "msg".to_owned(), 
+                            "admin".to_owned()
+                        ])))
+                    })), 
+                    op: Op::Add, 
+                    rhs: Box::new(Expr::Number(Number::Int(1))) 
+                } 
+            }  
+        ];
+
+        let expr: Vec<_> = rws.iter_mut().map(|rws| 
+            rws.eval(&storage, &ctx)).collect();
+
+        assert_eq!(
+            expr,
+            vec![
+                ReadWrite::Read(Key::Bytes(expected_key.clone())),
+                ReadWrite::Write { 
+                    key: Key::Bytes(expected_key), 
+                    value: Expr::BinOp { 
+                        lhs: Box::new(Expr::StorageRead(Key::Expression { 
+                            base: key_raw.to_vec(), 
+                            expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                                "msg".to_owned(), 
+                                "admin".to_owned()
+                            ])))
+                        })), 
+                        op: Op::Add, 
+                        rhs: Box::new(Expr::Number(Number::Int(1))) 
+                    } 
+                }
+            ]
+        )
     }
 }

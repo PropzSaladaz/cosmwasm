@@ -121,7 +121,7 @@ pub struct AnalysisReport {
 impl<A, S, Q> Cache<A, S, Q>
 where
     A: BackendApi + 'static, // 'static is needed by `impl<…> Instance`
-    S: Storage + 'static,    // 'static is needed by `impl<…> Instance`
+    S: Storage + cosmwasm_std::Storage + 'static,    // 'static is needed by `impl<…> Instance`
     Q: Querier + 'static,    // 'static is needed by `impl<…> Instance`
 {
     /// Creates a new cache that stores data in `base_dir`.
@@ -599,7 +599,7 @@ mod tests {
     /// Takes an instance and executes it
     fn test_hackatom_instance_execution<S, Q>(instance: &mut Instance<MockApi, S, Q>)
     where
-        S: Storage + 'static,
+        S: Storage + cosmwasm_std::Storage + 'static,
         Q: Querier + 'static,
     {
         // instantiate

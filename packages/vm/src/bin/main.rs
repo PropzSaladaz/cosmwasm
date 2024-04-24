@@ -1,6 +1,8 @@
-use std::{collections::HashMap, fs::File, io::Read, sync::{Arc, RwLock}};
+use std::{collections::HashMap, sync::{Arc, RwLock}};
 
-use cosmwasm_vm::{testing::{MockApi, MockQuerier, MockStoragePartitioned}, BackendApi, InstantiatedEntryPoint, Message, MessageHandler, Querier, SCManager, VMMessage};
+use cosmwasm_vm::{
+    testing::{mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned}, 
+    InstantiatedEntryPoint, Message, MessageHandler, SCManager, VMManager, VMMessage};
 
 fn run_persistent_vm() {
 
@@ -24,10 +26,25 @@ fn run_persistent_vm() {
         mapping.get(&contract_code_id).unwrap().get(&instantiation).unwrap().clone()
     };
 
+    let storage_builder = || {
+        MockStoragePartitioned::default()
+    };
+
+    let backend_builder = |storage| {
+        mock_persistent_backend(&[], storage)
+    };
+
+    let sc_manager = Arc::new(RwLock::new(sc_manager));
+
+    let vm_manager = VMManager::new(
+        Arc::clone(&sc_manager),
+        Box::new(address_mapper),
+        Box::new(storage_builder),
+        Box::new(backend_builder));
     // handle messages
     let mut message_handler = MessageHandler::new(
-        Arc::new(RwLock::new(sc_manager)), 
-        Box::new(address_mapper));
+        sc_manager, 
+        vm_manager);
     
     message_handler.handle_messages(vec![
         Message::Deployment { 

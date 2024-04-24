@@ -1,10 +1,11 @@
-use std::{borrow::Borrow, cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
-use cosmwasm_std::{DepsMut, Env, MessageInfo};
-use super::{evaluator::{eval::SEContext, path_cond}, parser::{
+use cosmwasm_std::{Env, MessageInfo, Storage};
+use crate::{testing::MockStoragePartitioned, DepsMut};
+
+use super::{evaluator::eval::SEContext, parser::{
     nodes::*, SCProfile
 }};
-use serde_json::{de::Read, Value};
 
 impl SCProfile {
 
@@ -32,7 +33,7 @@ impl SCProfile {
         )
     }
 
-    pub fn get_rws_query(&self, deps: DepsMut, env: Env, msg_info: MessageInfo, custom: &[u8]) -> Vec<ReadWrite> {
+    pub fn get_rws_query<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, msg_info: &'a MessageInfo, custom: &[u8]) -> Vec<ReadWrite> {
         todo!();
     }
 
@@ -44,14 +45,17 @@ impl SCProfile {
         match &execute_entry_point.root_path_cond {
             Some(path_cond) => {
                 match cosmwasm_inputs {
-                    CosmwasmInputs::Execute     { deps, env: _, info: _ } |
-                    CosmwasmInputs::Instantiate { deps, env: _, info: _ } => 
+                    CosmwasmInputs::Execute     { deps, env: _, info: _ } => {
+                        let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
+
+                        self.parse_tree(path_cond, deps.storage, &context)
+                    },
+                    CosmwasmInputs::Instantiate { deps: _, env: _, info: _ } => 
                     {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
-                        match path_cond.as_ref().borrow().parse_tree(deps.storage, &context) {
-                            PathConditionNode::RWSNode(rws) => rws,
-                            other => unreachable!("Expecting RWSNode, got {:?}", other)
-                        }
+                        // TODO we are sending empty storage for instatiates -> Instantiates should not have yet a storage (the tx wasn't executed yet)
+                        // thus we send a mock storage. Need to think better about this
+                        self.parse_tree(path_cond, &MockStoragePartitioned::default(), &context)
                     }
 
                     _ => todo!()
@@ -62,13 +66,20 @@ impl SCProfile {
         }
     }
 
+    fn parse_tree(&self, path_cond: &Rc<RefCell<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> Vec<ReadWrite> {
+        match path_cond.borrow_mut().parse_tree(storage, &context) {
+            PathConditionNode::RWSNode(rws) => rws,
+            PathConditionNode::None => vec![],
+            other => unreachable!("Expecting RWSNode, got {:?}", other)
+        }
+    }
+
 }
 
 #[cfg(test)]
 mod tests {
-    use cosmwasm_std::{testing::mock_dependencies, DepsMut};
 
-    use crate::{symb_exec::testing::mock::mock_storage, testing::{mock_backend, mock_env, mock_info}, SCProfile, SCProfileParser};
+    use crate::{testing::{mock_env, mock_info, MockStoragePartitioned}, DepsMut, SCProfile, SCProfileParser};
 
 
     fn build_contract() -> SCProfile {
@@ -91,7 +102,7 @@ _env: Env
 _info: MessageInfo
 _msg: ExecuteMsg
 > AddUser:
-    - admin: stringg
+    - admin: string
 > AddOne:
 > Transfer:
     - from: string
@@ -121,15 +132,23 @@ _msg: ExecuteMsg
     
     #[test]
     fn get_rws_execute() {
-        // let contract = build_contract();
-        // let deps mock_dependencies();
-        // let env = mock_env();
-        // let msg_info = mock_info("drake", &[]);
+        let contract = build_contract();
+        let env = mock_env();
+        let msg_info = mock_info("drake", &[]);
 
-        // let custom = br#"{
-        //     "AddUser": {}
-        // }"#;
+        let custom = br#"{
+            "AddUser": {
+                "admin": "SUIII"
+            }
+        }"#;
 
-        // contract.get_rws_execute(deps, &env, &msg_info, custom);
+        let querier = cosmwasm_std::testing::MockQuerier::default();
+        let mut_deps = DepsMut { 
+            storage: &mut MockStoragePartitioned::default(),
+            api: &cosmwasm_std::testing::MockApi::default(), 
+            querier: cosmwasm_std::QuerierWrapper::new( &querier)
+        };
+        let rws = contract.get_rws_execute(&mut_deps, &env, &msg_info, custom);
+        println!("RWS: {:#?}", rws);
     }
 }

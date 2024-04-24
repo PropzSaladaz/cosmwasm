@@ -174,7 +174,7 @@ pub fn mock_instance_options() -> (InstanceOptions, Option<Size>) {
 pub fn test_io<A, S, Q>(instance: &mut Instance<A, S, Q>)
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     let sizes: Vec<usize> = vec![0, 1, 3, 10, 200, 2000, 5 * 1024];

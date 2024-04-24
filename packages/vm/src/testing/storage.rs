@@ -59,6 +59,33 @@ impl MockStorage {
     }
 }
 
+/// Implementation of cosmwasm_std::Storage is necessary as this is the storage type
+/// used for smart contract's entry point calls. When parsing the RWS, we need to pass
+/// a DepsMut struct, which is defined in std, thus needing an implementation of
+/// cosmwasm_std::Storage
+impl cosmwasm_std::Storage for MockStorage {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        Storage::get(self, key).0.unwrap()
+    }
+
+    fn range<'a>(
+        &'a self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        order: Order,
+    ) -> Box<dyn Iterator<Item = Record> + 'a> {
+        todo!()
+    }
+
+    fn set(&mut self, key: &[u8], value: &[u8]) {
+        Storage::set(self, key, value).0.unwrap()
+    }
+
+    fn remove(&mut self, key: &[u8]) {
+        Storage::remove(self, key).0.unwrap()
+    }
+}
+
 impl Storage for MockStorage {
     fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
         let gas_info = GasInfo::with_externally_used(key.len() as u64);

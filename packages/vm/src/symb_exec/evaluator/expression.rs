@@ -6,30 +6,32 @@ use super::eval::{Eval, SEContext};
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Expr::Null, Expr::Null) => true,
-            (Expr::Null, _) |
-            (_, Expr::Null) => false,
+            (Expr::Null, Expr::Null)          => true,
+            (Expr::Null, _) | (_, Expr::Null) => false,
 
-            (Expr::Number(a), Expr::Number(b)) => a == b, 
-            (Expr::String(a), Expr::String(b)) => a == b,
-            
+            // default same-type comparisons
+            (Expr::Number(a),         Expr::Number(b))          => a == b, 
+            (Expr::String(a),         Expr::String(b))          => a == b,
+            (Expr::MessageType(a),    Expr::MessageType(b))     => a == b,
+            (Expr::Identifier(a), Expr::Identifier(b))  => a == b,
+            (Expr::StorageRead(a),       Expr::StorageRead(b))        => a == b,
+
             // Type checking between 2 types - "Type(a) == Type(b)"
-            (Expr::Type(a), Expr::Type(b)) => a == b,
+            (Expr::Type(a),             Expr::Type(b))              => a == b,
+            
+            // Type checking for custom messages - "Type(msg) == SomeType"
+            (Expr::Type(Type::Custom(a)), Expr::MessageType(b)) => a == b,
             
             // Type checking for custom types - "Type(msg) == SomeType"
             (Expr::Type(Type::Custom(a)), Expr::Identifier(Identifier::Variable(b))) |
             (Expr::Identifier(Identifier::Variable(b)), Expr::Type(Type::Custom(a))) => a == b,
 
-            (Expr::Identifier(a), Expr::Identifier(b)) => a == b,
 
             (Expr::BinOp { lhs: lhs1, op: op1, rhs: rhs1 }, 
-             Expr::BinOp { lhs: lhs2, op: op2, rhs: rhs2 }) => {
-                lhs1 == lhs2 && op1 == op2 && rhs1 == rhs2
-            },
+             Expr::BinOp { lhs: lhs2, op: op2, rhs: rhs2 }) => 
+                lhs1 == lhs2 && op1 == op2 && rhs1 == rhs2,
 
-            (Expr::StorageRead(a), Expr::StorageRead(b)) => a == b,
-
-            other => unreachable!("Trying to compare incompatible types: {:?}", other)
+            o => unreachable!("cannot compare {:?}", o)
         }
     }
 }
@@ -104,6 +106,7 @@ impl Eval for Expr {
 
             Self::StorageRead(key)   => self.eval_storage_read(key, storage, variable_context),
 
+            // we should check if it wither a variable vs. attribute accessor
             Self::MessageType(id) => Expr::MessageType(id.clone()),
 
             Self::String(s)       => Expr::String(s.clone()),
@@ -191,6 +194,7 @@ mod tests {
             Expr::Type(Type::Custom("AddUser".to_owned()))
         );
     }
+
 
     #[test]
     fn expr_numbers() {

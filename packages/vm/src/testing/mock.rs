@@ -34,7 +34,7 @@ pub fn mock_backend(contract_balance: &[Coin]) -> Backend<MockApi, MockStorage, 
 /// TODO
 /// All external requirements that can be injected for unit tests.
 /// It sets the given balance for the contract itself, nothing else
-pub fn mock_persistent_backend<S: Storage>(contract_balance: &[Coin], storage: Arc<RwLock<S>>) -> ConcurrentBackend<MockApi, S, MockQuerier> {
+pub fn mock_persistent_backend<S: Storage + cosmwasm_std::Storage>(contract_balance: &[Coin], storage: Arc<RwLock<S>>) -> ConcurrentBackend<MockApi, S, MockQuerier> {
     ConcurrentBackend {
         api: MockApi::default(),
         storage: storage,

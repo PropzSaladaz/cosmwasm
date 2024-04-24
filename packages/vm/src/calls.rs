@@ -103,7 +103,7 @@ pub fn call_instantiate<A, S, Q, U>(
 ) -> VmResult<ContractResult<Response<U>>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     U: DeserializeOwned + CustomMsg,
 {
@@ -123,7 +123,7 @@ pub fn call_execute<A, S, Q, U>(
 ) -> VmResult<ContractResult<Response<U>>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     U: DeserializeOwned + CustomMsg,
 {
@@ -142,7 +142,7 @@ pub fn call_migrate<A, S, Q, U>(
 ) -> VmResult<ContractResult<Response<U>>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     U: DeserializeOwned + CustomMsg,
 {
@@ -160,7 +160,7 @@ pub fn call_sudo<A, S, Q, U>(
 ) -> VmResult<ContractResult<Response<U>>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     U: DeserializeOwned + CustomMsg,
 {
@@ -178,7 +178,7 @@ pub fn call_reply<A, S, Q, U>(
 ) -> VmResult<ContractResult<Response<U>>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     U: DeserializeOwned + CustomMsg,
 {
@@ -197,7 +197,7 @@ pub fn call_query<A, S, Q>(
 ) -> VmResult<ContractResult<QueryResponse>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {   
     let env = to_vec(env)?;
@@ -337,7 +337,7 @@ pub fn call_instantiate_raw<A, S, Q>(
 ) -> VmResult<Vec<u8>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     instance.set_storage_readonly(false);
@@ -359,7 +359,7 @@ pub fn call_execute_raw<A, S, Q>(
 ) -> VmResult<Vec<u8>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     instance.set_storage_readonly(false);
@@ -380,7 +380,7 @@ pub fn call_migrate_raw<A, S, Q>(
 ) -> VmResult<Vec<u8>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     instance.set_storage_readonly(false);
@@ -401,7 +401,7 @@ pub fn call_sudo_raw<A, S, Q>(
 ) -> VmResult<Vec<u8>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     instance.set_storage_readonly(false);
@@ -417,7 +417,7 @@ pub fn call_reply_raw<A, S, Q>(
 ) -> VmResult<Vec<u8>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     instance.set_storage_readonly(false);
@@ -433,7 +433,7 @@ pub fn call_query_raw<A, S, Q>(
 ) -> VmResult<Vec<u8>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     instance.set_storage_readonly(true);
@@ -570,7 +570,7 @@ pub(crate) fn call_raw<A, S, Q>(
 ) -> VmResult<Vec<u8>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     let mut arg_region_ptrs = Vec::<Value>::with_capacity(args.len());

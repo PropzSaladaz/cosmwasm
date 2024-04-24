@@ -91,13 +91,23 @@ impl SCStaticData {
 
 
 
-struct SCInstance<A: BackendApi, S: Storage, Q: Querier> {
+struct SCInstance<A, S, Q> 
+where
+    A: BackendApi, 
+    S: Storage + cosmwasm_std::Storage, 
+    Q: Querier
+{
     sc_code_id: u128,
     compiled_code: Arc<Module>,
     state: Arc<ConcurrentBackend<A, S, Q>>
 }
 
-impl<A: BackendApi, S: Storage, Q: Querier> SCInstance<A, S, Q> {
+impl<A, S, Q> SCInstance<A, S, Q> 
+where
+    A: BackendApi, 
+    S: Storage + cosmwasm_std::Storage, 
+    Q: Querier
+{
     fn new(sc_code_id: u128, compiled_code: Arc<Module>, state: Arc<ConcurrentBackend<A, S, Q>>) -> Self {
         Self {
             sc_code_id,
@@ -112,7 +122,12 @@ impl<A: BackendApi, S: Storage, Q: Querier> SCInstance<A, S, Q> {
 /// over different cosmwasm vm instances.
 ///
 /// Inlcudes both compiled module + SC state
-pub struct InstanceData<A: BackendApi, S: Storage, Q: Querier> {
+pub struct InstanceData<A, S, Q> 
+where
+    A: BackendApi, 
+    S: Storage + cosmwasm_std::Storage, 
+    Q: Querier
+{
     pub state: Arc<ConcurrentBackend<A, S, Q>>,
     pub compiled_code: Arc<Module>,
 }
@@ -127,13 +142,23 @@ type SCStorage<A, S, Q> = DashMap<String, Arc<SCInstance<A, S, Q>>>;
 /// This includes both static state - SC code & profile, as well as
 /// "dynamic state" - SC state per each instantiation of a contract & its 
 /// corresponding compiled wasm module. 
-pub struct SCManager<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static> {
+pub struct SCManager<A, S, Q> 
+where
+    A: BackendApi + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
+    Q: Querier + 'static
+{
     static_data: Arc<RwLock<SCStaticData>>,
     sc_storage: SCStorage<A, S, Q>,
 }
 
 
-impl<A: BackendApi, S: Storage, Q: Querier> SCManager<A, S, Q> {
+impl<A, S, Q> SCManager<A, S, Q> 
+where
+    A: BackendApi, 
+    S: Storage + cosmwasm_std::Storage, 
+    Q: Querier
+{
     pub fn new() -> SCManager<A, S, Q> {
         SCManager {
             static_data: Arc::new(RwLock::new(SCStaticData::new())),
@@ -155,12 +180,15 @@ impl<A: BackendApi, S: Storage, Q: Querier> SCManager<A, S, Q> {
         self.sc_storage.get(&address).unwrap(); // TODO remove after testing
     }
 
-    pub fn get_instance_data(&self, address: &String) -> InstanceData<A, S, Q> {
-        let sc_instance = self.sc_storage.get(address).unwrap();
-        InstanceData {
-            compiled_code: Arc::clone(&sc_instance.compiled_code),
-            state:         Arc::clone(&sc_instance.state),
+    pub fn get_instance_data(&self, address: &String) -> Option<InstanceData<A, S, Q>> {
+        match self.sc_storage.get(address) {
+            Some(sc_instance) => Some(InstanceData {
+                compiled_code: Arc::clone(&sc_instance.compiled_code),
+                state:         Arc::clone(&sc_instance.state),
+            }),
+            None => None
         }
+
     }
 
     pub fn get_code(&self, code_id: u128) -> std::io::Result<Vec<u8>> {
@@ -178,6 +206,10 @@ impl<A: BackendApi, S: Storage, Q: Querier> SCManager<A, S, Q> {
         self.static_data.read().unwrap().get_instantiation_count(code_id)
     }
 
+    pub fn get_profile(&self, code_id: u128) -> Arc<SCProfile> {
+        self.static_data.read().unwrap().get_profile(code_id).unwrap()
+    }
+
     pub fn cleanup(&self) {
         self.static_data.write().unwrap().cleanup();
     }
@@ -190,6 +222,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> SCManager<A, S, Q> {
 #[cfg(test)]
 mod tests {
     use cosmwasm_std::{ContractResult, Empty, Response};
+    use serial_test::serial;
     use wasmer::Store;
 
     use crate::{call_instantiate, 
@@ -206,6 +239,7 @@ mod tests {
 
 
     #[test]
+    #[serial]
     fn generics_test() {
         let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
         let module = Arc::new(compile( &engine, CONTRACT).unwrap());
@@ -220,6 +254,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn sc_static_data_workflow() {
         let mut sc_static_data = SCStaticData::new();
 
@@ -269,6 +304,7 @@ _msg: InstantiateMsg
 
     #[ignore]
     #[test]
+    #[serial]
     fn sc_manager_workflow() {
         let sc_manager = SCManager::new();
         // save code
@@ -292,7 +328,7 @@ _msg: InstantiateMsg
         );
 
         // get instance data
-        let instance_data = sc_manager.get_instance_data(&"a".to_owned());
+        let instance_data = sc_manager.get_instance_data(&"a".to_owned()).unwrap();
 
         // instantiate vm
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT, };

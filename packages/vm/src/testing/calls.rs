@@ -35,7 +35,7 @@ pub fn instantiate<A, S, Q, M, U>(
 ) -> ContractResult<Response<U>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     M: Serialize + JsonSchema,
     U: DeserializeOwned + CustomMsg,
@@ -55,7 +55,7 @@ pub fn execute<A, S, Q, M, U>(
 ) -> ContractResult<Response<U>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     M: Serialize + JsonSchema,
     U: DeserializeOwned + CustomMsg,
@@ -74,7 +74,7 @@ pub fn migrate<A, S, Q, M, U>(
 ) -> ContractResult<Response<U>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     M: Serialize + JsonSchema,
     U: DeserializeOwned + CustomMsg,
@@ -93,7 +93,7 @@ pub fn sudo<A, S, Q, M, U>(
 ) -> ContractResult<Response<U>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     M: Serialize + JsonSchema,
     U: DeserializeOwned + CustomMsg,
@@ -112,7 +112,7 @@ pub fn reply<A, S, Q, U>(
 ) -> ContractResult<Response<U>>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     U: DeserializeOwned + CustomMsg,
 {
@@ -129,7 +129,7 @@ pub fn query<A, S, Q, M>(
 ) -> ContractResult<QueryResponse>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
     M: Serialize + JsonSchema,
 {

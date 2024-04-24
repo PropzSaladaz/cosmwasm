@@ -359,15 +359,17 @@ impl SCProfileParser {
                         PathCondition::RelBinOp { lhs: Box::new(expr_l), rel_op: rel_op, rhs: Box::new(expr_r) }
                     },
                     
+                    // When checking type, currently only supports expressions of the following structure:
+                    // Type(msg) == SomeType
                     Rule::type_checking => {
                         let mut expr_inner = expr_inner.into_inner();
-                        let expr_l = Expr::MessageType(expr_inner.next().unwrap().as_str().to_owned());
+                        let expr_l = self.parse_type(expr_inner.next().unwrap().into_inner().next().unwrap());
                         let rel_op = match expr_inner.next().unwrap().as_rule() {
                             Rule::equal => RelOp::Equal,
                             Rule::ne    => RelOp::Ne,
                             rule => unreachable!("Expected equality operator, found {:?}", rule),
                         };
-                        let expr_r = Expr::Type(Type::Custom(expr_inner.next().unwrap().as_str().to_owned()));
+                        let expr_r = Expr::MessageType(expr_inner.next().unwrap().as_str().to_owned());
                         PathCondition::RelBinOp { lhs: Box::new(expr_l), rel_op: rel_op, rhs: Box::new(expr_r) }
                     },
                     rule => unreachable!("Expected comparison or type_checking, got {:?}", rule),
@@ -376,6 +378,28 @@ impl SCProfileParser {
             },
             rule => unreachable!("Expected rel_expr or always_true, found {:?}", rule),
         }
+    }
+
+    /// Parses a "type" expression:
+    /// 
+    /// `Type(something) == ...``
+    /// 
+    /// Where something can be either a single variable identifier - `msg` - or an attribute accessor - `msg.a.b`
+    /// If `msg` is any of the inputs, set it as `MessageType`, else set it as `Identifier`.
+    /// Then set the inner Identifier as `AttributeAccessor` or `Variable` depending on the type.
+    fn parse_type(&self, variable: Pair<Rule>) -> Expr {
+        let var_str = String::from(variable.clone().as_str());
+        Expr::Type(Type::Expr(Box::new(match variable.clone().as_rule() {
+            Rule::rust_identifier => Expr::Identifier(Identifier::Variable(var_str)),
+            Rule::attr_accessor => {
+                let mut tokens = vec![];
+                for token in variable.into_inner() {
+                    tokens.push(String::from(token.as_str()));
+                };
+                Expr::Identifier(Identifier::AttrAccessor(tokens))
+            },
+            other => unreachable!("Expected rust_identifier or attr_accessor, found {:?}", other),
+        })))
     }
 
     fn parse_storage_key(&self, key: Pair<Rule>) -> Key {
@@ -403,7 +427,6 @@ impl SCProfileParser {
 
     fn parse_expr(&self, pairs: Pairs<Rule>) -> Expr {
         use Number::*;
-        use Identifier::*;
 
         self.pratt_parser
         .map_primary(|primary| match primary.as_rule() { // parse atomic tokens
@@ -415,13 +438,28 @@ impl SCProfileParser {
                 Expr::StorageRead(key)
             },
             Rule::variable      => {
-                let variable = String::from(primary.as_str());
-                // check if identifier represents a type
-                if self.current_entry_point_profile.is_custom_subtype(&variable) {
-                    Expr::MessageType(variable)
-                }
-                else {
-                    Expr::Identifier(Variable(variable))
+                let inner = primary.into_inner().next().unwrap();
+                match &inner.as_rule() {
+                    Rule::attr_accessor => {
+                        let mut tokens = vec![];
+                        // check if variable is a single variable or an attribute accessor
+                        for token in inner.into_inner() {
+                            tokens.push(token.as_str().to_owned());
+                        }
+                        Expr::Identifier(Identifier::AttrAccessor(tokens))
+                    }
+                    Rule::rust_identifier => {
+                        let id = inner.into_inner().next().unwrap().as_str().to_owned();
+                        if self.current_entry_point_profile.is_custom_subtype(&id) {
+                            // Used to specify that the current variable represents a type
+                            // Type(msg) == AddOne -> Here AddOne will be a MessageType 
+                            Expr::MessageType(id)
+                        }
+                        else {
+                            Expr::Identifier(Identifier::Variable(id))
+                        }
+                    },
+                    other => unreachable!("Expected attr_accessor or rust_identifier, got {:?}", other)
                 }
             },
             Rule::expr          => self.parse_expr(primary.into_inner()), // from "(" ~ expr ~ ")"
@@ -460,11 +498,22 @@ impl SCProfileParser {
 
 #[cfg(test)]
 mod tests {
-    use super::SCProfileParser;
+    use crate::symb_exec::EntryPoint;
 
-    #[test]
-    fn parse_int() {
+    use super::*;
 
+    fn key_admin() -> Key {
+        Key::Expression { 
+            base: vec![0u8, 4u8, 98u8, 97u8, 110u8, 107u8], 
+            expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                "msg".to_owned(), 
+                "admin".to_owned()
+            ]))) 
+        }
+    }
+
+    fn key_incr() -> Key {
+        Key::Bytes(vec![0u8, 4u8, 98u8, 97u8, 110u8, 107u8, 65u8, 68u8, 77u8, 73u8, 78u8])
     }
 
     #[test]
@@ -473,7 +522,7 @@ mod tests {
 _deps: DepsMut
 _env: Env
 _info: MessageInfo
-_msg: ExecuteMsg
+msg: ExecuteMsg
 > AddUser:
 	- admin: string
 > AddOne:
@@ -482,26 +531,106 @@ _msg: ExecuteMsg
 	- to: string
 
 
-[PC_1] Type(_msg) == AddUser
+[PC_1] Type(msg) == AddUser
 => [PC_2]
 <- [PC_3]
 
-[PC_2] GET(=AARiYW5r @ _msg.admin) == null
-=> SET(=AARiYW5r @ _msg.admin): 100
-=> GET(=AARiYW5r @ _msg.admin)
+[PC_2] GET(=AARiYW5r @ msg.admin) == null
+=> SET(=AARiYW5r @ msg.admin): 100
+=> GET(=AARiYW5r @ msg.admin)
 <- None
 
-[PC_3] Type(_msg) == AddOne
+[PC_3] Type(msg) == AddOne
 => SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
 => GET(=AARiYW5rQURNSU4=)
 <- [PC_4]
 
-[PC_4] Type(_msg) == Transfer
+[PC_4] Type(msg) == Transfer
 => None
 <- None");
 
     let profile = SCProfileParser::from_string(s);
-    println!("Profile: {:#?}", profile);
+
+
+    let cond_node = Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
+
+        //  Type(msg) == AddUser
+        condition: Some(PathCondition::RelBinOp { 
+            lhs: Box::new(Expr::Type(Type::Expr(
+                 Box::new(Expr::Identifier(Identifier::Variable("msg".to_owned())))
+            ))), 
+            rel_op: RelOp::Equal, 
+            rhs: Box::new(Expr::MessageType("AddUser".to_owned())) 
+        }), 
+        // => [PC_2]
+        pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
+
+            // GET(=AARiYW5r= @ _msg.admin) == null
+            condition: Some(PathCondition::RelBinOp { 
+                lhs:  Box::new(Expr::StorageRead(key_admin())), 
+                rel_op: RelOp::Equal, 
+                rhs: Box::new(Expr::Null) 
+            }),
+
+            // => SET(=AARiYW5r= @ _msg.admin): 100
+            // => GET(=AARiYW5r= @ _msg.admin)
+            pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
+                ReadWrite::Write { 
+                    key: key_admin(), 
+                    value: Expr::Number(Number::Int(100))
+                },
+                ReadWrite::Read(key_admin())
+            ]))))), 
+
+            // <- None
+            neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::None)))) 
+        })))), 
+
+        // <- [PC_3]
+        neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode {
+
+            // Type(msg) == AddOne
+            condition: Some(PathCondition::RelBinOp { 
+                lhs: Box::new(Expr::Type(Type::Expr(Box::new(
+                     Expr::Identifier(Identifier::Variable("msg".to_owned())))
+                ))), 
+                rel_op: RelOp::Equal, 
+                rhs: Box::new(Expr::MessageType("AddOne".to_owned())) 
+            }), 
+            pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
+                // SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+                // GET(=AARiYW5rQURNSU4=)
+                ReadWrite::Write { 
+                    key: key_incr(), 
+                    value: Expr::BinOp { 
+                        lhs: Box::new(Expr::StorageRead(key_incr())), 
+                        op: Op::Add, 
+                        rhs: Box::new(Expr::Number(Number::Int(1))) 
+                    }
+                },
+                ReadWrite::Read(key_incr())
+            ]))))),
+
+            // <- [PC_4]
+            neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
+                condition: Some(PathCondition::RelBinOp { 
+                    lhs: Box::new(Expr::Type(Type::Expr(Box::new(
+                         Expr::Identifier(Identifier::Variable("msg".to_owned())))
+                    ))), 
+                    rel_op: RelOp::Equal, 
+                    rhs: Box::new(Expr::MessageType("Transfer".to_owned())) 
+                }), 
+                pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::None)))), 
+                neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::None)))) 
+            })))),
+        }))))
+    })));
+
+    assert_eq!(
+        profile.entry_point.get(&EntryPoint::Execute).unwrap().root_path_cond.as_ref().unwrap(),
+        &cond_node
+    );
+
 
     }
 }

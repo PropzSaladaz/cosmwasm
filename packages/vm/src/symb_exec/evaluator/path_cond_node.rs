@@ -5,7 +5,7 @@ use crate::symb_exec::parser::nodes::PathConditionNode;
 use super::eval::{Eval, SEContext};
 
 impl PathConditionNode {
-    pub fn parse_tree(&self, storage: &dyn Storage, variable_context: &SEContext) -> PathConditionNode
+    pub fn parse_tree(&mut self, storage: &dyn Storage, variable_context: &SEContext) -> PathConditionNode
     {
         match self {
             Self::ConditionNode { 
@@ -14,13 +14,14 @@ impl PathConditionNode {
                 neg_branch: Some(neg_branch) 
             } => {
                 if condition.eval(storage, variable_context) {
-                    pos_branch.as_ref().borrow().parse_tree(storage, variable_context)
+                    pos_branch.borrow_mut().parse_tree(storage, variable_context)
                 }
                 else {
-                    neg_branch.as_ref().borrow().parse_tree(storage, variable_context)
+                    neg_branch.borrow_mut().parse_tree(storage, variable_context)
                 }
             },
-            Self::RWSNode(v) => Self::RWSNode(v.clone()),
+            Self::RWSNode(v) => Self::RWSNode(v.iter_mut().map(|read_write| {
+                    read_write.eval(storage, variable_context)}).collect()),
             Self::None => Self::None,
             _ => unreachable!("Expected all ConditionNode optional fields to be Some, but at least 1 was None")
         }
@@ -76,7 +77,7 @@ mod tests {
                 lhs: Box::new(Expr::Type(Type::Expr(
                      Box::new(Expr::Identifier(Identifier::Variable("msg".to_owned())))))), 
                 rel_op: RelOp::Equal, 
-                rhs: Box::new(Expr::Identifier(Identifier::Variable("AddUser".to_owned()))) 
+                rhs: Box::new(Expr::Type(Type::Custom("AddUser".to_owned()))) 
             }), 
             // => [PC_2]
             pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
@@ -110,7 +111,7 @@ mod tests {
                     lhs: Box::new(Expr::Type(Type::Expr(
                          Box::new(Expr::Identifier(Identifier::Variable("msg".to_owned())))))), 
                     rel_op: RelOp::Equal, 
-                    rhs: Box::new(Expr::Identifier(Identifier::Variable("AddOne".to_owned()))) 
+                    rhs: Box::new(Expr::Type(Type::Custom("AddOne".to_owned()))) 
                 }), 
                 pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
                     // SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
@@ -132,7 +133,7 @@ mod tests {
                         lhs: Box::new(Expr::Type(Type::Expr(
                              Box::new(Expr::Identifier(Identifier::Variable("msg".to_owned())))))), 
                         rel_op: RelOp::Equal, 
-                        rhs: Box::new(Expr::Identifier(Identifier::Variable("Transfer".to_owned()))) 
+                        rhs: Box::new(Expr::Type(Type::Custom("Transfer".to_owned()))) 
                     }), 
                     pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::None)))), 
                     neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::None)))) 
@@ -162,17 +163,17 @@ mod tests {
         let storage = mock_storage(HashMap::new());
 
         // given the initial tree
-        let node = build_tree();
+        let mut node = build_tree();
         
         // get the rws
         let rws = node.parse_tree(&storage, &ctx);
 
         assert_eq!(rws, PathConditionNode::RWSNode(vec![
             ReadWrite::Write { 
-                key: key_admin(), 
+                key: key_admin().eval(&storage, &ctx), 
                 value: Expr::Number(Number::Int(100))
             },
-            ReadWrite::Read(key_admin())
+            ReadWrite::Read(key_admin().eval(&storage, &ctx))
         ]))
     }
 
@@ -196,7 +197,7 @@ mod tests {
              0i64.to_le_bytes().to_vec())
         ]));
 
-        let node = build_tree();
+        let mut node = build_tree();
         let rws = node.parse_tree(&storage, &ctx);
 
         assert_eq!(rws, PathConditionNode::None)
@@ -224,7 +225,7 @@ mod tests {
              0i64.to_le_bytes().to_vec())
         ]));
 
-        let node = build_tree();
+        let mut node = build_tree();
         let rws = node.parse_tree(&storage, &ctx);
 
         assert_eq!(rws, PathConditionNode::RWSNode(vec![
@@ -254,7 +255,7 @@ mod tests {
 
         let storage = mock_storage(HashMap::new());
 
-        let node = build_tree();
+        let mut node = build_tree();
         let rws = node.parse_tree(&storage, &ctx);
 
         assert_eq!(rws, PathConditionNode::None);
@@ -274,7 +275,7 @@ mod tests {
 
         let storage = mock_storage(HashMap::new());
 
-        let node = build_tree();
+        let mut node = build_tree();
         let rws = node.parse_tree(&storage, &ctx);
 
         assert_eq!(rws, PathConditionNode::None);

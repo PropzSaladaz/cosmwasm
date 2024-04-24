@@ -22,7 +22,6 @@ pub mod tests {
         match SEParser::parse(base_rule, input) {
             Ok(mut pairs) => {
                 let pair: Pair<Rule> = pairs.next().unwrap();
-                println!("Pair: {:?}", pair);
                 assert_eq!(input, pair.as_str());
                 assert_eq!(base_rule, pair.as_rule());
                 

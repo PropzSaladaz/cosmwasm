@@ -14,14 +14,19 @@ pub enum Message<'a> {
 pub struct MessageHandler<A, S, Q> 
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     vm_manager: VMManager<A, S, Q>,
     sc_manager: Arc<RwLock<SCManager<A, S, Q>>>,
 }
 
-impl<A: BackendApi, S: Storage, Q: Querier> MessageHandler<A, S, Q> {
+impl<A, S, Q> MessageHandler<A, S, Q> 
+where
+    A: BackendApi, 
+    S: Storage + cosmwasm_std::Storage, 
+    Q: Querier
+{
 
     pub fn new(sc_manager: Arc<RwLock<SCManager<A, S, Q>>>, vm_manager: VMManager<A, S, Q> )-> Self {
         MessageHandler {

@@ -1,8 +1,10 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use cosmwasm_std::{DepsMut, Env, MessageInfo};
+use cosmwasm_std::{Env, MessageInfo};
 use num::traits::ToBytes;
 use serde::Serialize;
+
+use crate::DepsMut;
 
 pub type Float = f64;
 pub type Integer = i64;
@@ -46,14 +48,24 @@ pub enum Type {
 /// When defined as BinOp, can only use arithmetic operations (+, -, /, *)
 #[derive(Debug, Clone, Serialize)]
 pub enum Expr {
-    // Used to define enum matching for the custom message type
+    /// Used to define enum matching for the custom message type
+    /// we currently only allow Type(x) on as the left-hand side
+    /// if x is a custom msg. We use it to decide the actual type of msg
+    /// it is - `Type(msg) == AddUSer`, `AddOne`, etc...
+    /// 
+    /// `MessageType(X)` - X represents the right side, i.e, `AddUser`, `AddOne`, etc
     MessageType(String),
+
     Identifier(Identifier),
     StorageRead(Key),
     Number(Number),
     String(String),
     Null,
-    Type(Type),
+
+    // generic type - can be used for attribute accessors, expressions, etc
+    // and evaluates to primitive types - Number/String
+    Type(Type), 
+    
     BinOp {
         lhs: Box<Expr>,
         op: Op,
@@ -68,8 +80,10 @@ impl Expr {
                 Number::Int(i) => Some(i.to_le_bytes().to_vec()),
                 Number::Float(f) => Some(f.to_le_bytes().to_vec()),
             },
-            Expr::String(s) => unsafe { return Some(s.clone().as_mut_vec().to_vec()); },
-            _ => None
+            Expr::String(s) => unsafe { Some(s.clone().as_mut_vec().to_vec()) },
+            other => {
+                None
+            }
         }
     }
 }
@@ -171,6 +185,12 @@ pub enum ReadWrite {
     Read(Key),
 }
 
+impl ReadWrite {
+    pub fn default() -> ReadWrite {
+        Self::Read(Key::Bytes(vec![0]))
+    }
+}
+
 pub type CondNodeRef = Rc<RefCell<Box<PathConditionNode>>>;
 /// Represents a node in the path condition tree.
 /// 
@@ -207,6 +227,11 @@ pub type CustomArgTypes = HashMap<String, HashMap<String, Type>>;
 #[derive(Debug, PartialEq)]
 pub struct EntryPointProfile {
     /// Maps all input variable names to their types.
+    /// ```
+    /// _msg -> Custom
+    /// _deps -> DepsMut
+    /// ...
+    /// ```
     pub inputs: ArgTypes,
     
     /// Stores type_defs for each atribute within each custom message type:
@@ -274,6 +299,10 @@ impl EntryPointProfile {
 
     pub fn is_custom_subtype(&self, var_name: &String) -> bool {
         return self.type_defs.contains_key(var_name);
+    }
+
+    pub fn is_input_argument(&self, var_name: &String) -> bool {
+        self.inputs.contains_key(var_name)
     }
 }
 

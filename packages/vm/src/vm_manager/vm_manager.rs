@@ -1,10 +1,10 @@
-use std::sync::{Arc, RwLock};
+use std::{borrow::Borrow, ops::Deref, sync::{Arc, RwLock}};
 
-use cosmwasm_std::Empty;
+use cosmwasm_std::{testing::MockApi, Api, CustomQuery, Deps, Empty, QuerierWrapper};
 use wasmer::Store;
 
 use crate::{
-    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, internals::instance_from_module, testing::{
+    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, internals::instance_from_module, symb_exec::ReadWrite, testing::{
         mock_env, mock_info}, wasm_backend::{
         compile, 
         make_compiling_engine, make_runtime_engine}, BackendApi, InstanceOptions, Querier, Size, Storage
@@ -52,7 +52,7 @@ pub type BackendBuilder<A, S, Q> = dyn Fn(Arc<RwLock<S>>) -> ConcurrentBackend<A
 pub struct VMManager<A, S, Q>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: Storage + cosmwasm_std::Storage + 'static,
     Q: Querier + 'static,
 {
     state_manager: Arc<RwLock<SCManager<A, S, Q>>>,
@@ -65,7 +65,21 @@ where
     backend_builder: Box<BackendBuilder<A, S, Q>>, 
 }
 
-impl<A: BackendApi, S: Storage, Q: Querier> VMManager<A, S, Q> {
+
+/// This is a read-only version of depsMut -> we won't change anything
+/// in it when parsing the RWS, thus storage can be a immutable reference
+pub struct DepsMut<'a, C: CustomQuery = Empty> {
+    pub storage: &'a dyn cosmwasm_std::Storage,
+    pub api: &'a dyn Api,
+    pub querier: QuerierWrapper<'a, C>,
+}
+
+impl<A, S, Q> VMManager<A, S, Q> 
+where
+    A: BackendApi, 
+    S: Storage + cosmwasm_std::Storage, 
+    Q: Querier
+{
 
     pub fn new(state_manager: Arc<RwLock<SCManager<A, S, Q>>>, address_mapper: Box<AddressMapper>,
         storage_builder: Box<StorageBuilder<S>>, backend_builder: Box<BackendBuilder<A, S, Q>>) -> Self
@@ -78,8 +92,52 @@ impl<A: BackendApi, S: Storage, Q: Querier> VMManager<A, S, Q> {
         }
     }
 
-    fn partition_storage(&mut self, _: &Block) {
+    fn get_rws(&self, block: &Block) -> Vec<ReadWrite> {
+        let mut rws = vec![];
+        for msg in block {
+            rws.extend(match msg {
+                VMMessage::Instantiation { 
+                    message, 
+                    contract_code_id 
+                } => vec![ReadWrite::default()], // TODO this needs to me implemented!!
 
+                VMMessage::Invocation { 
+                    message, 
+                    entry_point, 
+                    contract_address, 
+                    code_id
+                } => {
+                    let profile = self.state_manager.read().unwrap().get_profile(*code_id);
+                    match &self.state_manager.read().unwrap().get_instance_data(contract_address) {
+                        Some(sc_instance) => {
+                            // Build mock depsMut
+                            let storage = Arc::clone(&sc_instance.state.storage);
+                            let storage = storage.write().unwrap();
+                            let querier = cosmwasm_std::testing::MockQuerier::default();
+                            let mut_deps = DepsMut { 
+                                storage: storage.deref(),
+                                api: &cosmwasm_std::testing::MockApi::default(), 
+                                querier: cosmwasm_std::QuerierWrapper::new( &querier)
+                            };
+                            match entry_point {
+                                InstantiatedEntryPoint::Execute => profile.get_rws_execute(&mut_deps, 
+                                    &mock_env(), &mock_info("", &[]), message),
+                                InstantiatedEntryPoint::Query   => profile.get_rws_query(&mut_deps, 
+                                    &mock_env(), &mock_info("", &[]), message),
+                                InstantiatedEntryPoint::Reply => todo!(),
+                            }
+                        }
+                        // If invocation on a contract that wasn't yet instantiated --> Do not partition anything
+                        None => continue
+                    }
+                }
+            });
+        };
+        rws
+    }
+
+    fn partition_storage(&mut self, block: &Block) {
+        let rws = self.get_rws(block);
     }
 
     fn sum_partitions(&mut self) {
@@ -140,7 +198,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> VMManager<A, S, Q> {
             module, 
             Arc::clone(&backend));
 
-        let instance_data = self.state_manager.read().unwrap().get_instance_data(&address);
+        let instance_data = self.state_manager.read().unwrap().get_instance_data(&address).unwrap();
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT };
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
         let store = Store::new(engine);
@@ -165,7 +223,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> VMManager<A, S, Q> {
     /// Used to instantiate an already deployed/compiled contract with 
     /// already created storage
     fn instantiate_vm(&self, code_id: u128, contract_address: &String, message: &[u8], call_type: VMCall) -> std::io::Result<String> {
-        let instance_data = self.state_manager.read().unwrap().get_instance_data(&contract_address);
+        let instance_data = self.state_manager.read().unwrap().get_instance_data(&contract_address).unwrap();
 
         let code = self.state_manager.read().unwrap().get_code(code_id)?;
         let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
@@ -200,6 +258,7 @@ mod tests {
     use std::{collections::HashMap, sync::{Arc, RwLock}};
 
     use cosmwasm_std::{ContractResult, Empty, Response};
+    use serial_test::serial;
     use wasmer::Store;
 
     use crate::{
@@ -270,6 +329,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn vanilla_instantiation() {
         // save initial code -> will have code_id = 0
         let state_manager = SCManager::new();
@@ -291,7 +351,7 @@ mod tests {
             Arc::new(module),
             backend);
 
-        let instance = state_manager.get_instance_data(&"a".to_owned());
+        let instance = state_manager.get_instance_data(&"a".to_owned()).unwrap();
 
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT, };
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
@@ -317,9 +377,12 @@ mod tests {
 
         assert_eq!(contract_res.unwrap(), ContractResult::Ok(Response::new()));
         assert_eq!(state_manager.get_instantiation_count(0), 1);
+
+        state_manager.cleanup();
     }
 
     #[test]
+    #[serial]
     fn instantiate_vm() {
         // save initial code -> will have code_id = 0
         let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
@@ -338,9 +401,12 @@ mod tests {
         let msg = br#"{}"#;
         let resp = vm_manager.compile_instantiate_vm(0, msg).unwrap();
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resp);
+
+        state_manager.read().unwrap().cleanup();
     }
 
     #[test]
+    #[serial]
     fn execute_vm() {
         // save initial code -> will have code_id = 0
         let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
@@ -365,10 +431,11 @@ mod tests {
         }"#;
         let resp = vm_manager.instantiate_vm(0, &String::from("a"), msg, VMCall::Execute).unwrap();
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resp);
-        
+        state_manager.read().unwrap().cleanup();
     }
 
     #[test]
+    #[serial]
     fn query_vm() {
         // save initial code -> will have code_id = 0
         let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
@@ -393,10 +460,13 @@ mod tests {
         }"#;
         let resp = vm_manager.instantiate_vm(0, &String::from("a"), msg, VMCall::Query).unwrap();
         assert_eq!("{\"balance\":1000}", resp);
+
+        state_manager.read().unwrap().cleanup();
         
     }
 
     #[test]
+    #[serial]
     fn persistent_calls() {
         let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
         // simulate installing a contract
@@ -500,5 +570,51 @@ mod tests {
         assert_eq!("{\"balance\":1002}", resps[8]);
         assert_eq!("{\"balance\":1001}", resps[9]);
 
+        state_manager.read().unwrap().cleanup();
+
+    }
+
+
+    #[test]
+    #[serial]
+    fn get_rws() {
+        let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
+        // simulate installing a contract
+        state_manager.save_code(CONTRACT).unwrap();
+
+        let state_manager = Arc::new(RwLock::new(state_manager));
+        let mut vm_manager = VMManager::new(
+            Arc::clone(&state_manager), 
+            mock_address_mapper(),
+            mock_storage_builder(),
+            mock_backend_builder(),
+        );
+
+        let msgs = vec![
+            VMMessage::Instantiation {
+                contract_code_id: 0,
+                message: br#"{}"#,
+            },
+        ];
+
+        // instantiate firs to create storage
+        vm_manager.handle_block(msgs).unwrap();
+
+        // only after having storage created
+        let msgs = vec![
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Execute,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "AddOne": {}
+                }"#,
+                code_id: 0,
+            },
+        ];
+
+        let rws = vm_manager.get_rws(&msgs);
+        println!("{:#?}", rws);
+        
+        state_manager.read().unwrap().cleanup();
     }
 }

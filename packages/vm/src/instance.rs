@@ -59,7 +59,7 @@ pub struct Instance<A: BackendApi, S: Storage, Q: Querier> {
 impl<A, S, Q> Instance<A, S, Q>
 where
     A: BackendApi + 'static, // 'static is needed here to allow copying API instances into closures
-    S: Storage + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
+    S: Storage + cosmwasm_std::Storage + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
     Q: Querier + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
 {
     /// This is the only Instance constructor that can be called from outside of cosmwasm-vm,
@@ -464,7 +464,7 @@ pub fn instance_from_module<A, S, Q>(
 ) -> VmResult<Instance<A, S, Q>>
 where
     A: BackendApi + 'static, // 'static is needed here to allow copying API instances into closures
-    S: Storage + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
+    S: Storage + cosmwasm_std::Storage + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
     Q: Querier + 'static,
 {
     Instance::from_module(store, module, backend, gas_limit, extra_imports, None)

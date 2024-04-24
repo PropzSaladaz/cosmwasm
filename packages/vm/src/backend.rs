@@ -90,7 +90,12 @@ pub struct Backend<A: BackendApi, S: Storage, Q: Querier> {
 /// Note the commend on the Backend struct above. Here we can clone
 /// as we will only clone the Arc, not the storage itself.
 #[derive(Clone)]
-pub struct ConcurrentBackend<A: BackendApi, S: Storage, Q: Querier> {
+pub struct ConcurrentBackend<A, S, Q> 
+where
+    A: BackendApi, 
+    S: Storage + cosmwasm_std::Storage, 
+    Q: Querier
+{
     pub api: A,
     pub storage: Arc<RwLock<S>>,
     pub querier: Arc<RwLock<Q>>,

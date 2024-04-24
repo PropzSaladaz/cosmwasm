@@ -70,26 +70,20 @@ mod tests {
         let storage = mock_storage(HashMap::new());
         let cond = PathCondition::RelBinOp { 
             lhs: Box::new(Expr::Type(Type::Expr(
-                 Box::new(Expr::Identifier(
-                                Identifier::Variable("msg".to_owned()))))
-                )), 
+                 Box::new(Expr::Identifier(Identifier::Variable("msg".to_owned())))
+            ))), 
             rel_op: RelOp::Equal, 
-            rhs: Box::new(Expr::Identifier(
-                                Identifier::Variable("AddUser".to_owned())
-                )) 
+            rhs: Box::new(Expr::MessageType("AddUser".to_owned())) 
         };
 
         assert!(cond.eval(&storage, &ctx));
 
         let cond = PathCondition::RelBinOp { 
             lhs: Box::new(Expr::Type(Type::Expr(
-                 Box::new(Expr::Identifier(
-                                Identifier::Variable("msg".to_owned()))))
-                )), 
+                 Box::new(Expr::Identifier(Identifier::Variable("msg".to_owned())))
+                ))), 
             rel_op: RelOp::Equal, 
-            rhs: Box::new(Expr::Identifier(
-                                Identifier::Variable("AddOne".to_owned())
-                )) 
+            rhs: Box::new(Expr::MessageType("AddOne".to_owned()))
         };
 
         assert!(!cond.eval(&storage, &ctx));
