@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 #[cfg(feature = "iterator")]
 use std::collections::HashMap;
+use std::ops::Deref;
 #[cfg(feature = "iterator")]
 use std::ops::{Bound, RangeBounds};
 
@@ -26,7 +27,7 @@ struct Iter {
     position: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum ValueType {
     Partitioned(Vec<Vec<u8>>),
     Single(Vec<u8>),
@@ -86,6 +87,10 @@ impl ValueType {
 
         };
         res
+    }
+
+    fn sum_partition(&mut self) {
+        *self = Self::Single(self.read());
     }
 
     /// Partitions itself into ```2^n_shifts``` partitions.
@@ -170,6 +175,10 @@ impl MockStoragePartitioned {
         MockStoragePartitioned::default()
     }
 
+    fn get_item(&self, item: &[u8]) -> ConcurrentItem {
+        self.data.get(item).unwrap().to_owned()
+    }
+
     #[cfg(feature = "iterator")]
     pub fn all(&mut self, iterator_id: u32) -> BackendResult<Vec<Record>> {
         let mut out: Vec<Record> = Vec::new();
@@ -234,6 +243,22 @@ impl Storage for MockStoragePartitioned {
         println!("Got item: {:?}    from: {:?}", item.clone(), String::from_utf8(key.to_owned()));
         
         (Ok(item), gas_info)
+    }
+
+
+    fn partition_items(&mut self, items: Vec<Vec<u8>>) {
+        const N_PARTITION_SHIFTS: u8 = 2; // 4 partitions 
+        for item in items {
+            self.data.entry(item).and_modify(|item| 
+                (*item).lock().unwrap().partition(N_PARTITION_SHIFTS));
+        }
+    }
+
+    fn sum_partitioned_items(&mut self, items: Vec<Vec<u8>>) {
+        for item in items {
+            self.data.entry(item).and_modify(|item| 
+                (*item).lock().unwrap().sum_partition());
+        }
     }
     
 
@@ -337,6 +362,8 @@ fn clone_item(item_ref: BTreeMapRecordRef) -> Record {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
     #[test]
@@ -358,7 +385,6 @@ mod tests {
 
     #[test]
     fn partition_item() {
-
         let mut part = ValueType::Single(vec![255]);
         part.partition(0); // 1 partition
         assert_eq!(part.read(), vec![255]);
@@ -389,6 +415,38 @@ mod tests {
         let mut part = ValueType::Single(vec![63, 144, 177, 255]);
         part.partition(4); // 4 partitions
         assert_eq!(part.read(), vec![63, 144, 177, 255]);
+    }
+
+    #[test]
+    fn partition_storage() {
+        let mut storage = MockStoragePartitioned::new();
+        
+        let key = b"foo";
+        let value = [1u8, 2u8, 3u8];
+
+        storage.set(key, &value).0.unwrap();
+
+        storage.partition_items(vec![key.to_vec()]);
+
+        let item = storage.get_item(key);
+
+        assert_eq!(
+            *item.lock().unwrap(), 
+            ValueType::Partitioned(vec![
+                vec![0, 64, 128],
+                vec![0, 64, 128],
+                vec![0, 64, 128],
+                vec![0, 64, 131],
+            ])
+        );
+
+        storage.sum_partitioned_items(vec![key.to_vec()]);
+        let item = storage.get_item(key);
+
+        assert_eq!(
+            *item.lock().unwrap(), 
+            ValueType::Single(value.to_vec())
+        );
     }
 
     #[test]

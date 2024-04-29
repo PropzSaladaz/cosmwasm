@@ -168,6 +168,14 @@ impl Storage for MockStorage {
         let gas_info = GasInfo::with_externally_used(key.len() as u64);
         (Ok(()), gas_info)
     }
+    
+    fn partition_items(&mut self, items: Vec<Vec<u8>>) {
+        todo!()
+    }
+    
+    fn sum_partitioned_items(&mut self, items: Vec<Vec<u8>>) {
+        todo!()
+    }
 }
 
 #[cfg(feature = "iterator")]

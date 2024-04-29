@@ -5,11 +5,17 @@ use crate::{testing::MockStoragePartitioned, DepsMut};
 
 use super::{evaluator::eval::SEContext, parser::{
     nodes::*, SCProfile
-}};
+}, SEStatus};
+
+#[derive(Debug, PartialEq)]
+pub struct TxRWS {
+    pub profile_status: SEStatus,
+    pub rws: Vec<ReadWrite>
+}
 
 impl SCProfile {
 
-    pub fn get_rws_instantiate<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, msg_info: &'a MessageInfo, custom: &[u8]) -> Vec<ReadWrite> {
+    pub fn get_rws_instantiate<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, msg_info: &'a MessageInfo, custom: &[u8]) -> TxRWS {
         self.get_rws_entry_point(
             CosmwasmInputs::Instantiate { 
                 deps: deps, 
@@ -21,7 +27,7 @@ impl SCProfile {
         )
     }
 
-    pub fn get_rws_execute<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, msg_info: &'a MessageInfo, custom: &[u8]) -> Vec<ReadWrite> {
+    pub fn get_rws_execute<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, msg_info: &'a MessageInfo, custom: &[u8]) -> TxRWS {
         self.get_rws_entry_point(
             CosmwasmInputs::Execute { 
                 deps: deps, 
@@ -33,12 +39,12 @@ impl SCProfile {
         )
     }
 
-    pub fn get_rws_query<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, msg_info: &'a MessageInfo, custom: &[u8]) -> Vec<ReadWrite> {
+    pub fn get_rws_query<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, msg_info: &'a MessageInfo, custom: &[u8]) -> TxRWS {
         todo!();
     }
 
     /// Auxiliary method to map entry point to root path_cond_node & parse the corresponding tree, returning the RWS
-    fn get_rws_entry_point<'b>(&self, cosmwasm_inputs: CosmwasmInputs<'b>, entry_point: &EntryPoint, custom: &[u8]) -> Vec<ReadWrite> {
+    fn get_rws_entry_point<'b>(&self, cosmwasm_inputs: CosmwasmInputs<'b>, entry_point: &EntryPoint, custom: &[u8]) -> TxRWS {
         let execute_entry_point = self.entry_point.get(&entry_point).unwrap();
         let arg_types = &execute_entry_point.inputs;
 
@@ -47,15 +53,20 @@ impl SCProfile {
                 match cosmwasm_inputs {
                     CosmwasmInputs::Execute     { deps, env: _, info: _ } => {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
-
-                        self.parse_tree(path_cond, deps.storage, &context)
+                        TxRWS {
+                            profile_status: self.status,
+                            rws: self.parse_tree(path_cond, deps.storage, &context)
+                        }
                     },
                     CosmwasmInputs::Instantiate { deps: _, env: _, info: _ } => 
                     {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
                         // TODO we are sending empty storage for instatiates -> Instantiates should not have yet a storage (the tx wasn't executed yet)
                         // thus we send a mock storage. Need to think better about this
-                        self.parse_tree(path_cond, &MockStoragePartitioned::default(), &context)
+                        TxRWS {
+                            profile_status: self.status,
+                            rws: self.parse_tree(path_cond, &MockStoragePartitioned::default(), &context)
+                        }
                     }
 
                     _ => todo!()
@@ -79,7 +90,7 @@ impl SCProfile {
 #[cfg(test)]
 mod tests {
 
-    use crate::{testing::{mock_env, mock_info, MockStoragePartitioned}, DepsMut, SCProfile, SCProfileParser};
+    use crate::{symb_exec::se_engine::SEStatus, testing::{mock_env, mock_info, MockStoragePartitioned}, DepsMut, SCProfile, SCProfileParser};
 
 
     fn build_contract() -> SCProfile {
@@ -92,7 +103,7 @@ _msg: InstantiateMsg
 
 
 [PC_1] True
-=> SET(=AARiYW5rQURNSU4=): 1000
+=> SET(=AARiYW5rQURNSU4=): Non-Inc
 <- None
 
 E ----------------------------
@@ -114,12 +125,12 @@ _msg: ExecuteMsg
 <- [PC_3]
 
 [PC_2] GET(=AARiYW5r @ _msg.admin) == null
-=> SET(=AARiYW5r @ _msg.admin): 100
+=> SET(=AARiYW5r @ _msg.admin): Non-Inc
 => GET(=AARiYW5r @ _msg.admin)
 <- None
 
 [PC_3] Type(_msg) == AddOne
-=> SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+=> SET(=AARiYW5rQURNSU4=): Inc
 => GET(=AARiYW5rQURNSU4=)
 <- [PC_4]
 
@@ -127,7 +138,7 @@ _msg: ExecuteMsg
 => None
 <- None"#;
 
-        SCProfileParser::from_string(s.to_owned())
+        SCProfileParser::from_string(SEStatus::Complete, s.to_owned())
     }
     
     #[test]

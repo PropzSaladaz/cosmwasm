@@ -89,12 +89,12 @@ mod tests {
                     rhs: Box::new(Expr::Null) 
                 }),
 
-                // => SET(=AARiYW5r= @ _msg.admin): 100
+                // => SET(=AARiYW5r= @ _msg.admin): Non-Inc
                 // => GET(=AARiYW5r= @ _msg.admin)
                 pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
                     ReadWrite::Write { 
                         key: key_admin(), 
-                        value: Expr::Number(Number::Int(100))
+                        commutativity: WriteType::NonCommutative
                     },
                     ReadWrite::Read(key_admin())
                 ]))))), 
@@ -114,15 +114,11 @@ mod tests {
                     rhs: Box::new(Expr::Type(Type::Custom("AddOne".to_owned()))) 
                 }), 
                 pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
-                    // SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+                    // SET(=AARiYW5rQURNSU4=): Inc
                     // GET(=AARiYW5rQURNSU4=)
                     ReadWrite::Write { 
                         key: key_incr(), 
-                        value: Expr::BinOp { 
-                            lhs: Box::new(Expr::StorageRead(key_incr())), 
-                            op: Op::Add, 
-                            rhs: Box::new(Expr::Number(Number::Int(1))) 
-                        }
+                        commutativity: WriteType::Commutative
                     },
                     ReadWrite::Read(key_incr())
                 ]))))),
@@ -171,7 +167,7 @@ mod tests {
         assert_eq!(rws, PathConditionNode::RWSNode(vec![
             ReadWrite::Write { 
                 key: key_admin().eval(&storage, &ctx), 
-                value: Expr::Number(Number::Int(100))
+                commutativity: WriteType::NonCommutative
             },
             ReadWrite::Read(key_admin().eval(&storage, &ctx))
         ]))
@@ -231,11 +227,7 @@ mod tests {
         assert_eq!(rws, PathConditionNode::RWSNode(vec![
             ReadWrite::Write { 
                 key: key_incr(), 
-                value: Expr::BinOp { 
-                    lhs: Box::new(Expr::StorageRead(key_incr())), 
-                    op: Op::Add, 
-                    rhs: Box::new(Expr::Number(Number::Int(1))) 
-                }
+                commutativity: WriteType::Commutative
             },
             ReadWrite::Read(key_incr())
         ]))

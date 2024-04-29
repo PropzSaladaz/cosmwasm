@@ -103,6 +103,14 @@ where
 
 /// Access to the VM's backend storage, i.e. the chain
 pub trait Storage {
+
+    /// Partition items identified by the passed keys into N partitions.
+    /// N is defined as a constant.
+    fn partition_items(&mut self, items: Vec<Vec<u8>>);
+
+    /// Convert the specified partitioned items into single items.
+    fn sum_partitioned_items(&mut self, items: Vec<Vec<u8>>);
+
     /// Returns Err on error.
     /// Returns Ok(None) when key does not exist.
     /// Returns Ok(Some(Vec<u8>)) when key exists.

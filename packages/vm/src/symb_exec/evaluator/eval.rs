@@ -226,10 +226,10 @@ impl ReadWrite {
             Self::Read(key) => Self::Read(key.eval(storage, variable_context)),
             Self::Write { 
                 key, 
-                value 
+                commutativity 
             } => Self::Write { 
                 key: key.eval(storage, variable_context), 
-                value: value.clone()
+                commutativity: *commutativity
             }
         }
     }
@@ -460,7 +460,7 @@ mod tests {
                     "admin".to_owned()
                 ])))
             }),
-            // Set(1u8 @ msg.admin): Get(@ 1) + 1
+            // Set(1u8 @ msg.admin): Inc
             ReadWrite::Write { 
                 key: Key::Expression { 
                     base: key_raw.to_vec(), 
@@ -469,17 +469,7 @@ mod tests {
                         "admin".to_owned()
                     ]))) 
                 }, 
-                value: Expr::BinOp { 
-                    lhs: Box::new(Expr::StorageRead(Key::Expression { 
-                        base: key_raw.to_vec(), 
-                        expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
-                            "msg".to_owned(), 
-                            "admin".to_owned()
-                        ])))
-                    })), 
-                    op: Op::Add, 
-                    rhs: Box::new(Expr::Number(Number::Int(1))) 
-                } 
+                commutativity: WriteType::Commutative 
             }  
         ];
 
@@ -492,17 +482,7 @@ mod tests {
                 ReadWrite::Read(Key::Bytes(expected_key.clone())),
                 ReadWrite::Write { 
                     key: Key::Bytes(expected_key), 
-                    value: Expr::BinOp { 
-                        lhs: Box::new(Expr::StorageRead(Key::Expression { 
-                            base: key_raw.to_vec(), 
-                            expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
-                                "msg".to_owned(), 
-                                "admin".to_owned()
-                            ])))
-                        })), 
-                        op: Op::Add, 
-                        rhs: Box::new(Expr::Number(Number::Int(1))) 
-                    } 
+                    commutativity: WriteType::Commutative
                 }
             ]
         )

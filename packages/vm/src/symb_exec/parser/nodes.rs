@@ -175,12 +175,18 @@ pub enum Key {
     }, 
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Serialize)]
+pub enum WriteType {
+    Commutative,
+    NonCommutative
+}
+
 /// Represents either a read or write to be stored as a RWS
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ReadWrite {
     Write {
         key: Key,
-        value: Expr,
+        commutativity: WriteType,
     },
     Read(Key),
 }

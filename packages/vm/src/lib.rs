@@ -49,7 +49,7 @@ pub use crate::instance::{DebugInfo, GasReport, Instance, InstanceOptions};
 pub use crate::serde::{from_slice, to_vec};
 pub use crate::size::Size;
 
-pub use crate::symb_exec::{SCProfile, SCProfileParser};
+pub use crate::symb_exec::{SCProfile, SCProfileParser, SEStatus};
 pub use crate::msg_handler::{MessageHandler, Message};
 pub use crate::vm_manager::{SCManager, VMMessage, VMManager, InstantiatedEntryPoint, DepsMut};
 

@@ -63,9 +63,10 @@ section = { white_space* ~
             neg_branches = { ("<-" ~ path_data)+ } // case where branch condition is negative
                 path_data = _{ (path_cond_id | storage_write | storage_read | none ) }
                     none = { "None" }
-                    storage_write = { "SET(" ~ key ~ "):" ~ expr }
-    
-
+                    storage_write = { "SET(" ~ key ~ "):" ~ write_type }
+                        write_type = { incremental | non_incremental }
+                            incremental = { "Inc" }
+                            non_incremental = { "Non-Inc" }
 
 
                 

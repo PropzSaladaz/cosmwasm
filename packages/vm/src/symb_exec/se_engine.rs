@@ -7,6 +7,7 @@ pub struct SEProfile {
     pub profile: String,
 }
 
+#[derive(Debug, PartialEq, Eq,  Clone, Copy)]
 pub enum SEStatus {
     Incomplete, // PathExplosion
     Complete, 
@@ -32,7 +33,7 @@ _msg: InstantiateMsg
 
 
 [PC_1] True
-=> SET(=AARiYW5rQURNSU4=): 1000
+=> SET(=AARiYW5rQURNSU4=): Non-Inc
 <- None
 
 E ----------------------------
@@ -54,12 +55,12 @@ _msg: ExecuteMsg
 <- [PC_3]
 
 [PC_2] GET(=AARiYW5r @ _msg.admin) == null
-=> SET(=AARiYW5r @ _msg.admin): 100
+=> SET(=AARiYW5r @ _msg.admin): Non-Inc
 => GET(=AARiYW5r @ _msg.admin)
 <- None
 
 [PC_3] Type(_msg) == AddOne
-=> SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+=> SET(=AARiYW5rQURNSU4=): Inc
 => GET(=AARiYW5rQURNSU4=)
 <- [PC_4]
 

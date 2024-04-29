@@ -18,6 +18,8 @@ use pest::{
 use pest_derive::Parser;
 use base64::{engine::general_purpose, Engine};
 
+use crate::symb_exec::{se_engine::SEStatus, SEProfile};
+
 use super::nodes::*;
 
 
@@ -28,12 +30,16 @@ pub struct SEParser;
 
 #[derive(Debug, PartialEq)]
 pub struct SCProfile {
+    pub status: SEStatus,
     pub entry_point: HashMap<EntryPoint, EntryPointProfile>,
 }
 
 impl SCProfile {
-    pub fn new() -> Self {
-        SCProfile { entry_point: HashMap::new() }
+    pub fn new(status: SEStatus) -> Self {
+        SCProfile { 
+            status: status,
+            entry_point: HashMap::new() 
+        }
     }
 
     pub fn add_entry_point_profile(&mut self, entry_point: EntryPoint, profile: EntryPointProfile) {
@@ -57,7 +63,7 @@ pub struct SCProfileParser {
 
 impl SCProfileParser {
 
-    fn new() -> Self {
+    fn new(status: SEStatus) -> Self {
         SCProfileParser {
             pratt_parser: PrattParser::new()
             .op(pratt_parser::Op::infix(Rule::add, Assoc::Left) | pratt_parser::Op::infix(Rule::sub, Assoc::Left))
@@ -65,7 +71,7 @@ impl SCProfileParser {
             .op(pratt_parser::Op::infix(Rule::pow, Assoc::Right))
             .op(pratt_parser::Op::prefix(Rule::neg)),
 
-            sc_profile: SCProfile::new(),
+            sc_profile: SCProfile::new(status),
 
             current_entry_point: None,
             current_entry_point_profile: EntryPointProfile::new(),
@@ -87,15 +93,19 @@ impl SCProfileParser {
     /// 
     /// The tree can then be parsed at runtime with some specific values to compute the 
     /// actual value.
-    pub fn from_file(file_path: &str) -> SCProfile {
+    pub fn from_file(status: SEStatus, file_path: &str) -> SCProfile {
         let mut file = File::open(file_path).expect("Could not open SE file");
         let mut contents = String::new();
         file.read_to_string(&mut contents).expect("Could not read file into string");
-        SCProfileParser::from_string(contents)
+        SCProfileParser::from_string(status, contents)
     }
 
-    pub fn from_string(contents: String) -> SCProfile{
-        let mut parser = SCProfileParser::new();
+    pub fn from_se_profile(se_profile: SEProfile) -> SCProfile {
+        SCProfileParser::from_string(se_profile.status, se_profile.profile)
+    }
+
+    pub fn from_string(status: SEStatus, contents: String) -> SCProfile {
+        let mut parser = SCProfileParser::new(status);
 
         let main = SEParser::parse(Rule::main, contents.as_str())
             .expect("Could not parse SE content - check if SE is well formatted!");
@@ -241,8 +251,12 @@ impl SCProfileParser {
         let parse_storage_write = |write: Pair<Rule>| {
             let mut storage_write =  write.into_inner();
             let key = self.parse_storage_key(storage_write.next().unwrap());
-            let value = self.parse_expr(storage_write.next().unwrap().into_inner());
-            ReadWrite::Write { key, value }
+            match storage_write.next().unwrap().into_inner().next().unwrap().as_rule() {
+                Rule::incremental     => ReadWrite::Write { key, commutativity: WriteType::Commutative },
+                Rule::non_incremental => ReadWrite::Write { key, commutativity: WriteType::NonCommutative },
+                other           => unreachable!("Expected write type, got {:?}", other)
+            }
+            
         };
 
         // Helper function to parse storage reads
@@ -549,7 +563,7 @@ msg: ExecuteMsg
 => None
 <- None");
 
-    let profile = SCProfileParser::from_string(s);
+    let profile = SCProfileParser::from_string(SEStatus::Complete, s);
 
 
     let cond_node = Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
@@ -572,12 +586,12 @@ msg: ExecuteMsg
                 rhs: Box::new(Expr::Null) 
             }),
 
-            // => SET(=AARiYW5r= @ _msg.admin): 100
+            // => SET(=AARiYW5r= @ _msg.admin): Non-Inc
             // => GET(=AARiYW5r= @ _msg.admin)
             pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
                 ReadWrite::Write { 
                     key: key_admin(), 
-                    value: Expr::Number(Number::Int(100))
+                    commutativity: WriteType::NonCommutative
                 },
                 ReadWrite::Read(key_admin())
             ]))))), 
@@ -598,15 +612,11 @@ msg: ExecuteMsg
                 rhs: Box::new(Expr::MessageType("AddOne".to_owned())) 
             }), 
             pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
-                // SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+                // SET(=AARiYW5rQURNSU4=): Inc
                 // GET(=AARiYW5rQURNSU4=)
                 ReadWrite::Write { 
                     key: key_incr(), 
-                    value: Expr::BinOp { 
-                        lhs: Box::new(Expr::StorageRead(key_incr())), 
-                        op: Op::Add, 
-                        rhs: Box::new(Expr::Number(Number::Int(1))) 
-                    }
+                    commutativity: WriteType::Commutative
                 },
                 ReadWrite::Read(key_incr())
             ]))))),

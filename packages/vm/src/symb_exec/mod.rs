@@ -4,9 +4,10 @@ mod parser;
 mod evaluator;
 mod testing;
 
-pub use se_engine::{SEEngine, SEProfile, SEEngineParse};
+pub use se_engine::{SEEngine, SEProfile, SEEngineParse, SEStatus};
+pub use sc_profile::TxRWS;
 pub use parser::{
-    nodes::{EntryPoint, ReadWrite},
+    nodes::{EntryPoint, ReadWrite, Key, WriteType},
     SCProfile,
-    SCProfileParser
+    SCProfileParser,
 };

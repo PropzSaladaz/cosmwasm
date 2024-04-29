@@ -313,18 +313,17 @@ pub mod tests {
 
     #[test]
     fn storage_write() {
-        test_parser("SET(=AARiYW5rQURNSU4=): 1", Rule::storage_write);
-        test_parser("SET(=AARiYW5rQURNSU4=): 1 + ADMIN.FIELD1", Rule::storage_write);
-        test_parser("SET(=AARiYW5rQURNSU4=): 1 * (GET(=AARiYW5r= @ admin.yes))", Rule::storage_write);
-        test_parser_f("SET(=AARiYW5r= @ pol.pu): (1^3 + -d.a) * (GET(=AARiYW5r= @ admin.yes))", Rule::storage_write, |pair| {
+        test_parser("SET(=AARiYW5rQURNSU4=): Inc", Rule::storage_write);
+        test_parser("SET(=AARiYW5rQURNSU4=): Non-Inc", Rule::storage_write);
+        test_parser_f("SET(=AARiYW5r= @ pol.pu): Inc", Rule::storage_write, |pair| {
             
             let key = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("=AARiYW5r= @ pol.pu", key.as_str());
             assert_eq!(Rule::key, key.as_rule());
             
             let expr = pair.clone().into_inner().nth(1).unwrap();
-            assert_eq!("(1^3 + -d.a) * (GET(=AARiYW5r= @ admin.yes))", expr.as_str());
-            assert_eq!(Rule::expr, expr.as_rule());
+            assert_eq!("Inc", expr.as_str());
+            assert_eq!(Rule::write_type, expr.as_rule());
         });
     }
 
@@ -343,9 +342,9 @@ pub mod tests {
             assert_eq!(Rule::path_cond_id, path_cond_id.as_rule());
         });
 
-        test_parser_f("=> SET(=AARiYW5rQURNSU4=): 1 * (GET(=AARiYW5r= @ admin.yes))", Rule::pos_branches, |pair| {
+        test_parser_f("=> SET(=AARiYW5rQURNSU4=): Inc", Rule::pos_branches, |pair| {
             let storage_write = pair.clone().into_inner().nth(0).unwrap();
-            assert_eq!("SET(=AARiYW5rQURNSU4=): 1 * (GET(=AARiYW5r= @ admin.yes))", storage_write.as_str());
+            assert_eq!("SET(=AARiYW5rQURNSU4=): Inc", storage_write.as_str());
             assert_eq!(Rule::storage_write, storage_write.as_rule());
         });
 
@@ -361,15 +360,15 @@ pub mod tests {
             assert_eq!(Rule::path_cond_id, path_cond_id.as_rule());
         });
 
-        test_parser_f("<- SET(=AARiYW5rQURNSU4=): 1 * (GET(=AARiYW5r= @ admin.yes))", Rule::neg_branches, |pair| {
+        test_parser_f("<- SET(=AARiYW5rQURNSU4=): Inc", Rule::neg_branches, |pair| {
             let storage_write = pair.clone().into_inner().nth(0).unwrap();
-            assert_eq!("SET(=AARiYW5rQURNSU4=): 1 * (GET(=AARiYW5r= @ admin.yes))", storage_write.as_str());
+            assert_eq!("SET(=AARiYW5rQURNSU4=): Inc", storage_write.as_str());
             assert_eq!(Rule::storage_write, storage_write.as_rule());
         });
 
-        test_parser_f("<- SET(=AARiYW5r= @ admin.yes): GET(=AARiYW5r= @ lala.no) + 1", Rule::neg_branches, |pair| {
+        test_parser_f("<- SET(=AARiYW5r= @ admin.yes): Inc", Rule::neg_branches, |pair| {
             let storage_write = pair.clone().into_inner().nth(0).unwrap();
-            assert_eq!("SET(=AARiYW5r= @ admin.yes): GET(=AARiYW5r= @ lala.no) + 1", storage_write.as_str());
+            assert_eq!("SET(=AARiYW5r= @ admin.yes): Inc", storage_write.as_str());
             assert_eq!(Rule::storage_write, storage_write.as_rule());
         });
 
@@ -537,8 +536,8 @@ pub mod tests {
     fn path_cond_node() {
         test_parser_f("[PC_1] _msg.type == AddOne
 => [PC_2]
-<- SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
-<- SET(=AARiYW5r= @ admin.yes): GET(=AARiYW5r= @ lala.no) + 1", 
+<- SET(=AARiYW5rQURNSU4=): Inc
+<- SET(=AARiYW5r= @ admin.yes): Inc", 
         Rule::path_cond_node, |pair| {
             
             let path_cond = pair.clone().into_inner().nth(0).unwrap();
@@ -550,15 +549,15 @@ pub mod tests {
             assert_eq!(Rule::pos_branches, pos_branch.as_rule());
 
             let pair = pair.clone().into_inner().nth(2).unwrap();
-            assert_eq!("<- SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1\n<- SET(=AARiYW5r= @ admin.yes): GET(=AARiYW5r= @ lala.no) + 1", pair.as_str());
+            assert_eq!("<- SET(=AARiYW5rQURNSU4=): Inc\n<- SET(=AARiYW5r= @ admin.yes): Inc", pair.as_str());
             assert_eq!(Rule::neg_branches, pair.as_rule());
 
             let neg_branch1 = pair.clone().into_inner().nth(0).unwrap();
-            assert_eq!("SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1", neg_branch1.as_str());
+            assert_eq!("SET(=AARiYW5rQURNSU4=): Inc", neg_branch1.as_str());
             assert_eq!(Rule::storage_write, neg_branch1.as_rule());
 
             let neg_branch2 = pair.clone().into_inner().nth(1).unwrap();
-            assert_eq!("SET(=AARiYW5r= @ admin.yes): GET(=AARiYW5r= @ lala.no) + 1", neg_branch2.as_str());
+            assert_eq!("SET(=AARiYW5r= @ admin.yes): Inc", neg_branch2.as_str());
             assert_eq!(Rule::storage_write, neg_branch2.as_rule());
         });
     }
@@ -671,11 +670,11 @@ _msg: ExecuteMsg
 <- [PC_3]
 
 [PC_2] GET(=AARiYW5r= @ _msg.admin) == null
-=> SET(=AARiYW5r= @ _msg.admin): 100
+=> SET(=AARiYW5r= @ _msg.admin): Non-Inc
 <- None
 
 [PC_3] _msg.type == AddOne
-=> SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+=> SET(=AARiYW5rQURNSU4=): Inc
 <- [PC_4]
 
 [PC_4] _msg.type == Transfer
@@ -708,11 +707,11 @@ _msg: ExecuteMsg", inputs.as_str());
 <- [PC_3]
 
 [PC_2] GET(=AARiYW5r= @ _msg.admin) == null
-=> SET(=AARiYW5r= @ _msg.admin): 100
+=> SET(=AARiYW5r= @ _msg.admin): Non-Inc
 <- None
 
 [PC_3] _msg.type == AddOne
-=> SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
+=> SET(=AARiYW5rQURNSU4=): Inc
 <- [PC_4]
 
 [PC_4] _msg.type == Transfer

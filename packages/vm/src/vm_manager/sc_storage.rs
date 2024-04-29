@@ -51,7 +51,7 @@ impl SCStaticData {
         file_writer.write_all(sc_code)?;
 
         let se_profile = SEEngine::parse_smart_contract(sc_code);
-        let sc_profile = SCProfileParser::from_string(se_profile.profile);
+        let sc_profile = SCProfileParser::from_se_profile(se_profile);
 
         self.profiles.insert(self.sc_code_id, Arc::new(sc_profile));
         
@@ -118,6 +118,17 @@ where
 }
 
 
+
+/// Used after applying the algorithm that identifies the keys to partition.
+/// Stores the RWS to partition per each SC. THe address is then used to fetch the storage
+/// and to partition the annotated items.
+#[derive(Clone, PartialEq, Debug)]
+pub struct ContractRWS {
+    pub rws: Vec<Vec<u8>>,
+    pub address: String,
+}
+
+
 /// Struct that stores context data for persistent execution
 /// over different cosmwasm vm instances.
 ///
@@ -152,7 +163,6 @@ where
     sc_storage: SCStorage<A, S, Q>,
 }
 
-
 impl<A, S, Q> SCManager<A, S, Q> 
 where
     A: BackendApi, 
@@ -163,6 +173,35 @@ where
         SCManager {
             static_data: Arc::new(RwLock::new(SCStaticData::new())),
             sc_storage: DashMap::new(),
+        }
+    }
+
+    /// Partitions storage items given the keys and the SC address.
+    /// Note that the storage for some contract may not yet exist. For such cases, we 
+    /// ignore partitioning, and only partition for existing storages
+    pub fn partition_storage(&self, contract_keys: Vec<ContractRWS>) {
+        for contract in contract_keys {
+            match self.sc_storage.get(&contract.address) {
+                Some(storage) => storage.state
+                    .storage.write().unwrap()
+                    .partition_items(contract.rws),
+
+                None => continue
+            }
+        }
+    }
+
+    /// Sums up all partitions and stores the item as a single partition.
+    /// See the comment on above function about the use of a match when gettin gthe storage
+    pub fn sum_partitions(&self, contract_keys: Vec<ContractRWS>) {
+        for contract in contract_keys {
+            match self.sc_storage.get(&contract.address) {
+                Some(storage) => storage.state
+                    .storage.write().unwrap()
+                    .sum_partitioned_items(contract.rws),
+
+                None => continue
+            }
         }
     }
 
@@ -227,7 +266,7 @@ mod tests {
 
     use crate::{call_instantiate, 
         internals::instance_from_module, 
-        symb_exec::EntryPoint, testing::{mock_env, mock_info, mock_persistent_backend, MockStoragePartitioned}, 
+        symb_exec::{EntryPoint, SEStatus}, testing::{mock_env, mock_info, mock_persistent_backend, MockStoragePartitioned}, 
         wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
         InstanceOptions, Size};
 
@@ -284,6 +323,7 @@ _msg: InstantiateMsg
 
         // compare the saved profile with the actual one
         let sc_profile_tmp = SCProfileParser::from_string(
+            SEStatus::Complete,
             String::from_utf8(contract.to_vec()).unwrap());
         let instantiate_tmp = sc_profile_tmp.entry_point.get(&EntryPoint::Instantiate).unwrap();
 

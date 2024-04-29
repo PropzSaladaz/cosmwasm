@@ -1,13 +1,16 @@
-use std::{borrow::Borrow, ops::Deref, sync::{Arc, RwLock}};
+use std::{collections::HashMap, ops::{Add, Deref, Sub}, sync::{Arc, RwLock}};
 
-use cosmwasm_std::{testing::MockApi, Api, CustomQuery, Deps, Empty, QuerierWrapper};
+use cosmwasm_std::{Api, CustomQuery, Empty, QuerierWrapper};
 use wasmer::Store;
 
 use crate::{
-    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, internals::instance_from_module, symb_exec::ReadWrite, testing::{
-        mock_env, mock_info}, wasm_backend::{
-        compile, 
-        make_compiling_engine, make_runtime_engine}, BackendApi, InstanceOptions, Querier, Size, Storage
+    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, 
+    internals::instance_from_module, 
+    symb_exec::{Key, ReadWrite, SEStatus, TxRWS, WriteType}, 
+    testing::{mock_env, mock_info}, 
+    vm_manager::ContractRWS, 
+    wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
+    BackendApi, InstanceOptions, Querier, Size, Storage
 };
 
 use super::sc_storage::SCManager;
@@ -40,6 +43,8 @@ pub enum InstantiatedEntryPoint {
     Reply
 }
 
+
+type Counter = i32;
 pub type Block<'a> = Vec<VMMessage<'a>>;
 
 /// mapping (code_id, nth_instantiation) => address
@@ -74,6 +79,20 @@ pub struct DepsMut<'a, C: CustomQuery = Empty> {
     pub querier: QuerierWrapper<'a, C>,
 }
 
+enum RWS {
+    ReadWrite(TxRWS),
+    Bytes(Vec<Vec<u8>>)
+}
+
+/// Used before apllying the algorithm that identifies the keys to partition.
+/// This struct is used only to store temporarily the RWS and the profile completeness gotten
+/// from using the message inputs
+#[derive(Debug, PartialEq)]
+struct RWSContext {
+    rws: TxRWS,
+    address: String, 
+}
+
 impl<A, S, Q> VMManager<A, S, Q> 
 where
     A: BackendApi, 
@@ -92,14 +111,49 @@ where
         }
     }
 
-    fn get_rws(&self, block: &Block) -> Vec<ReadWrite> {
+
+
+    pub fn handle_block(&mut self, block: Block) -> std::io::Result<Vec<String>> {
+        let partitioned_keys = self.partition_storage(&block);
+        let resps = self.execute_block(&block).unwrap();
+        self.sum_partitions(partitioned_keys);
+
+        Ok(resps)
+    }
+
+    /// Given a block of messages, fetch the RWS for each individual tx - this is done using information from the
+    /// contract inputs and the already built SE profile when the SC was installed.
+    /// 
+    /// Then determine which RWS are suitable for partitioning at the storage level, and partition those.
+    /// Return the partitioned items.
+    fn partition_storage(&mut self, block: &Block) -> Vec<ContractRWS> {
+        let rws = self.get_rws(block);
+        let keys = self.decide_keys_to_partition(rws, 3);
+        self.state_manager.read().unwrap().partition_storage(keys.clone());
+        keys
+    }
+
+    /// Sums up all partitioned items at the start of the block, and converts them into
+    /// single items.
+    fn sum_partitions(&mut self, contract_keys: Vec<ContractRWS>) {
+        self.state_manager.read().unwrap().sum_partitions(contract_keys)
+    }
+
+    /// Get the RWS given an input message for some contract.
+    /// Fetches the SE profile, parses it & gets the final RWS in form of keys as bytes
+    /// It returns a vec where each item contains the contract address as well as all the keys
+    /// it will touch
+    fn get_rws(&self, block: &Block) -> Vec<RWSContext> {
         let mut rws = vec![];
         for msg in block {
-            rws.extend(match msg {
+            rws.push(match msg {
                 VMMessage::Instantiation { 
                     message, 
                     contract_code_id 
-                } => vec![ReadWrite::default()], // TODO this needs to me implemented!!
+                } => RWSContext {
+                        rws: TxRWS { profile_status: SEStatus::Complete, rws: vec![ReadWrite::default()]},
+                        address: String::from("")
+                 }, // TODO this needs to me implemented!!
 
                 VMMessage::Invocation { 
                     message, 
@@ -112,7 +166,7 @@ where
                         Some(sc_instance) => {
                             // Build mock depsMut
                             let storage = Arc::clone(&sc_instance.state.storage);
-                            let storage = storage.write().unwrap();
+                            let storage = storage.read().unwrap();
                             let querier = cosmwasm_std::testing::MockQuerier::default();
                             let mut_deps = DepsMut { 
                                 storage: storage.deref(),
@@ -120,10 +174,14 @@ where
                                 querier: cosmwasm_std::QuerierWrapper::new( &querier)
                             };
                             match entry_point {
-                                InstantiatedEntryPoint::Execute => profile.get_rws_execute(&mut_deps, 
-                                    &mock_env(), &mock_info("", &[]), message),
-                                InstantiatedEntryPoint::Query   => profile.get_rws_query(&mut_deps, 
-                                    &mock_env(), &mock_info("", &[]), message),
+                                InstantiatedEntryPoint::Execute => RWSContext {
+                                    rws: profile.get_rws_execute(&mut_deps, &mock_env(), &mock_info("", &[]), message),
+                                    address: contract_address.clone()
+                                },
+                                InstantiatedEntryPoint::Query   => RWSContext {
+                                    rws: profile.get_rws_query(&mut_deps, &mock_env(), &mock_info("", &[]), message),
+                                    address: contract_address.clone(),
+                                },
                                 InstantiatedEntryPoint::Reply => todo!(),
                             }
                         }
@@ -136,20 +194,95 @@ where
         rws
     }
 
-    fn partition_storage(&mut self, block: &Block) {
-        let rws = self.get_rws(block);
-    }
 
-    fn sum_partitions(&mut self) {
+    /// Given the RWS of each contract, identify write-incremental-intensive keys suitable for partitioning.
+    /// For each write, check if it is incremental, i.e, sums/subtracts some value
+    /// over its previous one (reads the key it will write into).
+    /// 
+    /// For each read for some key, we will need to read all partitions, thus we discount on
+    /// the score for that key.
+    /// 
+    /// If a counter has a final positive score, i.e, has more incremental-writes than reads,
+    /// then it is suitable to be partitioned.
+    fn decide_keys_to_partition(&self, rws: Vec<RWSContext>, partial_full_proportion: Counter) -> Vec<ContractRWS> {
+        //                              contract address -> key -> counter
+        let mut partial_read_map: HashMap<String, HashMap<Vec<u8>, Counter>> = HashMap::new();
+        let mut rws_per_contract: HashMap<String, ContractRWS> = HashMap::new();
 
-    }
+        // Runnin gover the stored RWS of each SC
+        for contract_context in rws {
+            let sc_rws = contract_context.rws;
+            let address = &contract_context.address;
 
-    pub fn handle_block(&mut self, block: Block) -> std::io::Result<Vec<String>> {
-        self.partition_storage(&block);
-        let resps = self.execute_block(&block).unwrap();
-        self.sum_partitions();
+            if sc_rws.profile_status == SEStatus::Incomplete {
+                continue;
+            }
 
-        Ok(resps)
+            // Running over each Read/Write of the current RWS for the current contract
+            for read_write in sc_rws.rws {
+                match read_write {
+                    ReadWrite::Read(Key::Bytes(val)) => {
+                        // create (if needed) tmp mapping of some SC keys into their counters
+                        let contract_partial_map = partial_read_map.entry(address.clone()).or_insert(HashMap::new());
+                        
+                        // update the counters of current SC
+                        contract_partial_map.entry(val.clone())
+                            .and_modify(|c| *c -= partial_full_proportion)
+                            .or_insert(-partial_full_proportion);
+
+                        // create (if needed) tmp sc storage storing the SC address (needed later to fetch the storage)
+                        rws_per_contract.entry(address.clone()).or_insert(ContractRWS {
+                            rws: vec![],
+                            address: address.clone()
+                        });
+
+                        println!("{:?} -> -{:?}", val, partial_full_proportion)
+                    },
+                    ReadWrite::Write { 
+                        key, 
+                        commutativity 
+                    } => {
+                        let key_bytes = match key {
+                            Key::Bytes(key) => key,
+                            other => unreachable!("Expected key in bytes, got {:?}", other)
+                        };
+
+                        // create (if needed) tmp mapping of some SC keys into their counters
+                        let contract_partial_map = partial_read_map.entry(address.clone()).or_insert(HashMap::new());
+
+                        // create (if needed) tmp sc storage storing the SC address (needed later to fetch the storage)
+                        rws_per_contract.entry(address.clone()).or_insert(ContractRWS {
+                            rws: vec![],
+                            address: address.clone()
+                        });
+
+                        match commutativity {
+                            WriteType::Commutative    => contract_partial_map.entry(key_bytes)
+                                .and_modify(|c| *c += 1)
+                                .or_insert(1),
+
+                            WriteType::NonCommutative => {println!("{:?} -> -{:?}", key_bytes, partial_full_proportion); contract_partial_map.entry(key_bytes)
+                                .and_modify(|c| *c -= partial_full_proportion)
+                                .or_insert(-partial_full_proportion)}  
+                        };
+                    },
+                    other => unreachable!("RWS should output the key as bytes. Got {:?}", other)
+                };
+            }
+        }
+
+        for (address, sc_counters) in partial_read_map.into_iter() {
+            let contract_rws = rws_per_contract.get_mut(&address).unwrap();
+            for (key, counter) in sc_counters.into_iter() {
+                println!("{:?} - {:?}", key, counter);
+                if counter > 0 {
+                    contract_rws.rws.push(key);
+                }
+            }
+        }
+
+        return rws_per_contract.into_values().collect();
+
     }
 
     fn execute_block(&mut self, block: &Block) -> std::io::Result<Vec<String>> {
@@ -262,12 +395,7 @@ mod tests {
     use wasmer::Store;
 
     use crate::{
-        call_instantiate, 
-        internals::instance_from_module, 
-        testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned}, 
-        vm_manager::vm_manager::{VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}, 
-        wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
-        InstanceOptions, InstantiatedEntryPoint, SCManager, VMMessage
+        call_instantiate, internals::instance_from_module, symb_exec::{Key, ReadWrite, TxRWS, WriteType}, testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned}, vm_manager::{vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}, ContractRWS}, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, InstanceOptions, InstantiatedEntryPoint, SCManager, SEStatus, VMMessage
     };
 
     use super::{AddressMapper, BackendBuilder, StorageBuilder, VMManager};
@@ -294,6 +422,20 @@ mod tests {
         Box::new(move |contract_code_id: u128, instantiation: u128| {
             mapping.get(&contract_code_id).unwrap().get(&instantiation).unwrap().clone()
         })
+    }
+
+    fn mock_vm_manager() -> VMManager<MockApi, MockStoragePartitioned, MockQuerier> {
+        let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
+        // simulate installing a contract
+        state_manager.save_code(CONTRACT).unwrap();
+
+        let state_manager = Arc::new(RwLock::new(state_manager));
+        VMManager::new(
+            Arc::clone(&state_manager), 
+            mock_address_mapper(),
+            mock_storage_builder(),
+            mock_backend_builder(),
+        )
     }
 
     #[test]
@@ -384,43 +526,19 @@ mod tests {
     #[test]
     #[serial]
     fn instantiate_vm() {
-        // save initial code -> will have code_id = 0
-        let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
-        state_manager.save_code(CONTRACT).unwrap();
-
-        assert_eq!(state_manager.get_code(0).unwrap(), CONTRACT);
-
-        let state_manager = Arc::new(RwLock::new(state_manager));
-        let vm_manager = VMManager::new(
-            Arc::clone(&state_manager), 
-            mock_address_mapper(),
-            mock_storage_builder(),
-            mock_backend_builder(),
-        );
+        let vm_manager = mock_vm_manager();
 
         let msg = br#"{}"#;
         let resp = vm_manager.compile_instantiate_vm(0, msg).unwrap();
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resp);
 
-        state_manager.read().unwrap().cleanup();
+        vm_manager.state_manager.read().unwrap().cleanup();
     }
 
     #[test]
     #[serial]
     fn execute_vm() {
-        // save initial code -> will have code_id = 0
-        let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
-        state_manager.save_code(CONTRACT).unwrap();
-
-        assert_eq!(state_manager.get_code(0).unwrap(), CONTRACT);
-
-        let state_manager = Arc::new(RwLock::new(state_manager));
-        let vm_manager = VMManager::new(
-            Arc::clone(&state_manager), 
-            mock_address_mapper(),
-            mock_storage_builder(),
-            mock_backend_builder(),
-        );
+        let vm_manager = mock_vm_manager();
 
         let msg = br#"{}"#;
         let resp = vm_manager.compile_instantiate_vm(0, msg).unwrap();
@@ -431,25 +549,13 @@ mod tests {
         }"#;
         let resp = vm_manager.instantiate_vm(0, &String::from("a"), msg, VMCall::Execute).unwrap();
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resp);
-        state_manager.read().unwrap().cleanup();
+        vm_manager.state_manager.read().unwrap().cleanup();
     }
 
     #[test]
     #[serial]
     fn query_vm() {
-        // save initial code -> will have code_id = 0
-        let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
-        state_manager.save_code(CONTRACT).unwrap();
-
-        assert_eq!(state_manager.get_code(0).unwrap(), CONTRACT);
-
-        let state_manager = Arc::new(RwLock::new(state_manager));
-        let vm_manager = VMManager::new(
-            Arc::clone(&state_manager), 
-            mock_address_mapper(),
-            mock_storage_builder(),
-            mock_backend_builder(),
-        );
+        let vm_manager = mock_vm_manager();
 
         let msg = br#"{}"#;
         let resp = vm_manager.compile_instantiate_vm(0, msg).unwrap();
@@ -461,24 +567,14 @@ mod tests {
         let resp = vm_manager.instantiate_vm(0, &String::from("a"), msg, VMCall::Query).unwrap();
         assert_eq!("{\"balance\":1000}", resp);
 
-        state_manager.read().unwrap().cleanup();
+        vm_manager.state_manager.read().unwrap().cleanup();
         
     }
 
     #[test]
     #[serial]
     fn persistent_calls() {
-        let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
-        // simulate installing a contract
-        state_manager.save_code(CONTRACT).unwrap();
-
-        let state_manager = Arc::new(RwLock::new(state_manager));
-        let mut vm_manager = VMManager::new(
-            Arc::clone(&state_manager), 
-            mock_address_mapper(),
-            mock_storage_builder(),
-            mock_backend_builder(),
-        );
+        let mut vm_manager = mock_vm_manager();
 
         let msgs = vec![
             VMMessage::Instantiation {
@@ -570,7 +666,7 @@ mod tests {
         assert_eq!("{\"balance\":1002}", resps[8]);
         assert_eq!("{\"balance\":1001}", resps[9]);
 
-        state_manager.read().unwrap().cleanup();
+        vm_manager.state_manager.read().unwrap().cleanup();
 
     }
 
@@ -578,17 +674,7 @@ mod tests {
     #[test]
     #[serial]
     fn get_rws() {
-        let state_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
-        // simulate installing a contract
-        state_manager.save_code(CONTRACT).unwrap();
-
-        let state_manager = Arc::new(RwLock::new(state_manager));
-        let mut vm_manager = VMManager::new(
-            Arc::clone(&state_manager), 
-            mock_address_mapper(),
-            mock_storage_builder(),
-            mock_backend_builder(),
-        );
+        let mut vm_manager = mock_vm_manager();
 
         let msgs = vec![
             VMMessage::Instantiation {
@@ -613,8 +699,123 @@ mod tests {
         ];
 
         let rws = vm_manager.get_rws(&msgs);
+        assert_eq!(
+            rws,
+            vec![RWSContext {
+                address: "a".to_owned(),
+                rws: TxRWS {
+                    profile_status: SEStatus::Complete,
+                    rws: vec![
+                        ReadWrite::Write {
+                            key: Key::Bytes(vec![0, 4, 98, 97, 110, 107, 65, 68, 77, 73, 78]),
+                            commutativity: WriteType::Commutative
+                        },
+                        ReadWrite::Read(Key::Bytes(vec![0, 4, 98, 97, 110, 107, 65, 68, 77, 73, 78]))
+                    ]
+                }
+            }]
+        );
         println!("{:#?}", rws);
         
-        state_manager.read().unwrap().cleanup();
+        vm_manager.state_manager.read().unwrap().cleanup();
+    }
+
+    #[test]
+    fn decide_keys_to_partition() {
+        let mut vm_manager = mock_vm_manager();
+        
+        let key_a = vec![1];
+        let key_b = vec![2];
+        let key_c = vec![3];
+        let key_d = vec![4];
+
+        // Testing the following RWS:
+        // Tx1:
+        //    - W(A): R(A) + R(B) + 1
+        //    - W(B): R(B) + 3
+        //    - W(C): R(C) - 2
+        // Tx2:
+        //    - W(D): R(D) + 3
+        //    - W(A): R(A) * 2
+        //    - W(B): R(B) + 1 + R(A)
+        // Tx3:
+        //    - W(A): R(A) + 1
+        //    - W(B): R(B) + 1
+        // Tx4:
+        //    - W(C): R(A) + 2
+        //    - W(B): R(B) + 3
+        let partition_keys = vm_manager.decide_keys_to_partition(vec![
+            // Tx1
+            RWSContext {
+                address: "a".to_owned(),
+                rws: TxRWS { 
+                    profile_status: SEStatus::Complete, 
+                    rws: vec![
+                        // W(A): R(A) + R(B) + 1
+                        ReadWrite::Write { key: Key::Bytes(key_a.clone()), commutativity: WriteType::Commutative },
+                        // R(B) from above write
+                        ReadWrite::Read(Key::Bytes(key_b.clone())),
+                        // W(B): R(B) + 3
+                        ReadWrite::Write { key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                        // W(C): R(C) - 2
+                        ReadWrite::Write { key: Key::Bytes(key_c.clone()), commutativity: WriteType::Commutative }
+                    ] 
+                }
+            },
+            // Tx2
+            RWSContext {
+                address: "a".to_owned(),
+                rws: TxRWS { 
+                    profile_status: SEStatus::Complete, 
+                    rws: vec![
+                        // W(D): R(D) + 3
+                        ReadWrite::Write { key: Key::Bytes(key_d.clone()), commutativity: WriteType::Commutative },
+                        // W(A): R(A) * 2
+                        ReadWrite::Write { key: Key::Bytes(key_a.clone()), commutativity: WriteType::NonCommutative },
+                        // R(A) from above write, since is non commutative
+                        ReadWrite::Read(Key::Bytes(key_a.clone())),
+                        // W(B): R(B) + 1 + R(A)
+                        ReadWrite::Write { key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                        // R(A) from above write. Even being Commutative, it is only commutative on B, not A. Thus we
+                        // still have to read all A counters
+                        ReadWrite::Read(Key::Bytes(key_a.clone())),
+                    ] 
+                }
+            },
+            // Tx3
+            RWSContext {
+                address: "a".to_owned(),
+                rws: TxRWS { 
+                    profile_status: SEStatus::Complete, 
+                    rws: vec![
+                        // W(A): R(A) + 1
+                        ReadWrite::Write { key: Key::Bytes(key_a.clone()), commutativity: WriteType::Commutative },
+                        // W(B): R(B) + 1
+                        ReadWrite::Write { key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                    ] 
+                }
+            },
+            // Tx4
+            RWSContext {
+                address: "a".to_owned(),
+                rws: TxRWS { 
+                    profile_status: SEStatus::Complete, 
+                    rws: vec![
+                        // W(C): R(A) + 2
+                        ReadWrite::Write { key: Key::Bytes(key_c.clone()), commutativity: WriteType::NonCommutative },
+                        // R(A) from above write
+                        ReadWrite::Read(Key::Bytes(key_a.clone())),
+                        // W(B): R(B) + 3
+                        ReadWrite::Write { key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                    ] 
+                }
+            },
+        ], 3);
+
+        for item in partition_keys {
+            for item in item.rws {
+                assert!(vec![key_b.clone(), key_d.clone()].contains(&item))
+            }
+        }
     }
 }
