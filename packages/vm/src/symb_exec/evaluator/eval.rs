@@ -223,7 +223,13 @@ impl ReadWrite {
     /// and appending it to the base. This way we have concrete keys.
     pub fn eval(&mut self, storage: &dyn Storage, variable_context: &SEContext) -> Self {   
         match self {
-            Self::Read(key) => Self::Read(key.eval(storage, variable_context)),
+            Self::Read {
+                key,
+                commutativity
+            } => Self::Read {
+                key: key.eval(storage, variable_context),
+                commutativity: *commutativity
+            },
             Self::Write { 
                 key, 
                 commutativity 
@@ -453,13 +459,16 @@ mod tests {
 
         let mut rws = vec![
             // Get(1u8 @ msg.admin)
-            ReadWrite::Read(Key::Expression { 
-                base: key_raw.to_vec(), 
-                expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
-                    "msg".to_owned(), 
-                    "admin".to_owned()
-                ])))
-            }),
+            ReadWrite::Read{
+                key: Key::Expression { 
+                    base: key_raw.to_vec(), 
+                    expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+                        "msg".to_owned(), 
+                        "admin".to_owned()
+                    ])))
+                },
+                commutativity: WriteType::Commutative,
+            },
             // Set(1u8 @ msg.admin): Inc
             ReadWrite::Write { 
                 key: Key::Expression { 
@@ -479,7 +488,10 @@ mod tests {
         assert_eq!(
             expr,
             vec![
-                ReadWrite::Read(Key::Bytes(expected_key.clone())),
+                ReadWrite::Read{
+                    key: Key::Bytes(expected_key.clone()),
+                    commutativity: WriteType::Commutative,
+                },
                 ReadWrite::Write { 
                     key: Key::Bytes(expected_key), 
                     commutativity: WriteType::Commutative

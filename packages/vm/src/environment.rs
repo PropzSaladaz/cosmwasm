@@ -13,6 +13,7 @@ use wasmer_middlewares::metering::{get_remaining_points, set_remaining_points, M
 
 use crate::backend::{BackendApi, GasInfo, Querier, Storage};
 use crate::errors::{VmError, VmResult};
+use crate::testing::StorageWrapper;
 
 /// Keep this as low as necessary to avoid deepy nested errors like this:
 ///
@@ -118,11 +119,11 @@ pub struct Environment<A, S, Q> {
     data: Arc<RwLock<ContextData<S, Q>>>,
 }
 
-unsafe impl<A: BackendApi, S: Storage, Q: Querier> Send for Environment<A, S, Q> {}
+unsafe impl<A: BackendApi, S: StorageWrapper, Q: Querier> Send for Environment<A, S, Q> {}
 
-unsafe impl<A: BackendApi, S: Storage, Q: Querier> Sync for Environment<A, S, Q> {}
+unsafe impl<A: BackendApi, S: StorageWrapper, Q: Querier> Sync for Environment<A, S, Q> {}
 
-impl<A: BackendApi, S: Storage, Q: Querier> Clone for Environment<A, S, Q> {
+impl<A: BackendApi, S: StorageWrapper, Q: Querier> Clone for Environment<A, S, Q> {
     fn clone(&self) -> Self {
         Environment {
             memory: None,
@@ -133,7 +134,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Clone for Environment<A, S, Q> {
     }
 }
 
-impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
+impl<A: BackendApi, S: StorageWrapper, Q: Querier> Environment<A, S, Q> {
     pub fn new(api: A, gas_limit: u64) -> Self {
         Environment {
             memory: None,
@@ -266,7 +267,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
         C: FnOnce(&mut S) -> VmResult<T>,
     {
         self.with_context_data_mut(|context_data| match context_data.storage.as_mut() {
-            Some(data) => callback(data.write().unwrap().borrow_mut()),
+            Some(data) => callback(data),
             None => Err(VmError::uninitialized_context_data("storage")),
         })
     }
@@ -379,7 +380,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
 
     /// Moves owned instances of storage and querier into the env.
     /// Should be followed by exactly one call to move_out when the instance is finished.
-    pub fn move_in(&self, storage: Arc<RwLock<S>>, querier: Arc<RwLock<Q>>) {
+    pub fn move_in(&self, storage: S, querier: Arc<RwLock<Q>>) {
         self.with_context_data_mut(|context_data| {
             context_data.storage = Some(storage);
             context_data.querier = Some(querier);
@@ -388,7 +389,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
 
     /// Returns the original storage and querier as owned instances, and closes any remaining
     /// iterators. This is meant to be called when recycling the instance.
-    pub fn move_out(&self) -> (Option<Arc<RwLock<S>>>, Option<Arc<RwLock<Q>>>) {
+    pub fn move_out(&self) -> (Option<S>, Option<Arc<RwLock<Q>>>) {
         self.with_context_data_mut(|context_data| {
             (context_data.storage.take(), context_data.querier.take())
         })
@@ -397,7 +398,7 @@ impl<A: BackendApi, S: Storage, Q: Querier> Environment<A, S, Q> {
 
 pub struct ContextData<S, Q> {
     gas_state: GasState,
-    storage: Option<Arc<RwLock<S>>>,
+    storage: Option<S>,
     storage_readonly: bool,
     call_depth: usize,
     querier: Option<Arc<RwLock<Q>>>,
@@ -406,7 +407,7 @@ pub struct ContextData<S, Q> {
     wasmer_instance: Option<NonNull<WasmerInstance>>,
 }
 
-impl<S: Storage, Q: Querier> ContextData<S, Q> {
+impl<S: StorageWrapper, Q: Querier> ContextData<S, Q> {
     pub fn new(gas_limit: u64) -> Self {
         ContextData::<S, Q> {
             gas_state: GasState::with_limit(gas_limit),
@@ -420,7 +421,7 @@ impl<S: Storage, Q: Querier> ContextData<S, Q> {
     }
 }
 
-pub fn process_gas_info<A: BackendApi, S: Storage, Q: Querier>(
+pub fn process_gas_info<A: BackendApi, S: StorageWrapper, Q: Querier>(
     env: &Environment<A, S, Q>,
     store: &mut impl AsStoreMut,
     info: GasInfo,
@@ -453,7 +454,7 @@ mod tests {
     use crate::conversion::ref_to_u32;
     use crate::errors::VmError;
     use crate::size::Size;
-    use crate::testing::{MockApi, MockQuerier, MockStorage};
+    use crate::testing::{MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper};
     use crate::wasm_backend::{compile, make_compiling_engine};
     use cosmwasm_std::{
         coins, from_json, to_json_vec, AllBalanceResponse, BankQuery, Empty, QueryRequest,
@@ -477,7 +478,7 @@ mod tests {
     fn make_instance(
         gas_limit: u64,
     ) -> (
-        Environment<MockApi, MockStorage, MockQuerier>,
+        Environment<MockApi, MockStorageWrapper, MockQuerier>,
         Store,
         Box<WasmerInstance>,
     ) {
@@ -518,16 +519,16 @@ mod tests {
         (env, store, instance)
     }
 
-    fn leave_default_data(env: &Environment<MockApi, MockStorage, MockQuerier>) {
+    fn leave_default_data(env: &Environment<MockApi, MockStorageWrapper, MockQuerier>) {
         // create some mock data
-        let mut storage = MockStorage::new();
+        let mut storage: MockStorageWrapper = Default::default();
         storage
             .set(INIT_KEY, INIT_VALUE)
             .0
             .expect("error setting value");
         let querier: MockQuerier<Empty> =
             MockQuerier::new(&[(INIT_ADDR, &coins(INIT_AMOUNT, INIT_DENOM))]);
-        env.move_in(Arc::new(RwLock::new(storage)), Arc::new(RwLock::new(querier)));
+        env.move_in(storage, Arc::new(RwLock::new(querier)));
     }
 
     #[test]
@@ -545,7 +546,7 @@ mod tests {
         assert!(s.is_some());
         assert!(q.is_some());
         assert_eq!(
-            s.unwrap().read().unwrap().get(INIT_KEY).0.unwrap(),
+            s.unwrap().get(INIT_KEY).0.unwrap(),
             Some(INIT_VALUE.to_vec())
         );
 

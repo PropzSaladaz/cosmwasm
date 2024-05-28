@@ -182,7 +182,7 @@ pub mod tests {
 
     #[test]
     fn storage_read() {
-        test_parser_f("GET(=AARiYW5rQURNSU4=)", Rule::storage_read, |pair: Pair<Rule>| {
+        test_parser_f("GET(=AARiYW5rQURNSU4=)", Rule::cond_storage_read, |pair: Pair<Rule>| {
             let key = pair.clone().into_inner().next().unwrap();
             assert_eq!("=AARiYW5rQURNSU4=", key.as_str());
             assert_eq!(Rule::key, key.as_rule());
@@ -192,11 +192,52 @@ pub mod tests {
             assert_eq!(Rule::base64, base64.as_rule());
         });
 
-        test_parser_f("GET(=AARiYW5r= @ _msg.admin)", Rule::storage_read, |pair: Pair<Rule>| {
+        test_parser_f("GET(=AARiYW5r= @ _msg.admin)", Rule::cond_storage_read, |pair: Pair<Rule>| {
             let key = pair.clone().into_inner().next().unwrap();
             assert_eq!("=AARiYW5r= @ _msg.admin", key.as_str());
             assert_eq!(Rule::key, key.as_rule());
             
+            let mut inner = key.into_inner();
+            let hexa = inner.next().unwrap();
+            assert_eq!("AARiYW5r=", hexa.as_str());
+            assert_eq!(Rule::base64, hexa.as_rule());
+
+            let expr = inner.next().unwrap();
+            assert_eq!("_msg.admin", expr.as_str());
+            assert_eq!(Rule::expr, expr.as_rule());
+        });
+
+
+        test_parser_f("GET(=AARiYW5r= @ _msg.admin): Inc", Rule::storage_read, |pair: Pair<Rule>| {
+            let mut inner = pair.into_inner();
+            let key = inner.next().unwrap();
+            assert_eq!("=AARiYW5r= @ _msg.admin", key.as_str());
+            assert_eq!(Rule::key, key.as_rule());
+
+            let write_type = inner.next().unwrap();
+            assert_eq!("Inc", write_type.as_str());
+            assert_eq!(Rule::write_type, write_type.as_rule());
+
+            let mut inner = key.into_inner();
+            let hexa = inner.next().unwrap();
+            assert_eq!("AARiYW5r=", hexa.as_str());
+            assert_eq!(Rule::base64, hexa.as_rule());
+
+            let expr = inner.next().unwrap();
+            assert_eq!("_msg.admin", expr.as_str());
+            assert_eq!(Rule::expr, expr.as_rule());
+        });
+
+        test_parser_f("GET(=AARiYW5r= @ _msg.admin): Non-Inc", Rule::storage_read, |pair: Pair<Rule>| {
+            let mut inner = pair.into_inner();
+            let key = inner.next().unwrap();
+            assert_eq!("=AARiYW5r= @ _msg.admin", key.as_str());
+            assert_eq!(Rule::key, key.as_rule());
+
+            let write_type = inner.next().unwrap();
+            assert_eq!("Non-Inc", write_type.as_str());
+            assert_eq!(Rule::write_type, write_type.as_rule());
+
             let mut inner = key.into_inner();
             let hexa = inner.next().unwrap();
             assert_eq!("AARiYW5r=", hexa.as_str());
@@ -420,33 +461,49 @@ pub mod tests {
             assert_eq!(Rule::expr, expr2.as_rule());
         });
 
+
+        println!("hey");
+
         test_parser_f("(GET(=AARiYW5r= @ admin.yes)) >= 3.23", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("(GET(=AARiYW5r= @ admin.yes)) >= 3.23", pair.as_str());
             assert_eq!(Rule::rel_expr, pair.as_rule());
 
+            println!("a1");
+
             let pair = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("(GET(=AARiYW5r= @ admin.yes)) >= 3.23", pair.as_str());
             assert_eq!(Rule::comparison, pair.as_rule());
+
+            println!("a2");
 
             let expr1 = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("(GET(=AARiYW5r= @ admin.yes)) ", expr1.as_str()); // TODO includes the space, but inner rules are fine
             assert_eq!(Rule::expr, expr1.as_rule());
 
+            println!("a3");
+
             let gte = pair.clone().into_inner().nth(1).unwrap();
             assert_eq!(">=", gte.as_str());
             assert_eq!(Rule::gte, gte.as_rule());
+
+            println!("a4");
 
             let expr2 = pair.clone().into_inner().nth(2).unwrap();
             assert_eq!("3.23", expr2.as_str());
             assert_eq!(Rule::expr, expr2.as_rule());
         });
 
+        println!("hey2");
+
         test_parser_f("True", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("True", pair.as_str());
             assert_eq!(Rule::always_true, pair.as_rule());
         });
+
+
+        println!("hey3");
 
         test_parser_f("Type(msg) == BlaBla", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();
@@ -470,6 +527,9 @@ pub mod tests {
             assert_eq!(Rule::rust_identifier, rhs.as_rule());
         });
 
+
+        println!("hey4");
+
         test_parser_f("Type(msg) != BlaBla", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("Type(msg) != BlaBla", pair.as_str());
@@ -492,6 +552,8 @@ pub mod tests {
             assert_eq!(Rule::rust_identifier, rhs.as_rule());
         });
 
+
+        println!("hey5");
 
         test_parser_f("GET(=AARiYW5r= @ _msg.admin) == null", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();

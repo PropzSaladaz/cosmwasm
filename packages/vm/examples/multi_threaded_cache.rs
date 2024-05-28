@@ -3,10 +3,9 @@ use std::thread;
 use tempfile::TempDir;
 
 use cosmwasm_std::{coins, Empty};
-use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned};
+use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned, MockStorageWrapper};
 use cosmwasm_vm::{
-    call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, InstanceOptions,
-    Size,
+    call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, ConcurrentBackend, InstanceOptions, Size
 };
 
 // Instance
@@ -32,7 +31,7 @@ pub fn main() {
         DEFAULT_MEMORY_LIMIT,
     );
 
-    let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> = unsafe { Cache::new(options).unwrap() };
+    let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> = unsafe { Cache::new(options).unwrap() };
     let cache = Arc::new(cache);
 
     let checksum = cache.save_wasm(CONTRACT).unwrap();
@@ -51,9 +50,10 @@ pub fn main() {
 
         threads.push(thread::spawn(move || {
             let partitioned_storage = MockStoragePartitioned::default();
-            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+            let backend = Arc::new(mock_persistent_backend(&[], Arc::new(partitioned_storage)));
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(backend, &String::from(""), vec![]);
             let mut instance = cache
-                .get_instance(&checksum, backend, DEFAULT_INSTANCE_OPTIONS)
+                .get_instance(&checksum, concurrent_backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();
             println!("Done instantiating contract {i}");
 

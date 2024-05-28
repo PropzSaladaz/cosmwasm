@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use crate::{vm_manager::{SCManager, VMManager, VMMessage}, BackendApi, Querier, Storage};
+use crate::{testing::PartitionedStorage, vm_manager::{SCManager, VMManager, VMMessage}, BackendApi, Querier, Storage};
 
 const BLOCK_SIZE: usize = 1;
 
@@ -14,7 +14,7 @@ pub enum Message<'a> {
 pub struct MessageHandler<A, S, Q> 
 where
     A: BackendApi + 'static,
-    S: Storage + cosmwasm_std::Storage + 'static,
+    S: PartitionedStorage + 'static,
     Q: Querier + 'static,
 {
     vm_manager: VMManager<A, S, Q>,
@@ -24,7 +24,7 @@ where
 impl<A, S, Q> MessageHandler<A, S, Q> 
 where
     A: BackendApi, 
-    S: Storage + cosmwasm_std::Storage, 
+    S: PartitionedStorage, 
     Q: Querier
 {
 

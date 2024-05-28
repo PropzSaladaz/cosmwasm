@@ -25,6 +25,7 @@ use crate::sections::decode_sections;
 #[allow(unused_imports)]
 use crate::sections::encode_sections;
 use crate::serde::to_vec;
+use crate::testing::{StorageWrapper, BaseStorage};
 use crate::GasInfo;
 
 /// A kibi (kilo binary)
@@ -67,7 +68,7 @@ const MAX_LENGTH_ABORT: usize = 2 * MI;
 // through the env.
 
 /// Reads a storage entry from the VM's storage into Wasm memory
-pub fn do_db_read<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_db_read<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     key_ptr: u32,
 ) -> VmResult<u32> {
@@ -87,7 +88,7 @@ pub fn do_db_read<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 's
 }
 
 /// Writes a storage entry from Wasm memory into the VM's storage
-pub fn do_db_write<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_db_write<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     key_ptr: u32,
     value_ptr: u32,
@@ -126,7 +127,7 @@ pub fn do_db_write<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + '
     Ok(())
 }
 
-pub fn do_db_remove<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_db_remove<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     key_ptr: u32,
 ) -> VmResult<()> {
@@ -146,7 +147,7 @@ pub fn do_db_remove<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 
     Ok(())
 }
 
-pub fn do_addr_validate<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_addr_validate<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     source_ptr: u32,
 ) -> VmResult<u32> {
@@ -173,7 +174,7 @@ pub fn do_addr_validate<A: BackendApi + 'static, S: Storage + 'static, Q: Querie
     }
 }
 
-pub fn do_addr_canonicalize<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_addr_canonicalize<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     source_ptr: u32,
     destination_ptr: u32,
@@ -204,7 +205,7 @@ pub fn do_addr_canonicalize<A: BackendApi + 'static, S: Storage + 'static, Q: Qu
     }
 }
 
-pub fn do_addr_humanize<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_addr_humanize<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     source_ptr: u32,
     destination_ptr: u32,
@@ -237,7 +238,7 @@ const SECP256K1_VERIFY_CODE_VALID: u32 = 0;
 /// Return code (error code) for an invalid signature
 const SECP256K1_VERIFY_CODE_INVALID: u32 = 1;
 
-pub fn do_secp256k1_verify<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_secp256k1_verify<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     hash_ptr: u32,
     signature_ptr: u32,
@@ -275,7 +276,7 @@ pub fn do_secp256k1_verify<A: BackendApi + 'static, S: Storage + 'static, Q: Que
 
 pub fn do_secp256k1_recover_pubkey<
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: StorageWrapper + 'static,
     Q: Querier + 'static,
 >(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
@@ -318,7 +319,7 @@ const ED25519_VERIFY_CODE_VALID: u32 = 0;
 /// Return code (error code) for an invalid signature
 const ED25519_VERIFY_CODE_INVALID: u32 = 1;
 
-pub fn do_ed25519_verify<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_ed25519_verify<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     message_ptr: u32,
     signature_ptr: u32,
@@ -365,7 +366,7 @@ pub fn do_ed25519_verify<A: BackendApi + 'static, S: Storage + 'static, Q: Queri
 
 pub fn do_ed25519_batch_verify<
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: StorageWrapper + 'static,
     Q: Querier + 'static,
 >(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
@@ -426,7 +427,7 @@ pub fn do_ed25519_batch_verify<
 
 /// Prints a debug message to console.
 /// This does not charge gas, so debug printing should be disabled when used in a blockchain module.
-pub fn do_debug<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_debug<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     message_ptr: u32,
 ) -> VmResult<()> {
@@ -448,7 +449,7 @@ pub fn do_debug<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'sta
 }
 
 /// Aborts the contract and shows the given error message
-pub fn do_abort<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_abort<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     message_ptr: u32,
 ) -> VmResult<()> {
@@ -459,7 +460,7 @@ pub fn do_abort<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'sta
     Err(VmError::aborted(msg))
 }
 
-pub fn do_query_chain<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_query_chain<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     request_ptr: u32,
 ) -> VmResult<u32> {
@@ -481,7 +482,7 @@ pub fn do_query_chain<A: BackendApi + 'static, S: Storage + 'static, Q: Querier 
 }
 
 #[cfg(feature = "iterator")]
-pub fn do_db_scan<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_db_scan<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     start_ptr: u32,
     end_ptr: u32,
@@ -504,7 +505,7 @@ pub fn do_db_scan<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 's
 }
 
 #[cfg(feature = "iterator")]
-pub fn do_db_next<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_db_next<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     iterator_id: u32,
 ) -> VmResult<u32> {
@@ -523,7 +524,7 @@ pub fn do_db_next<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 's
 }
 
 #[cfg(feature = "iterator")]
-pub fn do_db_next_key<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_db_next_key<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     iterator_id: u32,
 ) -> VmResult<u32> {
@@ -543,7 +544,7 @@ pub fn do_db_next_key<A: BackendApi + 'static, S: Storage + 'static, Q: Querier 
 }
 
 #[cfg(feature = "iterator")]
-pub fn do_db_next_value<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+pub fn do_db_next_value<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     mut env: FunctionEnvMut<Environment<A, S, Q>>,
     iterator_id: u32,
 ) -> VmResult<u32> {
@@ -563,7 +564,7 @@ pub fn do_db_next_value<A: BackendApi + 'static, S: Storage + 'static, Q: Querie
 }
 
 /// Creates a Region in the contract, writes the given data to it and returns the memory location
-fn write_to_contract<A: BackendApi + 'static, S: Storage + 'static, Q: Querier + 'static>(
+fn write_to_contract<A: BackendApi + 'static, S: StorageWrapper + 'static, Q: Querier + 'static>(
     data: &Environment<A, S, Q>,
     store: &mut impl AsStoreMut,
     input: &[u8],
@@ -612,7 +613,7 @@ mod tests {
 
     use crate::backend::{BackendError, Storage};
     use crate::size::Size;
-    use crate::testing::{MockApi, MockQuerier, MockStorage};
+    use crate::testing::{MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper};
     use crate::wasm_backend::{compile, make_compiling_engine};
 
     static CONTRACT: &[u8] = include_bytes!("../testdata/hackatom.wasm");
@@ -643,7 +644,7 @@ mod tests {
     fn make_instance(
         api: MockApi,
     ) -> (
-        FunctionEnv<Environment<MockApi, MockStorage, MockQuerier>>,
+        FunctionEnv<Environment<MockApi, MockStorageWrapper, MockQuerier>>,
         Store,
         Box<WasmerInstance>,
     ) {
@@ -703,21 +704,21 @@ mod tests {
     }
 
     fn leave_default_data(
-        fe_mut: &mut FunctionEnvMut<Environment<MockApi, MockStorage, MockQuerier>>,
+        fe_mut: &mut FunctionEnvMut<Environment<MockApi, MockStorageWrapper, MockQuerier>>,
     ) {
         let (env, _store) = fe_mut.data_and_store_mut();
 
         // create some mock data
-        let mut storage = MockStorage::new();
+        let mut storage: MockStorageWrapper = Default::default();
         storage.set(KEY1, VALUE1).0.expect("error setting");
         storage.set(KEY2, VALUE2).0.expect("error setting");
         let querier: MockQuerier<Empty> =
             MockQuerier::new(&[(INIT_ADDR, &coins(INIT_AMOUNT, INIT_DENOM))]);
-        env.move_in(Arc::new(RwLock::new(storage)), Arc::new(RwLock::new(querier)));
+        env.move_in(storage, Arc::new(RwLock::new(querier)));
     }
 
     fn write_data(
-        fe_mut: &mut FunctionEnvMut<Environment<MockApi, MockStorage, MockQuerier>>,
+        fe_mut: &mut FunctionEnvMut<Environment<MockApi, MockStorageWrapper, MockQuerier>>,
         data: &[u8],
     ) -> u32 {
         let (env, mut store) = fe_mut.data_and_store_mut();
@@ -732,7 +733,7 @@ mod tests {
 
     fn create_empty(
         wasmer_instance: &WasmerInstance,
-        fe_mut: &mut FunctionEnvMut<Environment<MockApi, MockStorage, MockQuerier>>,
+        fe_mut: &mut FunctionEnvMut<Environment<MockApi, MockStorageWrapper, MockQuerier>>,
         capacity: u32,
     ) -> u32 {
         let (_, mut store) = fe_mut.data_and_store_mut();
@@ -748,7 +749,7 @@ mod tests {
 
     /// A Region reader that is just good enough for the tests in this file
     fn force_read(
-        fe_mut: &mut FunctionEnvMut<Environment<MockApi, MockStorage, MockQuerier>>,
+        fe_mut: &mut FunctionEnvMut<Environment<MockApi, MockStorageWrapper, MockQuerier>>,
         region_ptr: u32,
     ) -> Vec<u8> {
         let (env, store) = fe_mut.data_and_store_mut();

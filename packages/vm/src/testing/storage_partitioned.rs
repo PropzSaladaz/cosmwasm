@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use strum::Display;
+use std::{fmt, sync::RwLock};
 #[cfg(feature = "iterator")]
 use std::collections::HashMap;
-use std::ops::Deref;
 #[cfg(feature = "iterator")]
 use std::ops::{Bound, RangeBounds};
 
@@ -9,10 +9,12 @@ use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "iterator")]
 use cosmwasm_std::{Order, Record};
+use dashmap::DashMap;
+use num::pow::Pow;
 
 #[cfg(feature = "iterator")]
 use crate::BackendError;
-use crate::{BackendResult, GasInfo, Storage};
+use crate::{symb_exec::{ReadWrite, WriteType}, BackendResult, GasInfo};
 
 #[cfg(feature = "iterator")]
 const GAS_COST_LAST_ITERATION: u64 = 37;
@@ -27,26 +29,101 @@ struct Iter {
     position: usize,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum ValueType {
-    Partitioned(Vec<Vec<u8>>),
+// TODO - maybe implement Paolo's Idea
+// - Reads do not conflict with writes
+// - We then read again at the end to check if the read values weren't changed
+// Use a struct like:
+
+// struct Counter {
+//     value: AtomicI32,
+//     write_lock: Mutex<()>,
+// }
+// struct PartitionedCounter {
+//     subcounters: Vec<Arc<Counter>>,
+//     
+// }
+
+// And only lock when writing. 
+
+#[derive(Debug, Display)]
+pub enum ValueType {
+    Partitioned(Vec<Mutex<Vec<u8>>>),
     Single(Vec<u8>),
+}
+
+impl PartialEq for ValueType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (me, you) => me.read() == you.read()
+        }
+    }
 }
 
 impl ValueType {
 
-    /// Reads the Vec<u8> independently of which variant it is.
+    /// Used for testing purposes
+    #[allow(dead_code)]
+    fn num_partitions(&self) -> usize {
+        match self {
+            Self::Single(_) => 1,
+            Self::Partitioned(partitions) => partitions.len()
+        }
+    }
+
+    /// Works as "set all partitions". Meaning we set the item as a single value,
+    /// and if the item was previously partitioned, we divide the value of the new item into the partitions
+    fn set(&mut self, value: &[u8]) {
+        match self {
+            Self::Partitioned(vec) =>  {
+                let n_partitions = vec.len() as u8;
+                *self = Self::Single(value.to_vec());
+                self.partition(n_partitions);
+            },
+            Self::Single(vec) => {
+                *vec = value.to_vec(); 
+            }
+        }
+    }
+
+    /// Only sets the specified partition IFF the item is partitioned.
+    /// If the item is Single, then just set the Single item.
+    fn set_partition(&self, value: &[u8], partition: usize) {
+        match self {
+            Self::Partitioned(partitions) =>  {
+                let mut lock = partitions.get(partition).unwrap().lock().unwrap();
+                *lock = value.to_vec();
+                },
+            Self::Single(_) => {
+                unreachable!("Set partition should never be called on a Single item as there is not write-lock from the caller");
+            }
+        }
+    }
+
+
     /// If is partitioned, sums all partitions.
     /// Else, returns the value directly 
     fn read(&self) -> Vec<u8> {
         match self {
             Self::Partitioned(partitions) =>  {
-                let mut total: Vec<u8> = vec![0x00; partitions.get(0).unwrap().len()];
+                let mut total: Vec<u8> = vec![0x00; partitions.get(0).unwrap().lock().unwrap().len()];
                 for part in partitions {
-                    total = ValueType::bitwise_add(total, part);
+                    {
+                        let part = part.lock().unwrap();
+                        let part_val = part.as_ref();
+                        total = ValueType::bitwise_add(total, part_val);
+                    }
                 };
                 total
             },
+            Self::Single(vec) => vec.clone()
+        }
+    }
+
+    /// If is partitioned, read a single partition.
+    /// Else, returns the value directly 
+    fn read_partition(&self, partition: usize) -> Vec<u8> {
+        match self {
+            Self::Partitioned(partitions) => partitions.get(partition).unwrap().lock().unwrap().clone(),
             Self::Single(vec) => vec.clone()
         }
     }
@@ -141,10 +218,12 @@ impl ValueType {
                     if n_shifts > 0 { bits_for_next_byte =  remainder << (8 - n_shifts); }
                 }
 
+                // populate all partitions with same amount
                 for n in 0..(total_part-1) {
                     partitions[n] = vec.clone();
                 }
 
+                // place the excess in the last partition
                 let mut remainder_vec = vec![0u8; vec.len()];
                 let last = remainder_vec.len() - 1;
                 remainder_vec[last] = remainder;
@@ -154,28 +233,209 @@ impl ValueType {
             _ => () 
         }
 
+        let partitions = partitions.into_iter().map(|i| Mutex::new(i)).collect();
+
         *self = Self::Partitioned(partitions);
     }
 }
 
-// TODO - think about this:
-// Wouldn't it be better to use mutrex for partitioned items (since we know they are mostly writes
-// but use ReadWriteLocks for single items as we know they may have sus«bstancial reads?)
-type ConcurrentItem = Arc<Mutex<ValueType>>; 
+/// Serves as a wrapper around storage, created when executing a tx
+/// with some specific sender address.
+/// When the WASM code then calls the db_write, it will use the 
+/// current sender address saved in this context to choose the storage item 
+/// partition to write to.
+/// This wrapper also stores the RWS and marks each read/write for each
+/// call to choose whether the current write/read is supposed to be
+/// aimed to a single partition, or to all partitions.
+#[derive(Debug)]
+pub struct MockStorageWrapper {
+    // TODO - Think about 
+    // DO we need to wrap in a RwLock? Can remove and insert operations run in parallel? Or do they conflict since they
+    // may alter inner data from the underlying BTreeMap?
+    // As for now, writes conflict with reads - later on try to get rid of RwLock
+    storage: Arc<dyn PartitionedStorage>,
+    sender_address: Vec<u8>,
+    rws: Vec<ReadWrite>,
+    rws_idx: usize,
+    partitioned_items: HashMap<Vec<u8>, bool>
+}
 
-#[derive(Default, Debug)]
-pub struct MockStoragePartitioned {
-    data: BTreeMap<Vec<u8>, ConcurrentItem>,
+impl MockStorageWrapper {
+    pub fn default(storage: Arc<MockStoragePartitioned>) -> Self {
+        Self::new(storage, &String::from(""), vec![])
+    }
+}
+
+impl Default for MockStorageWrapper {
+    fn default() -> Self {
+        Self::new(Arc::new(MockStoragePartitioned::default()), &String::from(""), vec![])
+    }
+}
+
+/// Includes Wrapper-specific operations. Each of these functions (except get_immutable)
+/// alter the current object to be updated to know which Read/Write it is currently
+/// on, following the RWS sequence from the profile.
+pub trait StorageWrapper: BaseStorage {
+
+    fn new(storage: Arc<dyn PartitionedStorage>, sender_address: &String, rws: Vec<ReadWrite>) -> Self;
+
+    /// Reads a key, and checks if it matches the expected operation type (read)
+    /// from the RWS profile at the current position.
+    /// Each read advances the current ReadWrite position in the RWS sequence
+    fn get(&mut self, key: &[u8]) -> BackendResult<Option<Vec<u8>>>;
+
+    /// Reads from all partitions - Does not alter our current position in the RWS.
+    /// used only when getting the RWS at the start of all VM execution.
+    /// These reads do not use the context
+    /// TODO - is this needed??
+    fn get_immutable(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>>;
+
+
+    fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()>;
+}
+
+/// Storage functionality that is common both to Wrapper and to underlying partitioned storage
+impl BaseStorage for MockStorageWrapper {
+    fn scan(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        order: Order,
+    ) -> BackendResult<u32> {
+        self.storage.scan(start, end, order)
+    }
+
     #[cfg(feature = "iterator")]
-    iterators: HashMap<u32, Iter>,
+    fn next(&self, iterator_id: u32) -> BackendResult<Option<Record>> {
+        self.storage.next(iterator_id)
+    }
+
+    fn remove(&self, key: &[u8]) -> BackendResult<()> {
+        BaseStorage::remove(&*self.storage, key)
+    }
+}
+
+/// Redirects all operations to the self.storage.
+/// Updates the rws_idx for each read/write
+impl StorageWrapper for MockStorageWrapper {
+
+    fn get(&mut self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
+        let res = match self.rws.get(self.rws_idx) {
+            Some(rws) => match rws {
+                ReadWrite::Write { key: _, commutativity: _ } => 
+                    unreachable!("Trying to read an item from storage, but the corresponding operation was a write in the predicted RWS"),
+                ReadWrite::Read { key: _, commutativity } => match commutativity {
+                    WriteType::Commutative => {
+                        let commutative = true;
+                        let is_partitioned = self.partitioned_items.contains_key(key);
+                        PartitionedStorage::get(&*self.storage, key, &self.sender_address.as_slice(), commutative, is_partitioned)
+                    }
+                    WriteType::NonCommutative => {
+                        let commutative = false;
+                        let is_partitioned = self.partitioned_items.contains_key(key);
+                        PartitionedStorage::get(&*self.storage, key, &self.sender_address.as_slice(), commutative, is_partitioned)
+                    }
+                }
+            },
+
+            None => {
+                let commutative = false;
+                let is_partitioned = self.partitioned_items.contains_key(key);
+                PartitionedStorage::get(&*self.storage, key, &self.sender_address.as_slice(), commutative, is_partitioned)
+            }
+        };
+    
+        self.rws_idx += 1;
+        res
+    }
+
+    fn get_immutable(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
+        PartitionedStorage::get(&*self.storage, key, &self.sender_address.as_slice(), false, false)
+    }
+
+    fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()> {
+        // match current Read/Write in the sequence of the RWS
+        let res = match self.rws.get(self.rws_idx) {
+            Some(rws) => match rws {
+                ReadWrite::Write { key: _, commutativity } => match commutativity {
+                    WriteType::Commutative    => {
+                        let commutative = true;
+                        let is_partitioned = self.partitioned_items.contains_key(key);
+                        PartitionedStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
+                    }
+                    WriteType::NonCommutative => {
+                        let commutative = false;
+                        let is_partitioned = self.partitioned_items.contains_key(key);
+                        PartitionedStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
+                    }
+                },
+                ReadWrite::Read { key, commutativity: _ } => 
+                    unreachable!("Trying to set an item in storage, but the corresponding operation was a read in the predicted RWS")
+            },
+
+            None => {
+                let commutative: bool = false;
+                let is_partitioned = self.partitioned_items.contains_key(key);
+                PartitionedStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
+            }
+        };
+
+        self.rws_idx += 1;
+        res
+    }
+    
+    fn new(storage: Arc<dyn PartitionedStorage>, sender_address: &String, rws: Vec<ReadWrite>) -> Self {
+        Self {
+            storage,
+            sender_address: sender_address.clone().into_bytes().to_vec(),
+            rws,
+            rws_idx: 0,
+            partitioned_items: HashMap::new(),
+        }
+    }
+}
+
+impl<T: BaseStorage> BaseStorage for &T {
+    fn scan(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        order: Order,
+    ) -> BackendResult<u32> {
+        (**self).scan(start, end, order)
+    }
+
+    #[cfg(feature = "iterator")]
+    fn next(&self, iterator_id: u32) -> BackendResult<Option<Record>> {
+        (**self).next(iterator_id)
+    }
+
+    fn remove(&self, key: &[u8]) -> BackendResult<()> {
+        (**self).remove(key)
+    }
+}
+
+// TODO - think about this:
+// We use RwLock to work as a barrier for when ValueType is partitioned.
+// WHenever we need to write all or read all, we lock the RwLock for write.
+// Else, we lock it for read
+type ConcurrentItem = Arc<RwLock<ValueType>>; 
+
+#[derive(Default)]
+pub struct MockStoragePartitioned {
+    data: DashMap<Vec<u8>, ConcurrentItem>,
+    #[cfg(feature = "iterator")]
+    iterators: HashMap<u32, Mutex<Iter>>,
+    n_partition_shifts: u8,
+    n_partitions: u8,
 }
 
 impl MockStoragePartitioned {
-    pub fn new() -> Self {
-        MockStoragePartitioned::default()
+    pub fn default() -> Self {
+        Self::new(2)
     }
 
-    fn get_item(&self, item: &[u8]) -> ConcurrentItem {
+    pub fn get_item(&self, item: &[u8]) -> ConcurrentItem {
         self.data.get(item).unwrap().to_owned()
     }
 
@@ -201,76 +461,236 @@ impl MockStoragePartitioned {
     }
 }
 
+/// Custom implementation of Storage trait, tailored to partitioned storage.
+/// Only differs in gets and sets. Now we have a set/get all and a set/get partition.
+pub trait PartitionedStorage: BaseStorage + cosmwasm_std::Storage + fmt::Debug {
+
+    fn new(n_partition_shifts: u8) -> Self where Self: Sized;
+
+    // TODO - if we want to get rid of RwLock in the StorageWrapper that holds this PartitionedStorage, we need to alter all methods 
+    // not to mutate any data.
+
+    /// Reads the value of an item specified by the key.
+    /// Sender address is used whenever the item is partitioned, to choose the partition we read from.
+    /// Types of reads:
+    ///     Commutative &  Partitioned || Commutative & !Partitioned -> lock item as read()
+    ///    !Commutative &  Partitioned                               -> lock item as write()
+    ///    !Commutative & !Partitioned                               -> lock item as read()
+    fn get(&self, key: &[u8], sender_address: &[u8], commutative: bool, partitioned: bool) -> BackendResult<Option<Vec<u8>>>;
+
+    /// Writes the value of an item specified by the key.
+    /// Sender address is used whenever the item is partitioned, to choose the partition we read from.
+    /// Types of reads:
+    ///     Commutative &  Partitioned  -> lock item as read()  (we can lock to read the partitioned item, and only lock for write our partition)
+    ///     Commutative & !Partitioned  -> lock item as write() (we need to lock entire item, as it is single)
+    ///    !Commutative &  Partitioned  -> lock item as write() (we need to lock the entire partitioned item as we will write to all partitions)
+    ///    !Commutative & !Partitioned  -> lock item as write() (we need to lock entire item, as it is single)  
+    fn set(&self, key: &[u8], value: &[u8], sender_address: &[u8], commutative: bool, partitioned: bool) -> BackendResult<()>;
+
+    /// Partition items identified by the passed keys into N partitions.
+    /// N is defined as a constant.
+    fn partition_items(&self, items: Vec<Vec<u8>>);
+
+    /// Convert the specified partitioned items into single items.
+    fn sum_partitioned_items(&self, items: Vec<Vec<u8>>);
+
+}
+
+pub trait BaseStorage {
+    /// Allows iteration over a set of key/value pairs, either forwards or backwards.
+    /// Returns an interator ID that is unique within the Storage instance.
+    ///
+    /// The bound `start` is inclusive and `end` is exclusive.
+    ///
+    /// If `start` is lexicographically greater than or equal to `end`, an empty range is described, mo matter of the order.
+    ///
+    /// This call must not change data in the storage, but creating and storing a new iterator can be a mutating operation on
+    /// the Storage implementation.
+    /// The implementation must ensure that iterator IDs are assigned in a deterministic manner as this is
+    /// environment data that is injected into the contract.
+    fn scan(
+        &self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        order: Order,
+    ) -> BackendResult<u32>;
+
+    /// Returns the next element of the iterator with the given ID.
+    ///
+    /// If the ID is not found, a BackendError::IteratorDoesNotExist is returned.
+    ///
+    /// This call must not change data in the storage, but incrementing an iterator can be a mutating operation on
+    /// the Storage implementation.
+    #[cfg(feature = "iterator")]
+    fn next(&self, iterator_id: u32) -> BackendResult<Option<Record>>;
+
+    /// Returns the next value of the iterator with the given ID.
+    /// Since the iterator is incremented, the corresponding key will never be accessible.
+    ///
+    /// If the ID is not found, a BackendError::IteratorDoesNotExist is returned.
+    ///
+    /// The default implementation uses [`Storage::next`] and discards the key.
+    /// More efficient implementations might be possible depending on the storage.
+    #[cfg(feature = "iterator")]
+    fn next_value(&self, iterator_id: u32) -> BackendResult<Option<Vec<u8>>> {
+        let (result, gas_info) = self.next(iterator_id);
+        let result = result.map(|record| record.map(|(_, v)| v));
+        (result, gas_info)
+    }
+
+    /// Returns the next key of the iterator with the given ID.
+    /// Since the iterator is incremented, the corresponding value will never be accessible.
+    ///
+    /// If the ID is not found, a BackendError::IteratorDoesNotExist is returned.
+    ///
+    /// The default implementation uses [`Storage::next`] and discards the value.
+    /// More efficient implementations might be possible depending on the storage.
+    #[cfg(feature = "iterator")]
+    fn next_key(&self, iterator_id: u32) -> BackendResult<Option<Vec<u8>>> {
+        let (result, gas_info) = self.next(iterator_id);
+        let result = result.map(|record| record.map(|(k, _)| k));
+        (result, gas_info)
+    }
+
+    /// Removes a database entry at `key`.
+    ///
+    /// The current interface does not allow to differentiate between a key that existed
+    /// before and one that didn't exist. See https://github.com/CosmWasm/cosmwasm/issues/290
+    fn remove(&self, key: &[u8]) -> BackendResult<()>;
+}
+
+impl PartitionedStorage for MockStoragePartitioned {
+
+    fn get(&self, key: &[u8], sender_address: &[u8], commutative: bool, partitioned: bool) -> BackendResult<Option<Vec<u8>>> {
+        let gas_info = GasInfo::with_externally_used(key.len() as u64);
+        let item;
+
+        // if commutative, lock RwLock for reading only as there are only 2 cases:
+        // 1 - item is partitioned, we need only to read 1 partition
+        //      - By locking the item as read(), we allow for other partitions to be changes while we read our own.
+        // 2 - item is not partitioned, we need to read the single item
+        if commutative {
+            let partition = (sender_address[0] % self.n_partitions) as usize;
+            item = match self.data.get(key) {
+                Some(data) => Some(data.read().unwrap().read_partition(partition)),
+                None => None
+            };
+        }
+        else {
+            // If read is not commutative & we need to read all partitions, we need to lock the item for write()
+            // - this will disallow any threads accessing this item - only this thread accesses the partitions
+            //   of this item, as we need to read all partitions with the full item locked first, and only
+            //   then release the lock. Else other threads could alter some partition's value
+            if partitioned {
+                item = match self.data.get(key) {
+                    Some(data) => Some(data.write().unwrap().read()),
+                    None => None
+                };
+            }
+            else {
+                item = match self.data.get(key) {
+                    Some(data) => Some(data.read().unwrap().read()),
+                    None => None
+                };
+                
+            }
+        }
+        (Ok(item), gas_info)
+    }
+
+
+    fn partition_items(&self, items: Vec<Vec<u8>>) {
+        for item in items {
+            self.data.entry(item).and_modify(|item| 
+                (*item).write().unwrap().partition(self.n_partition_shifts));
+        }
+    }
+
+    fn sum_partitioned_items(&self, items: Vec<Vec<u8>>) {
+        for item in items {
+            self.data.entry(item).and_modify(|item| 
+                (*item).write().unwrap().sum_partition());
+        }
+    }
+
+    fn set(&self, key: &[u8], value: &[u8], sender_address: &[u8], commutative: bool, partitioned: bool) -> BackendResult<()> {
+
+        // TODO - currently we read, check if exists, if not we insert. Then we read again, modify & write
+        // Needs to be more efficient!
+
+        if !self.data.contains_key(key) {
+            self.data.insert(key.to_vec(), Arc::new(RwLock::new(ValueType::Single([0u8].to_vec()))));
+            if partitioned {
+                self.data.get_mut(key).unwrap().write().unwrap().partition(self.n_partition_shifts);
+            }
+            // TODO! TEST THIS - a print after this, for 4 partitions, was putting value 1 in last partition
+            // even though the inital value set was 0!!!
+        }
+
+        if commutative && partitioned {
+            let partition = (sender_address[0] % self.n_partitions) as usize;
+            println!("partition: {}", partition);
+            let item = self.data.get_mut(key).unwrap();
+            item.read().unwrap().set_partition(value, partition);
+        }
+        else {
+            self.data.get_mut(key).unwrap().write().unwrap().set(value);
+        }
+
+        let gas_info = GasInfo::with_externally_used((key.len() + value.len()) as u64);
+        (Ok(()), gas_info)
+
+    }
+    
+    fn new(n_partition_shifts: u8) -> Self {
+        Self {
+            data: DashMap::new(),
+            iterators: HashMap::new(),
+            n_partition_shifts: n_partition_shifts,
+            n_partitions: 2.pow(n_partition_shifts) as u8,
+        }
+    }
+
+
+}
 
 /// Implementation of cosmwasm_std::Storage is necessary as this is the storage type
 /// used for smart contract's entry point calls. When parsing the RWS, we need to pass
 /// a DepsMut struct, which is defined in std, thus needing an implementation of
-/// cosmwasm_std::Storage
+/// cosmwasm_std::Storage. We will only use get() function from this trait.
 impl cosmwasm_std::Storage for MockStoragePartitioned {
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        Storage::get(self, key).0.unwrap()
+        PartitionedStorage::get(self, key, b"", false, false).0.unwrap()
     }
 
+    /// All code below should never be reachable
     fn range<'a>(
         &'a self,
         start: Option<&[u8]>,
         end: Option<&[u8]>,
         order: Order,
     ) -> Box<dyn Iterator<Item = Record> + 'a> {
-        todo!()
+        unreachable!()
     }
 
     fn set(&mut self, key: &[u8], value: &[u8]) {
-        Storage::set(self, key, value).0.unwrap()
+        unreachable!()
     }
 
     fn remove(&mut self, key: &[u8]) {
-        Storage::remove(self, key).0.unwrap()
+        unreachable!()
     }
 }
 
-impl Storage for MockStoragePartitioned {
-    fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
-        
-        let gas_info = GasInfo::with_externally_used(key.len() as u64);
-
-        let item = match self.data.get(key) {
-            Some(data) => Some(data.lock().unwrap().read()),
-            None => None
-        };
-
-        // TODO
-        println!("Got item: {:?}    from: {:?}", item.clone(), String::from_utf8(key.to_owned()));
-        
-        (Ok(item), gas_info)
-    }
-
-
-    fn partition_items(&mut self, items: Vec<Vec<u8>>) {
-        const N_PARTITION_SHIFTS: u8 = 2; // 4 partitions 
-        for item in items {
-            self.data.entry(item).and_modify(|item| 
-                (*item).lock().unwrap().partition(N_PARTITION_SHIFTS));
-        }
-    }
-
-    fn sum_partitioned_items(&mut self, items: Vec<Vec<u8>>) {
-        for item in items {
-            self.data.entry(item).and_modify(|item| 
-                (*item).lock().unwrap().sum_partition());
-        }
-    }
-    
-
-    
+impl BaseStorage for MockStoragePartitioned {
     #[cfg(feature = "iterator")]
     fn scan(
-        &mut self,
+        &self,
         start: Option<&[u8]>,
         end: Option<&[u8]>,
         order: Order,
     ) -> BackendResult<u32> {
-        /* 
+        /* TODO
         let gas_info = GasInfo::with_externally_used(GAS_COST_RANGE);
         let bounds = range_bounds(start, end);
 
@@ -301,8 +721,9 @@ impl Storage for MockStoragePartitioned {
     }
 
     #[cfg(feature = "iterator")]
-    fn next(&mut self, iterator_id: u32) -> BackendResult<Option<Record>> {
-        let iterator = match self.iterators.get_mut(&iterator_id) {
+    fn next(&self, iterator_id: u32) -> BackendResult<Option<Record>> {
+        // TODO
+        let iterator = match self.iterators.get(&iterator_id) {
             Some(i) => i,
             None => {
                 return (
@@ -311,11 +732,12 @@ impl Storage for MockStoragePartitioned {
                 )
             }
         };
+        let mut iterator = iterator.lock().unwrap();
 
         let (value, gas_info): (Option<Record>, GasInfo) =
             if iterator.data.len() > iterator.position {
                 let item = iterator.data[iterator.position].clone();
-                iterator.position += 1;
+                (*iterator).position += 1;
                 let gas_cost = (item.0.len() + item.1.len()) as u64;
                 (Some(item), GasInfo::with_cost(gas_cost))
             } else {
@@ -325,19 +747,20 @@ impl Storage for MockStoragePartitioned {
         (Ok(value), gas_info)
     }
 
-    fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()> {
-        
-        println!("Inserted item: {:?}     at: {:?}", value, String::from_utf8(key.to_owned()));
-
-        self.data.insert(key.to_vec(), Arc::new(Mutex::new(ValueType::Single(value.to_vec()))));
-        let gas_info = GasInfo::with_externally_used((key.len() + value.len()) as u64);
-        (Ok(()), gas_info)
-    }
-
-    fn remove(&mut self, key: &[u8]) -> BackendResult<()> {
+    fn remove(&self, key: &[u8]) -> BackendResult<()> {
         self.data.remove(key);
         let gas_info = GasInfo::with_externally_used(key.len() as u64);
         (Ok(()), gas_info)
+    }
+}
+
+impl fmt::Debug for MockStoragePartitioned {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MockStoragePartitioned")
+            .field("data", &self.data)
+            .field("iterators", &self.iterators)
+            .field("n_partition_shifts", &self.n_partition_shifts)
+            .field("n_partitions", &self.n_partitions).finish()
     }
 }
 
@@ -362,22 +785,20 @@ fn clone_item(item_ref: BTreeMapRecordRef) -> Record {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::Value;
-
     use super::*;
 
     #[test]
     fn sum_partitions() {
         let part = ValueType::Partitioned(vec![
-            vec![1, 255],
-            vec![0, 255]
+            Mutex::new(vec![1, 255]),
+            Mutex::new(vec![0, 255])
         ]);
 
         assert_eq!(part.read(), vec![2, 254]);
 
         let part = ValueType::Partitioned(vec![
-            vec![0, 255, 200],
-            vec![0, 0  , 100]
+            Mutex::new(vec![0, 255, 200]),
+            Mutex::new(vec![0, 0  , 100])
         ]);
 
         assert_eq!(part.read(), vec![1, 0, 44]);
@@ -388,55 +809,85 @@ mod tests {
         let mut part = ValueType::Single(vec![255]);
         part.partition(0); // 1 partition
         assert_eq!(part.read(), vec![255]);
+        assert_eq!(part.num_partitions(), 1);
 
         let mut part = ValueType::Single(vec![255]);
         part.partition(1); // 2 partitions
         assert_eq!(part.read(), vec![255]);
+        assert_eq!(part.num_partitions(), 2);
 
         let mut part = ValueType::Single(vec![255]);
         part.partition(2); // 4 partitions
+        assert_eq!(part.read(), vec![255]);
+        assert_eq!(part.num_partitions(), 4);
+
+        let mut part = ValueType::Single(vec![0]);
+        part.partition(2); // 4 partitions
+        assert_eq!(part.read(), vec![0]);
+        assert_eq!(part.num_partitions(), 4);
 
         let mut part = ValueType::Single(vec![255]);
         part.partition(3); // 8 partitions
         assert_eq!(part.read(), vec![255]);
+        assert_eq!(part.num_partitions(), 8);
 
         let mut part = ValueType::Single(vec![255]);
-        part.partition(4); // 8 partitions
+        part.partition(4); // 16 partitions
         assert_eq!(part.read(), vec![255]);
+        assert_eq!(part.num_partitions(), 16);
 
         let mut part = ValueType::Single(vec![177, 255]);
         part.partition(1); // 2 partitions
         assert_eq!(part.read(), vec![177, 255]);
+        assert_eq!(part.num_partitions(), 2);
 
         let mut part = ValueType::Single(vec![63, 144, 177, 255]);
         part.partition(2); // 4 partitions
         assert_eq!(part.read(), vec![63, 144, 177, 255]);
+        assert_eq!(part.num_partitions(), 4);
 
         let mut part = ValueType::Single(vec![63, 144, 177, 255]);
-        part.partition(4); // 4 partitions
+        part.partition(4); // 16 partitions
         assert_eq!(part.read(), vec![63, 144, 177, 255]);
+        assert_eq!(part.num_partitions(), 16);
+    }
+
+    #[test]
+    fn set_value_type() {
+        let mut part = ValueType::Single(vec![255]);
+        part.set(&vec![123]);
+        assert_eq!(part.read(), vec![123]);
+        assert_eq!(part.num_partitions(), 1);
+
+        let mut part = ValueType::Single(vec![255]);
+        part.partition(1);
+        part.set_partition(&vec![5], 0);
+        assert_eq!(part.read_partition(0), vec![5]);
+        assert_eq!(part.read_partition(1), vec![128]);
+        assert_eq!(part.num_partitions(), 2);
+
     }
 
     #[test]
     fn partition_storage() {
-        let mut storage = MockStoragePartitioned::new();
+        let storage = MockStoragePartitioned::new(2);
         
         let key = b"foo";
         let value = [1u8, 2u8, 3u8];
 
-        storage.set(key, &value).0.unwrap();
+        storage.set(key, &value, b"", false, false).0.unwrap();
 
         storage.partition_items(vec![key.to_vec()]);
 
         let item = storage.get_item(key);
 
         assert_eq!(
-            *item.lock().unwrap(), 
+            *item.read().unwrap(), 
             ValueType::Partitioned(vec![
-                vec![0, 64, 128],
-                vec![0, 64, 128],
-                vec![0, 64, 128],
-                vec![0, 64, 131],
+                Mutex::new(vec![0, 64, 128]),
+                Mutex::new(vec![0, 64, 128]),
+                Mutex::new(vec![0, 64, 128]),
+                Mutex::new(vec![0, 64, 131]),
             ])
         );
 
@@ -444,49 +895,107 @@ mod tests {
         let item = storage.get_item(key);
 
         assert_eq!(
-            *item.lock().unwrap(), 
+            *item.read().unwrap(), 
             ValueType::Single(value.to_vec())
         );
     }
 
     #[test]
+    fn partitioned_storage_set_and_get() {
+        println!("s000");
+        let storage = MockStoragePartitioned::new(2);
+        let key = b"foo";
+        let key2 = b"foo2";
+        let value = [1u8];
+
+        // set full item
+        println!("s0");
+        storage.set(key, &value, b"", true, false).0.unwrap();
+        println!("s0.5");
+        storage.set(key2, &value, b"", false, true).0.unwrap();
+
+        println!("s1");
+        
+        storage.partition_items(vec![key.to_vec()]);
+
+        const VAL1: [u8; 1] = [1u8];
+        const VAL2: [u8; 1] = [2u8];
+        const VAL3: [u8; 1] = [3u8];
+        const VAL4: [u8; 1] = [4u8];
+        const SUM: [u8; 1] = [10u8];
+
+        println!("s2");
+        // set commutative & partitioned - set a different value for each partition
+        storage.set(key, &VAL1, &[8u8], true, true).0.unwrap();
+        storage.set(key, &VAL2, &[9u8], true, true).0.unwrap();
+        println!("s2.5");
+        storage.set(key, &VAL3, &[10u8], true, true).0.unwrap();
+        storage.set(key, &VAL4, &[7u8], true, true).0.unwrap();
+
+        println!("{:#?}", storage);
+        // get commutative ( note that the partition flag is irrelevant here) - read value from specific partition
+        let part1 = storage.get(key, &[4u8], true, true).0.unwrap().unwrap();
+        let part2 = storage.get(key, &[5u8], true, false).0.unwrap().unwrap();
+        println!("s3.5");
+        let part3 = storage.get(key, &[6u8], true, true).0.unwrap().unwrap();
+        let part4 = storage.get(key, &[7u8], true, false).0.unwrap().unwrap();
+
+        println!("s4");
+        assert_eq!(part1, VAL1.to_vec());
+        assert_eq!(part2, VAL2.to_vec());
+        assert_eq!(part3, VAL3.to_vec());
+        assert_eq!(part4, VAL4.to_vec());
+
+        println!("s5");
+        // get non-commutative & partitioned - sum all sub-counters
+        let full = storage.get(key, &[7u8], false, true).0.unwrap().unwrap();
+        assert_eq!(full, SUM.to_vec());
+
+        println!("s6");
+        // get non-commutative & non-partitioned - read single item
+        let full = storage.get(key2, &[7u8], false, false).0.unwrap().unwrap();
+        assert_eq!(full, value.to_vec());
+
+    }
+
+    #[test]
     fn get_and_set() {
-        let mut store = MockStoragePartitioned::new();
-        assert_eq!(None, store.get(b"foo").0.unwrap());
-        store.set(b"foo", b"bar").0.unwrap();
-        assert_eq!(Some(b"bar".to_vec()), store.get(b"foo").0.unwrap());
-        assert_eq!(None, store.get(b"food").0.unwrap());
+        let mut store = MockStoragePartitioned::default();
+        assert_eq!(None, store.get(b"foo", b"", false, false).0.unwrap());
+        store.set(b"foo", b"bar", b"", false, false).0.unwrap();
+        assert_eq!(Some(b"bar".to_vec()), store.get(b"foo", b"", false, false).0.unwrap());
+        assert_eq!(None, store.get(b"food", b"", false, false).0.unwrap());
     }
 
     #[test]
     fn delete() {
-        let mut store = MockStoragePartitioned::new();
-        store.set(b"foo", b"bar").0.unwrap();
-        store.set(b"food", b"bank").0.unwrap();
+        let mut store = MockStoragePartitioned::default();
+        store.set(b"foo", b"bar", b"", false, false).0.unwrap();
+        store.set(b"food", b"bank", b"", false, false).0.unwrap();
         store.remove(b"foo").0.unwrap();
 
-        assert_eq!(None, store.get(b"foo").0.unwrap());
-        assert_eq!(Some(b"bank".to_vec()), store.get(b"food").0.unwrap());
+        assert_eq!(None, store.get(b"foo", b"", false, false).0.unwrap());
+        assert_eq!(Some(b"bank".to_vec()), store.get(b"food", b"", false, false).0.unwrap());
     }
 
     #[test]
     #[ignore = "not_implemented_yet"]
     #[cfg(feature = "iterator")]
     fn iterator() {
-        let mut store = MockStoragePartitioned::new();
-        store.set(b"foo", b"bar").0.expect("error setting value");
+        let mut store = MockStoragePartitioned::default();
+        store.set(b"foo", b"bar", b"", false, false).0.expect("error setting value");
 
         // ensure we had previously set "foo" = "bar"
-        assert_eq!(store.get(b"foo").0.unwrap(), Some(b"bar".to_vec()));
+        assert_eq!(store.get(b"foo", b"", false, false).0.unwrap(), Some(b"bar".to_vec()));
         let iter_id = store.scan(None, None, Order::Ascending).0.unwrap();
         assert_eq!(store.all(iter_id).0.unwrap().len(), 1);
 
         // setup - add some data, and delete part of it as well
-        store.set(b"ant", b"hill").0.expect("error setting value");
-        store.set(b"ze", b"bra").0.expect("error setting value");
+        store.set(b"ant", b"hill", b"", false, false).0.expect("error setting value");
+        store.set(b"ze", b"bra", b"", false, false).0.expect("error setting value");
 
         // noise that should be ignored
-        store.set(b"bye", b"bye").0.expect("error setting value");
+        store.set(b"bye", b"bye", b"", false, false).0.expect("error setting value");
         store.remove(b"bye").0.expect("error removing key");
 
         // unbounded

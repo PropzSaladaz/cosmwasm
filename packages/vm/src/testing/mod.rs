@@ -20,9 +20,9 @@ pub use instance::{
     test_io, MockInstanceOptions,
 };
 pub use mock::{
-    mock_backend, mock_persistent_backend, mock_backend_with_balances, mock_env, mock_info, MockApi, MOCK_CONTRACT_ADDR,
+    mock_backend, mock_persistent_backend, mock_concurrent_backend, mock_backend_with_balances, mock_env, mock_info, MockApi, MOCK_CONTRACT_ADDR,
 };
 pub use querier::MockQuerier;
 pub use storage::MockStorage;
 
-pub use storage_partitioned::MockStoragePartitioned;
+pub use storage_partitioned::{MockStoragePartitioned, MockStorageWrapper, StorageWrapper, ValueType, PartitionedStorage, BaseStorage};

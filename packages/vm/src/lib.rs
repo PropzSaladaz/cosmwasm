@@ -25,7 +25,7 @@ mod msg_handler;
 mod vm_manager;
 
 pub use crate::backend::{
-    Backend, BackendApi, BackendError, BackendResult, GasInfo, Querier, Storage,
+    Backend, BackendApi, BackendError, BackendResult, GasInfo, Querier, Storage, ConcurrentBackend
 };
 pub use crate::cache::{AnalysisReport, Cache, CacheOptions, Metrics, Stats};
 pub use crate::calls::{

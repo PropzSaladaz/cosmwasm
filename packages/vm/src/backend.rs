@@ -4,6 +4,10 @@ use std::ops::AddAssign;
 use std::string::FromUtf8Error;
 use thiserror::Error;
 
+use crate::symb_exec::ReadWrite;
+use crate::testing::{MockStorageWrapper, PartitionedStorage, StorageWrapper};
+use crate::vm_manager::PersistentBackend;
+
 use cosmwasm_std::{Binary, ContractResult, SystemResult};
 #[cfg(feature = "iterator")]
 use cosmwasm_std::{Order, Record};
@@ -87,18 +91,43 @@ pub struct Backend<A: BackendApi, S: Storage, Q: Querier> {
 }
 
 /// TODO
-/// Note the commend on the Backend struct above. Here we can clone
+/// Note the comment on the Backend struct above. Here we can clone
 /// as we will only clone the Arc, not the storage itself.
 #[derive(Clone)]
 pub struct ConcurrentBackend<A, S, Q> 
 where
     A: BackendApi, 
-    S: Storage + cosmwasm_std::Storage, 
+    S: StorageWrapper,
     Q: Querier
 {
     pub api: A,
-    pub storage: Arc<RwLock<S>>,
+    pub storage: S,
     pub querier: Arc<RwLock<Q>>,
+}
+
+impl<A, S, Q> ConcurrentBackend<A, S, Q> 
+where
+    A: BackendApi, 
+    S: StorageWrapper, 
+    Q: Querier
+{
+    pub fn new<S2>(backend: Arc<PersistentBackend<A, S2, Q>>, sender_addres: &String, rws: Vec<ReadWrite>) -> ConcurrentBackend<A, MockStorageWrapper, Q>
+    where
+        S2: PartitionedStorage + 'static, 
+    {
+        // TODO -  maybe we can use Rc instead of Arc - has less overhead, and there will only be  1 COncurrentBackend per thread
+        let api = (*backend.api).clone();
+        let storage = Arc::clone(&backend.storage);
+        let querier = Arc::clone(&backend.querier);
+
+        let storage_wrapper = MockStorageWrapper::new(storage, sender_addres, rws);
+        
+        ConcurrentBackend {
+            api: api,
+            storage: storage_wrapper,
+            querier,
+        }
+    }
 }
 
 /// Access to the VM's backend storage, i.e. the chain

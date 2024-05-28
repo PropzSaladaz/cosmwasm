@@ -26,10 +26,6 @@ fn run_persistent_vm() {
         mapping.get(&contract_code_id).unwrap().get(&instantiation).unwrap().clone()
     };
 
-    let storage_builder = || {
-        MockStoragePartitioned::default()
-    };
-
     let backend_builder = |storage| {
         mock_persistent_backend(&[], storage)
     };
@@ -39,12 +35,13 @@ fn run_persistent_vm() {
     let vm_manager = VMManager::new(
         Arc::clone(&sc_manager),
         Box::new(address_mapper),
-        Box::new(storage_builder),
+        2,
         Box::new(backend_builder));
     // handle messages
     let mut message_handler = MessageHandler::new(
         sc_manager, 
-        vm_manager);
+        vm_manager
+    );
     
     message_handler.handle_messages(vec![
         Message::Deployment { 
@@ -54,6 +51,7 @@ fn run_persistent_vm() {
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#,
+                sender_address: String::from(""),
             }
         ),
         Message::Invocation(
@@ -64,6 +62,7 @@ fn run_persistent_vm() {
                 message: br#"{
                     "AddOne": {}
                 }"#,
+                sender_address: String::from("")
             }
         ),
     ]);

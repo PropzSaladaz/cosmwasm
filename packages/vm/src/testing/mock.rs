@@ -8,8 +8,9 @@ use sha2::{Digest, Sha256};
 
 use super::querier::MockQuerier;
 use super::storage::MockStorage;
-use super::MockStoragePartitioned;
+use super::{MockStoragePartitioned, MockStorageWrapper, StorageWrapper};
 use crate::backend::{unwrap_or_return_with_gas, ConcurrentBackend};
+use crate::vm_manager::PersistentBackend;
 use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, Storage};
 
 pub const MOCK_CONTRACT_ADDR: &str = "cosmwasmcontract"; // TODO: use correct address
@@ -34,10 +35,18 @@ pub fn mock_backend(contract_balance: &[Coin]) -> Backend<MockApi, MockStorage, 
 /// TODO
 /// All external requirements that can be injected for unit tests.
 /// It sets the given balance for the contract itself, nothing else
-pub fn mock_persistent_backend<S: Storage + cosmwasm_std::Storage>(contract_balance: &[Coin], storage: Arc<RwLock<S>>) -> ConcurrentBackend<MockApi, S, MockQuerier> {
+pub fn mock_persistent_backend(contract_balance: &[Coin], storage: Arc<MockStoragePartitioned>) -> PersistentBackend<MockApi, MockStoragePartitioned, MockQuerier> {
+    PersistentBackend {
+        api: Arc::new(MockApi::default()),
+        storage: storage,
+        querier: Arc::new(RwLock::new(MockQuerier::new(&[(MOCK_CONTRACT_ADDR, contract_balance)]))),
+    }
+}
+
+pub fn mock_concurrent_backend(contract_balance: &[Coin], storage: Arc<MockStoragePartitioned>) -> ConcurrentBackend<MockApi, MockStorageWrapper, MockQuerier> {
     ConcurrentBackend {
         api: MockApi::default(),
-        storage: storage,
+        storage: MockStorageWrapper::default(storage),
         querier: Arc::new(RwLock::new(MockQuerier::new(&[(MOCK_CONTRACT_ADDR, contract_balance)]))),
     }
 }
@@ -47,7 +56,7 @@ pub fn mock_persistent_backend<S: Storage + cosmwasm_std::Storage>(contract_bala
 
 /// Initializes the querier along with the mock_dependencies.
 /// Sets all balances provided (yoy must explicitly set contract balance if desired)
-pub fn mock_backend_with_balances(
+pub fn mock_backend_with_balances<'a>(
     balances: &[(&str, &[Coin])],
 ) -> Backend<MockApi, MockStorage, MockQuerier> {
     Backend {

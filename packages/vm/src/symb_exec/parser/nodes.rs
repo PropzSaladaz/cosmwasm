@@ -188,12 +188,29 @@ pub enum ReadWrite {
         key: Key,
         commutativity: WriteType,
     },
-    Read(Key),
+
+
+    /// Read commutativity refers to if a read is solely associated
+    /// to a commutative write.
+    /// If we have W(A): R(A) + 1, then this read will appear before 
+    /// the write, and since the write is commutative, the read will
+    /// also be marked as commutative.
+    /// It is important to mark every read and its commutativity because
+    /// the algorithm that identifies the store items to partition will
+    /// ignore commutative reads, since it will already consider the respective
+    /// commutative write.
+    Read {
+        key: Key,
+        commutativity: WriteType,
+    },
 }
 
-impl ReadWrite {
-    pub fn default() -> ReadWrite {
-        Self::Read(Key::Bytes(vec![0]))
+impl Default for ReadWrite {
+    fn default() -> ReadWrite {
+        Self::Read {
+            key: Key::Bytes(vec![0]),
+            commutativity: WriteType::NonCommutative
+        }
     }
 }
 

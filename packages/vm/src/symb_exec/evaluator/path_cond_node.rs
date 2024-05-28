@@ -96,7 +96,10 @@ mod tests {
                         key: key_admin(), 
                         commutativity: WriteType::NonCommutative
                     },
-                    ReadWrite::Read(key_admin())
+                    ReadWrite::Read{
+                        key: key_admin(),
+                        commutativity: WriteType::NonCommutative,
+                    }
                 ]))))), 
 
                 // <- None
@@ -116,11 +119,14 @@ mod tests {
                 pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
                     // SET(=AARiYW5rQURNSU4=): Inc
                     // GET(=AARiYW5rQURNSU4=)
+                    ReadWrite::Read{
+                        key: key_incr(),
+                        commutativity: WriteType::Commutative,
+                    },
                     ReadWrite::Write { 
                         key: key_incr(), 
                         commutativity: WriteType::Commutative
-                    },
-                    ReadWrite::Read(key_incr())
+                    }
                 ]))))),
 
                 // <- [PC_4]
@@ -169,7 +175,10 @@ mod tests {
                 key: key_admin().eval(&storage, &ctx), 
                 commutativity: WriteType::NonCommutative
             },
-            ReadWrite::Read(key_admin().eval(&storage, &ctx))
+            ReadWrite::Read{
+                key: key_admin().eval(&storage, &ctx),
+                commutativity: WriteType::NonCommutative,
+            },
         ]))
     }
 
@@ -225,11 +234,14 @@ mod tests {
         let rws = node.parse_tree(&storage, &ctx);
 
         assert_eq!(rws, PathConditionNode::RWSNode(vec![
+            ReadWrite::Read {
+                key: key_incr(), 
+                commutativity: WriteType::Commutative
+            },
             ReadWrite::Write { 
                 key: key_incr(), 
                 commutativity: WriteType::Commutative
             },
-            ReadWrite::Read(key_incr())
         ]))
     }
 

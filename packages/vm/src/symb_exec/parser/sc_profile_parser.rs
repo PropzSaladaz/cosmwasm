@@ -261,8 +261,13 @@ impl SCProfileParser {
 
         // Helper function to parse storage reads
         let parse_storage_read = |read: Pair<Rule>| {
-            let key = self.parse_storage_key(read.into_inner().next().unwrap());
-            ReadWrite::Read(key)
+            let mut storage_read =  read.into_inner();
+            let key = self.parse_storage_key(storage_read.next().unwrap());
+            match storage_read.next().unwrap().into_inner().next().unwrap().as_rule() {
+                Rule::incremental     => ReadWrite::Read { key, commutativity: WriteType::Commutative },
+                Rule::non_incremental => ReadWrite::Read { key, commutativity: WriteType::NonCommutative },
+                other           => unreachable!("Expected read type, got {:?}", other)
+            }
         };
 
         // Helper function to set child path condition branch. It captures the current branch type from the current function's
@@ -446,7 +451,7 @@ impl SCProfileParser {
         .map_primary(|primary| match primary.as_rule() { // parse atomic tokens
             Rule::int           => Expr::Number(Int(primary.as_str().parse().unwrap())),
             Rule::float         => Expr::Number(Float(primary.as_str().parse().unwrap())),
-            Rule::storage_read  => {
+            Rule::cond_storage_read  => {
                 let key_pair = primary.into_inner().next().unwrap();
                 let key: Key = self.parse_storage_key(key_pair);
                 Expr::StorageRead(key)
@@ -550,13 +555,13 @@ msg: ExecuteMsg
 <- [PC_3]
 
 [PC_2] GET(=AARiYW5r @ msg.admin) == null
-=> SET(=AARiYW5r @ msg.admin): 100
-=> GET(=AARiYW5r @ msg.admin)
+=> GET(=AARiYW5r @ msg.admin): Non-Inc
+=> SET(=AARiYW5r @ msg.admin): Non-Inc
 <- None
 
 [PC_3] Type(msg) == AddOne
-=> SET(=AARiYW5rQURNSU4=): GET(=AARiYW5rQURNSU4=) + 1
-=> GET(=AARiYW5rQURNSU4=)
+=> GET(=AARiYW5rQURNSU4=): Inc
+=> SET(=AARiYW5rQURNSU4=): Inc
 <- [PC_4]
 
 [PC_4] Type(msg) == Transfer
@@ -579,6 +584,7 @@ msg: ExecuteMsg
         // => [PC_2]
         pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
 
+            // CONDITION
             // GET(=AARiYW5r= @ _msg.admin) == null
             condition: Some(PathCondition::RelBinOp { 
                 lhs:  Box::new(Expr::StorageRead(key_admin())), 
@@ -586,14 +592,18 @@ msg: ExecuteMsg
                 rhs: Box::new(Expr::Null) 
             }),
 
+            // RWS
+            // => GET(=AARiYW5r= @ _msg.admin): Non-Inc
             // => SET(=AARiYW5r= @ _msg.admin): Non-Inc
-            // => GET(=AARiYW5r= @ _msg.admin)
             pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
+                ReadWrite::Read {
+                    key: key_admin(),
+                    commutativity: WriteType::NonCommutative,
+                },
                 ReadWrite::Write { 
                     key: key_admin(), 
                     commutativity: WriteType::NonCommutative
                 },
-                ReadWrite::Read(key_admin())
             ]))))), 
 
             // <- None
@@ -603,6 +613,7 @@ msg: ExecuteMsg
         // <- [PC_3]
         neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode {
 
+            // CONDITION
             // Type(msg) == AddOne
             condition: Some(PathCondition::RelBinOp { 
                 lhs: Box::new(Expr::Type(Type::Expr(Box::new(
@@ -612,13 +623,18 @@ msg: ExecuteMsg
                 rhs: Box::new(Expr::MessageType("AddOne".to_owned())) 
             }), 
             pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
+                
+                // RWS
                 // SET(=AARiYW5rQURNSU4=): Inc
-                // GET(=AARiYW5rQURNSU4=)
+                // GET(=AARiYW5rQURNSU4=): Inc
+                ReadWrite::Read{
+                    key: key_incr(),
+                    commutativity: WriteType::Commutative,
+                },
                 ReadWrite::Write { 
                     key: key_incr(), 
                     commutativity: WriteType::Commutative
                 },
-                ReadWrite::Read(key_incr())
             ]))))),
 
             // <- [PC_4]

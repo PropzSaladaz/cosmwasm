@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use wasmer::Module;
 
 use crate::{ 
-    backend::ConcurrentBackend, symb_exec::{SEEngine, SEEngineParse}, BackendApi, Querier, SCProfile, SCProfileParser, Storage};
+    backend::ConcurrentBackend, symb_exec::{SEEngine, SEEngineParse}, testing::PartitionedStorage, BackendApi, Querier, SCProfile, SCProfileParser, Storage};
 
 
 const SMART_CONTRACT_PATH: &'static str = "./wasm_contract_codes";
@@ -44,6 +44,9 @@ impl SCStaticData {
         }
     }
 
+    /// Saves a SC code. Uses the Symb Engine to produce a RWS profile
+    /// for the contract and saves the profile information for this contract.
+    /// Sets instantiation count for this new SC code to 1
     pub fn save(&mut self, sc_code: &[u8]) -> std::io::Result<u128> {
         let curr_dir = std::env::current_dir()?;
         let rel_path = curr_dir.join(contract_path(self.sc_code_id));
@@ -90,25 +93,39 @@ impl SCStaticData {
 
 
 
+#[derive(Clone)]
+pub struct PersistentBackend<A, S, Q> 
+where
+    A: BackendApi, 
+    S: PartitionedStorage, 
+    Q: Querier
+{
+    pub api: Arc<A>,
+    /// The lock is always used as read, unless when we start the block execution.
+    /// That is the only time we lock as write, to partition the items at the start of the block,
+    /// Only 1 thread does this
+    pub storage: Arc<S>,
+    pub querier: Arc<RwLock<Q>>,
+}
 
 struct SCInstance<A, S, Q> 
 where
     A: BackendApi, 
-    S: Storage + cosmwasm_std::Storage, 
+    S: PartitionedStorage, 
     Q: Querier
 {
     sc_code_id: u128,
     compiled_code: Arc<Module>,
-    state: Arc<ConcurrentBackend<A, S, Q>>
+    state: Arc<PersistentBackend<A, S, Q>>
 }
 
 impl<A, S, Q> SCInstance<A, S, Q> 
 where
     A: BackendApi, 
-    S: Storage + cosmwasm_std::Storage, 
+    S: PartitionedStorage, 
     Q: Querier
 {
-    fn new(sc_code_id: u128, compiled_code: Arc<Module>, state: Arc<ConcurrentBackend<A, S, Q>>) -> Self {
+    fn new(sc_code_id: u128, compiled_code: Arc<Module>, state: Arc<PersistentBackend<A, S, Q>>) -> Self {
         Self {
             sc_code_id,
             compiled_code,
@@ -136,10 +153,10 @@ pub struct ContractRWS {
 pub struct InstanceData<A, S, Q> 
 where
     A: BackendApi, 
-    S: Storage + cosmwasm_std::Storage, 
+    S: PartitionedStorage, 
     Q: Querier
 {
-    pub state: Arc<ConcurrentBackend<A, S, Q>>,
+    pub state: Arc<PersistentBackend<A, S, Q>>,
     pub compiled_code: Arc<Module>,
 }
 
@@ -156,7 +173,7 @@ type SCStorage<A, S, Q> = DashMap<String, Arc<SCInstance<A, S, Q>>>;
 pub struct SCManager<A, S, Q> 
 where
     A: BackendApi + 'static,
-    S: Storage + cosmwasm_std::Storage + 'static,
+    S: PartitionedStorage + 'static,
     Q: Querier + 'static
 {
     static_data: Arc<RwLock<SCStaticData>>,
@@ -166,7 +183,7 @@ where
 impl<A, S, Q> SCManager<A, S, Q> 
 where
     A: BackendApi, 
-    S: Storage + cosmwasm_std::Storage, 
+    S: PartitionedStorage, 
     Q: Querier
 {
     pub fn new() -> SCManager<A, S, Q> {
@@ -182,9 +199,10 @@ where
     pub fn partition_storage(&self, contract_keys: Vec<ContractRWS>) {
         for contract in contract_keys {
             match self.sc_storage.get(&contract.address) {
-                Some(storage) => storage.state
-                    .storage.write().unwrap()
-                    .partition_items(contract.rws),
+                Some(mut storage) => {
+                    storage.state.storage
+                    .partition_items(contract.rws);
+                },
 
                 None => continue
             }
@@ -196,8 +214,8 @@ where
     pub fn sum_partitions(&self, contract_keys: Vec<ContractRWS>) {
         for contract in contract_keys {
             match self.sc_storage.get(&contract.address) {
-                Some(storage) => storage.state
-                    .storage.write().unwrap()
+                Some(mut storage) => 
+                    storage.state.storage
                     .sum_partitioned_items(contract.rws),
 
                 None => continue
@@ -207,7 +225,7 @@ where
 
     /// Saves the storage & compiled module that refers to some instantiated SC
     pub fn save_instance(&self, address: String, code_id: u128,
-        compiled_code: Arc<Module>, state: Arc<ConcurrentBackend<A, S, Q>>) {
+        compiled_code: Arc<Module>, state: Arc<PersistentBackend<A, S, Q>>) {
         self.sc_storage.insert(address.clone(), Arc::new(
             SCInstance::new(
                 code_id,
@@ -215,8 +233,6 @@ where
                 state)
             ));
         self.static_data.write().unwrap().incr_instantiation(code_id);
-        
-        self.sc_storage.get(&address).unwrap(); // TODO remove after testing
     }
 
     pub fn get_instance_data(&self, address: &String) -> Option<InstanceData<A, S, Q>> {
@@ -266,7 +282,7 @@ mod tests {
 
     use crate::{call_instantiate, 
         internals::instance_from_module, 
-        symb_exec::{EntryPoint, SEStatus}, testing::{mock_env, mock_info, mock_persistent_backend, MockStoragePartitioned}, 
+        symb_exec::{EntryPoint, SEStatus}, testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper}, 
         wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
         InstanceOptions, Size};
 
@@ -282,7 +298,7 @@ mod tests {
     fn generics_test() {
         let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
         let module = Arc::new(compile( &engine, CONTRACT).unwrap());
-        let partitioned_store = Arc::new(RwLock::new(MockStoragePartitioned::default()));
+        let partitioned_store = Arc::new(MockStoragePartitioned::default());
         let backend = Arc::new(mock_persistent_backend(&[], partitioned_store));
         SCInstance::new(0, Arc::clone(&module), Arc::clone(&backend));
 
@@ -309,7 +325,7 @@ _msg: InstantiateMsg
 
 
 [PC_1] True
-=> SET(=AARiYW5rQURNSU4=): 1000
+=> SET(=AARiYW5rQURNSU4=): Non-Inc
 <- None"#;
 
         sc_static_data.save(contract.as_slice()).unwrap();
@@ -356,7 +372,61 @@ _msg: InstantiateMsg
         // compile code & create storage
         let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
         let module = compile( &engine, code.as_slice()).unwrap();
-        let partitioned_storage = Arc::new(RwLock::new(MockStoragePartitioned::default()));
+        let partitioned_storage = Arc::new(MockStoragePartitioned::default());
+        let mock_backend = Arc::new(mock_persistent_backend(&[], partitioned_storage));
+
+        // save it to that SC code
+        sc_manager.save_instance(
+            "a".to_owned(), 
+            0, 
+            Arc::new(module), 
+            Arc::clone(&mock_backend)
+        );
+
+        // get instance data
+        let instance_data = sc_manager.get_instance_data(&"a".to_owned()).unwrap();
+
+        // instantiate vm
+        let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT, };
+        let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
+        let store = Store::new(engine);
+
+        let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(mock_backend, &String::from(""), vec![]);
+
+        let mut instance = instance_from_module(
+            store, 
+            &*instance_data.compiled_code, 
+            concurrent_backend, 
+            much_gas.gas_limit, 
+            None).unwrap();
+
+        // execute instantiate contract
+        let msg = br#"{}"#;
+        let contract_res = call_instantiate::<_, _, _, Empty>(
+            &mut instance, 
+            &mock_env(), 
+            &mock_info("", &[]), 
+            msg
+        ).unwrap();
+        
+        assert_eq!(contract_res, ContractResult::Ok(Response::new()));
+        assert_eq!(sc_manager.get_instantiation_count(0), 1);
+
+        sc_manager.cleanup();
+
+    }
+
+    #[test]
+    #[serial]
+    fn partition_storage() {
+        let sc_manager = SCManager::new();
+        // save code
+        sc_manager.save_code(CONTRACT).unwrap();
+
+        // compile code & create storage
+        let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
+        let module = compile( &engine, CONTRACT).unwrap();
+        let partitioned_storage = Arc::new(MockStoragePartitioned::default());
         let mock_backend = Arc::new(mock_persistent_backend(&[], partitioned_storage));
 
         // save it to that SC code
@@ -375,26 +445,36 @@ _msg: InstantiateMsg
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
         let store = Store::new(engine);
 
+        let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(instance_data.state, &String::from(""), vec![]);
+
         let mut instance = instance_from_module(
             store, 
             &*instance_data.compiled_code, 
-            &*instance_data.state, 
+            concurrent_backend, 
             much_gas.gas_limit, 
             None).unwrap();
 
-        // execute instantiate contract
+        // execute instantiate contract to create an item in storage
         let msg = br#"{}"#;
-        let contract_res = call_instantiate::<_, _, _, Empty>(
+        call_instantiate::<_, _, _, Empty>(
             &mut instance, 
             &mock_env(), 
             &mock_info("", &[]), 
             msg
         ).unwrap();
-        
-        assert_eq!(contract_res, ContractResult::Ok(Response::new()));
-        assert_eq!(sc_manager.get_instantiation_count(0), 1);
 
-        sc_manager.cleanup();
+        let key_written = vec![0, 4, 98, 97, 110, 107, 65, 68, 77, 73, 78];
+
+        sc_manager.partition_storage(vec![ContractRWS {
+            address: "a".to_owned(),
+            rws: vec![key_written.clone()]
+        }]);
+
+        let instance = sc_manager.get_instance_data(&"a".to_owned()).unwrap();
+        let storage = &(*instance.state.storage) as *const MockStoragePartitioned;
+        let item = unsafe { (*storage).get_item(&key_written) };
+        
+        println!("{:?}", item);
 
     }
 

@@ -7,10 +7,9 @@ use tempfile::TempDir;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use cosmwasm_std::{coins, Checksum, Empty};
-use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned};
+use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned, MockStorageWrapper};
 use cosmwasm_vm::{
-    call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, InstanceOptions,
-    Size,
+    call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, ConcurrentBackend, InstanceOptions, Size
 };
 
 #[cfg(feature = "dhat-heap")]
@@ -114,7 +113,7 @@ fn app() {
     let contracts = contracts();
 
     let checksums = {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(options.clone()).unwrap() };
 
         let mut checksums = Vec::<Checksum>::new();
@@ -127,7 +126,7 @@ fn app() {
     let after = SystemTime::now().duration_since(start_time).unwrap();
     eprintln!("Done compiling after {after:?}");
 
-    let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> = unsafe { Cache::new(options).unwrap() };
+    let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> = unsafe { Cache::new(options).unwrap() };
     for round in 0..ROUNDS {
         for _ in 0..ROUND_LEN {
             if SystemTime::now()
@@ -146,9 +145,10 @@ fn app() {
 
             for idx in 0..contracts.len() {
                 let partitioned_storage = MockStoragePartitioned::default();
-                let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+                let backend = Arc::new(mock_persistent_backend(&[], Arc::new(partitioned_storage)));
+                let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(backend, &String::from(""), vec![]);
                 let mut instance = cache
-                    .get_instance(&checksums[idx], backend, DEFAULT_INSTANCE_OPTIONS)
+                    .get_instance(&checksums[idx], concurrent_backend, DEFAULT_INSTANCE_OPTIONS)
                     .unwrap();
 
                 instance.set_debug_handler(|_msg, info| {

@@ -22,6 +22,7 @@ use crate::imports::{
 use crate::imports::{do_db_next, do_db_next_key, do_db_next_value, do_db_scan};
 use crate::memory::{read_region, write_region};
 use crate::size::Size;
+use crate::testing::StorageWrapper;
 use crate::wasm_backend::{compile, make_compiling_engine};
 
 pub use crate::environment::DebugInfo; // Re-exported as public via to be usable for set_debug_handler
@@ -45,7 +46,7 @@ pub struct InstanceOptions {
     pub gas_limit: u64,
 }
 
-pub struct Instance<A: BackendApi, S: Storage, Q: Querier> {
+pub struct Instance<A: BackendApi, S: StorageWrapper, Q: Querier> {
     /// We put this instance in a box to maintain a constant memory address for the entire
     /// lifetime of the instance in the cache. This is needed e.g. when linking the wasmer
     /// instance to a context. See also https://github.com/CosmWasm/cosmwasm/pull/245.
@@ -59,14 +60,14 @@ pub struct Instance<A: BackendApi, S: Storage, Q: Querier> {
 impl<A, S, Q> Instance<A, S, Q>
 where
     A: BackendApi + 'static, // 'static is needed here to allow copying API instances into closures
-    S: Storage + cosmwasm_std::Storage + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
+    S: StorageWrapper + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
     Q: Querier + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
 {
     /// This is the only Instance constructor that can be called from outside of cosmwasm-vm,
     /// e.g. in test code that needs a customized variant of cosmwasm_vm::testing::mock_instance*.
     pub fn from_code(
         code: &[u8],
-        backend: &ConcurrentBackend<A, S, Q>,
+        backend: ConcurrentBackend<A, S, Q>,
         options: InstanceOptions,
         memory_limit: Option<Size>,
     ) -> VmResult<Self> {
@@ -80,12 +81,12 @@ where
     pub(crate) fn from_module(
         mut store: Store,
         module: &Module,
-        backend: &ConcurrentBackend<A, S, Q>,
+        backend: ConcurrentBackend<A, S, Q>,
         gas_limit: u64,
         extra_imports: Option<HashMap<&str, Exports>>,
         instantiation_lock: Option<&Mutex<()>>,
     ) -> VmResult<Self> {
-        let fe = FunctionEnv::new(&mut store, Environment::new(backend.api.clone(), gas_limit));
+        let fe: FunctionEnv<Environment<A, S, Q>> = FunctionEnv::new(&mut store, Environment::new(backend.api.clone(), gas_limit));
 
         let mut import_obj = Imports::new();
         let mut env_imports = Exports::new();
@@ -270,7 +271,7 @@ where
             env.memory = Some(memory);
             env.set_wasmer_instance(Some(instance_ptr));
             env.set_gas_left(&mut store, gas_limit);
-            env.move_in(Arc::clone(&backend.storage), Arc::clone(&backend.querier));
+            env.move_in(backend.storage, Arc::clone(&backend.querier));
         }
 
         Ok(Instance {
@@ -296,7 +297,8 @@ where
         if let (Some(storage), Some(querier)) = env.move_out() {
             let api = env.api.clone();
             Some(ConcurrentBackend {
-                api,
+                // TODO - this arc doesnt seem necessary...
+                api: api,
                 storage,
                 querier,
             })
@@ -458,13 +460,13 @@ where
 pub fn instance_from_module<A, S, Q>(
     store: Store,
     module: &Module,
-    backend: &ConcurrentBackend<A, S, Q>,
+    backend: ConcurrentBackend<A, S, Q>,
     gas_limit: u64,
     extra_imports: Option<HashMap<&str, Exports>>,
 ) -> VmResult<Instance<A, S, Q>>
 where
     A: BackendApi + 'static, // 'static is needed here to allow copying API instances into closures
-    S: Storage + cosmwasm_std::Storage + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
+    S: StorageWrapper + 'static, // 'static is needed here to allow using this in an Environment that is cloned into closures
     Q: Querier + 'static,
 {
     Instance::from_module(store, module, backend, gas_limit, extra_imports, None)
@@ -473,15 +475,16 @@ where
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
     use std::time::SystemTime;
 
     use super::*;
-    use crate::backend::Storage;
     use crate::calls::{call_execute, call_instantiate, call_query};
     use crate::errors::VmError;
     use crate::testing::{
-        mock_env, mock_info, mock_instance, mock_instance_options, mock_instance_with_balances, mock_instance_with_failing_api, mock_instance_with_gas_limit, mock_instance_with_options, mock_persistent_backend, MockInstanceOptions, MockStoragePartitioned
+        mock_concurrent_backend, mock_env, mock_info, mock_instance, mock_instance_options, 
+        mock_instance_with_balances, mock_instance_with_failing_api, mock_instance_with_gas_limit, 
+        mock_instance_with_options, MockInstanceOptions, MockStoragePartitioned,
     };
     use cosmwasm_std::{
         coin, coins, from_json, AllBalanceResponse, BalanceResponse, BankQuery, Empty, QueryRequest,
@@ -497,10 +500,10 @@ mod tests {
     #[test]
     fn from_code_works() {
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let (instance_options, memory_limit) = mock_instance_options();
         let _instance =
-            Instance::from_code(CONTRACT, &backend, instance_options, memory_limit).unwrap();
+            Instance::from_code(CONTRACT, backend, instance_options, memory_limit).unwrap();
     }
 
     #[test]
@@ -543,10 +546,10 @@ mod tests {
     #[test]
     fn required_capabilities_works() {
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let (instance_options, memory_limit) = mock_instance_options();
         let instance =
-            Instance::from_code(CONTRACT, &backend, instance_options, memory_limit).unwrap();
+            Instance::from_code(CONTRACT, backend, instance_options, memory_limit).unwrap();
         assert_eq!(instance.required_capabilities().len(), 0);
     }
 
@@ -570,9 +573,9 @@ mod tests {
         .unwrap();
 
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let (instance_options, memory_limit) = mock_instance_options();
-        let instance = Instance::from_code(&wasm, &backend, instance_options, memory_limit).unwrap();
+        let instance = Instance::from_code(&wasm, backend, instance_options, memory_limit).unwrap();
         assert_eq!(instance.required_capabilities().len(), 3);
         assert!(instance.required_capabilities().contains("nutrients"));
         assert!(instance.required_capabilities().contains("sun"));
@@ -594,7 +597,7 @@ mod tests {
         .unwrap();
 
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let engine = make_compiling_engine(memory_limit);
         let module = compile(&engine, &wasm).unwrap();
         let mut store = Store::new(engine);
@@ -626,7 +629,7 @@ mod tests {
         let mut instance = Instance::from_module(
             store,
             &module,
-            &backend,
+            backend,
             instance_options.gas_limit,
             Some(extra_imports),
             None,

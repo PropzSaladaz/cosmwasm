@@ -9,7 +9,7 @@ use wasmer::{Module, Store};
 
 use cosmwasm_std::Checksum;
 
-use crate::backend::{ BackendApi, ConcurrentBackend, Querier, Storage};
+use crate::backend::{ BackendApi, ConcurrentBackend, Querier};
 use crate::capabilities::required_capabilities_from_module;
 use crate::compatibility::check_wasm;
 use crate::errors::{VmError, VmResult};
@@ -19,6 +19,7 @@ use crate::modules::{CachedModule, FileSystemCache, InMemoryCache, PinnedMemoryC
 use crate::parsed_wasm::ParsedWasm;
 use crate::size::Size;
 use crate::static_analysis::{Entrypoint, ExportInfo, REQUIRED_IBC_EXPORTS};
+use crate::testing::StorageWrapper;
 use crate::wasm_backend::{compile, make_compiling_engine};
 
 const STATE_DIR: &str = "state";
@@ -93,7 +94,7 @@ pub struct CacheInner {
     stats: Stats,
 }
 
-pub struct Cache<A: BackendApi, S: Storage, Q: Querier> {
+pub struct Cache<A: BackendApi, S: StorageWrapper, Q: Querier> {
     /// Available capabilities are immutable for the lifetime of the cache,
     /// i.e. any number of read-only references is allowed to access it concurrently.
     available_capabilities: HashSet<String>,
@@ -121,7 +122,7 @@ pub struct AnalysisReport {
 impl<A, S, Q> Cache<A, S, Q>
 where
     A: BackendApi + 'static, // 'static is needed by `impl<…> Instance`
-    S: Storage + cosmwasm_std::Storage + 'static,    // 'static is needed by `impl<…> Instance`
+    S: StorageWrapper + 'static,    // 'static is needed by `impl<…> Instance`
     Q: Querier + 'static,    // 'static is needed by `impl<…> Instance`
 {
     /// Creates a new cache that stores data in `base_dir`.
@@ -365,7 +366,7 @@ where
         let instance = Instance::from_module(
             store,
             &module,
-            &backend,
+            backend,
             options.gas_limit,
             None,
             Some(&self.instantiation_lock),
@@ -460,7 +461,7 @@ where
 unsafe impl<A, S, Q> Sync for Cache<A, S, Q>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: StorageWrapper + 'static,
     Q: Querier + 'static,
 {
 }
@@ -468,7 +469,7 @@ where
 unsafe impl<A, S, Q> Send for Cache<A, S, Q>
 where
     A: BackendApi + 'static,
-    S: Storage + 'static,
+    S: StorageWrapper + 'static,
     Q: Querier + 'static,
 {
 }
@@ -546,11 +547,11 @@ mod tests {
     use crate::calls::{call_execute, call_instantiate};
     use crate::capabilities::capabilities_from_csv;
     use crate::errors::VmError;
-    use crate::testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned};
+    use crate::testing::{mock_concurrent_backend, mock_env, mock_info, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper};
     use cosmwasm_std::{coins, Empty};
     use std::fs::{create_dir_all, remove_dir_all, OpenOptions};
     use std::io::Write;
-    use std::sync::{Arc, RwLock};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     const TESTING_GAS_LIMIT: u64 = 500_000_000; // ~0.5ms
@@ -599,7 +600,7 @@ mod tests {
     /// Takes an instance and executes it
     fn test_hackatom_instance_execution<S, Q>(instance: &mut Instance<MockApi, S, Q>)
     where
-        S: Storage + cosmwasm_std::Storage + 'static,
+        S: StorageWrapper + 'static,
         Q: Querier + 'static,
     {
         // instantiate
@@ -633,13 +634,13 @@ mod tests {
             ..make_testing_options()
         };
         assert!(!my_base_dir.is_dir());
-        let _cache = unsafe { Cache::<MockApi, MockStorage, MockQuerier>::new(options).unwrap() };
+        let _cache = unsafe { Cache::<MockApi, MockStorageWrapper, MockQuerier>::new(options).unwrap() };
         assert!(my_base_dir.is_dir());
     }
 
     #[test]
     fn save_wasm_works() {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_testing_options()).unwrap() };
         cache.save_wasm(CONTRACT).unwrap();
     }
@@ -647,7 +648,7 @@ mod tests {
     #[test]
     // This property is required when the same bytecode is uploaded multiple times
     fn save_wasm_allows_saving_multiple_times() {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_testing_options()).unwrap() };
         cache.save_wasm(CONTRACT).unwrap();
         cache.save_wasm(CONTRACT).unwrap();
@@ -657,7 +658,7 @@ mod tests {
     fn save_wasm_rejects_invalid_contract() {
         let wasm = wat::parse_str(INVALID_CONTRACT_WAT).unwrap();
 
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_testing_options()).unwrap() };
         let save_result = cache.save_wasm(&wasm);
         match save_result.unwrap_err() {
@@ -677,7 +678,7 @@ mod tests {
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let _ = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -689,7 +690,7 @@ mod tests {
 
     #[test]
     fn save_wasm_unchecked_works() {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_testing_options()).unwrap() };
         cache.save_wasm_unchecked(CONTRACT).unwrap();
     }
@@ -698,14 +699,14 @@ mod tests {
     fn save_wasm_unchecked_accepts_invalid_contract() {
         let wasm = wat::parse_str(INVALID_CONTRACT_WAT).unwrap();
 
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_testing_options()).unwrap() };
         cache.save_wasm_unchecked(&wasm).unwrap();
     }
 
     #[test]
     fn load_wasm_works() {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_testing_options()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
@@ -725,7 +726,7 @@ mod tests {
                 memory_cache_size: TESTING_MEMORY_CACHE_SIZE,
                 instance_memory_limit: TESTING_MEMORY_LIMIT,
             };
-            let cache1: Cache<MockApi, MockStorage, MockQuerier> =
+            let cache1: Cache<MockApi, MockStorageWrapper, MockQuerier> =
                 unsafe { Cache::new(options1).unwrap() };
             id = cache1.save_wasm(CONTRACT).unwrap();
         }
@@ -737,7 +738,7 @@ mod tests {
                 memory_cache_size: TESTING_MEMORY_CACHE_SIZE,
                 instance_memory_limit: TESTING_MEMORY_LIMIT,
             };
-            let cache2: Cache<MockApi, MockStorage, MockQuerier> =
+            let cache2: Cache<MockApi, MockStorageWrapper, MockQuerier> =
                 unsafe { Cache::new(options2).unwrap() };
             let restored = cache2.load_wasm(&id).unwrap();
             assert_eq!(restored, CONTRACT);
@@ -746,7 +747,7 @@ mod tests {
 
     #[test]
     fn load_wasm_errors_for_non_existent_id() {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_testing_options()).unwrap() };
         let checksum = Checksum::from([
             5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
@@ -770,7 +771,7 @@ mod tests {
             memory_cache_size: TESTING_MEMORY_CACHE_SIZE,
             instance_memory_limit: TESTING_MEMORY_LIMIT,
         };
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(options).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
@@ -794,7 +795,7 @@ mod tests {
 
     #[test]
     fn remove_wasm_works() {
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_testing_options()).unwrap() };
 
         // Store
@@ -828,7 +829,7 @@ mod tests {
         let cache = unsafe { Cache::new(make_testing_options()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let _instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -844,15 +845,15 @@ mod tests {
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend1 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend1 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend2 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend2 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend3 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend3 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend4 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend4 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend5 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend5 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
 
 
         // from file system
@@ -919,7 +920,7 @@ mod tests {
 
         // The first get_instance recompiles the Wasm (miss)
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let _instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -930,7 +931,7 @@ mod tests {
 
         // The second get_instance finds the module in cache (hit)
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let _instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -948,7 +949,7 @@ mod tests {
         // from file system
         {
             let partitioned_storage = MockStoragePartitioned::default();
-            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+            let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
             let mut instance = cache
                 .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
@@ -976,7 +977,7 @@ mod tests {
         // from memory
         {
             let partitioned_storage = MockStoragePartitioned::default();
-            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+            let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
             let mut instance = cache
                 .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
@@ -1005,7 +1006,7 @@ mod tests {
         {
             cache.pin(&checksum).unwrap();
             let partitioned_storage = MockStoragePartitioned::default();
-            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+            let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
             let mut instance = cache
                 .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
@@ -1039,7 +1040,7 @@ mod tests {
         // from file system
         {
             let partitioned_storage = MockStoragePartitioned::default();
-            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+            let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
             let mut instance = cache
                 .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
@@ -1075,7 +1076,7 @@ mod tests {
         // from memory
         {
             let partitioned_storage = MockStoragePartitioned::default();
-            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+            let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
             let mut instance = cache
                 .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
@@ -1112,7 +1113,7 @@ mod tests {
         {
             cache.pin(&checksum).unwrap();
             let partitioned_storage = MockStoragePartitioned::default();
-            let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+            let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
             let mut instance = cache
                 .get_instance(&checksum, backend, TESTING_OPTIONS)
                 .unwrap();
@@ -1157,7 +1158,7 @@ mod tests {
 
         // Recompiles the Wasm (miss on all caches)
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1175,9 +1176,9 @@ mod tests {
 
         // these differentiate the two instances of the same contract
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend1 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend1 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend2 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend2 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
 
 
         // instantiate instance 1
@@ -1237,9 +1238,9 @@ mod tests {
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend1 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend1 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend2 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend2 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
 
         // Init from module cache
         let mut instance1 = cache
@@ -1278,9 +1279,9 @@ mod tests {
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend1 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend1 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend2 = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend2 = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
 
         // Init from module cache
         let options = InstanceOptions { gas_limit: 10 };
@@ -1390,7 +1391,7 @@ mod tests {
     #[test]
     fn analyze_works() {
         use Entrypoint as E;
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(make_stargate_testing_options()).unwrap() };
 
         let checksum1 = cache.save_wasm(CONTRACT).unwrap();
@@ -1446,7 +1447,7 @@ mod tests {
 
         // check not pinned
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1472,7 +1473,7 @@ mod tests {
 
         // check pinned
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1487,7 +1488,7 @@ mod tests {
 
         // verify unpinned
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1508,7 +1509,7 @@ mod tests {
     #[test]
     fn pin_recompiles_module() {
         let options = make_testing_options();
-        let cache: Cache<MockApi, MockStoragePartitioned, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(options.clone()).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 
@@ -1524,7 +1525,7 @@ mod tests {
 
         // After the compilation in pin, the module can be used from pinned memory cache
         let partitioned_storage = MockStoragePartitioned::default();
-        let backend = mock_persistent_backend(&[], Arc::new(RwLock::new(partitioned_storage)));
+        let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let mut instance = cache
             .get_instance(&checksum, backend, TESTING_OPTIONS)
             .unwrap();
@@ -1544,7 +1545,7 @@ mod tests {
             memory_cache_size: TESTING_MEMORY_CACHE_SIZE,
             instance_memory_limit: TESTING_MEMORY_LIMIT,
         };
-        let cache: Cache<MockApi, MockStorage, MockQuerier> =
+        let cache: Cache<MockApi, MockStorageWrapper, MockQuerier> =
             unsafe { Cache::new(options).unwrap() };
         let checksum = cache.save_wasm(CONTRACT).unwrap();
 

@@ -125,13 +125,13 @@ _msg: ExecuteMsg
 <- [PC_3]
 
 [PC_2] GET(=AARiYW5r @ _msg.admin) == null
+=> GET(=AARiYW5r @ _msg.admin): Non-Inc
 => SET(=AARiYW5r @ _msg.admin): Non-Inc
-=> GET(=AARiYW5r @ _msg.admin)
 <- None
 
 [PC_3] Type(_msg) == AddOne
+=> GET(=AARiYW5rQURNSU4=): Inc
 => SET(=AARiYW5rQURNSU4=): Inc
-=> GET(=AARiYW5rQURNSU4=)
 <- [PC_4]
 
 [PC_4] Type(_msg) == Transfer
