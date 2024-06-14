@@ -297,7 +297,6 @@ where
         if let (Some(storage), Some(querier)) = env.move_out() {
             let api = env.api.clone();
             Some(ConcurrentBackend {
-                // TODO - this arc doesnt seem necessary...
                 api: api,
                 storage,
                 querier,

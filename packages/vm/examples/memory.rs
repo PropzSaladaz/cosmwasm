@@ -1,6 +1,7 @@
 // Run with
 // cargo run --features dhat-heap --example memory --release
 
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 use tempfile::TempDir;
@@ -146,7 +147,8 @@ fn app() {
             for idx in 0..contracts.len() {
                 let partitioned_storage = MockStoragePartitioned::default();
                 let backend = Arc::new(mock_persistent_backend(&[], Arc::new(partitioned_storage)));
-                let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(backend, &String::from(""), vec![]);
+                let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
+                    backend, String::from(""), vec![], Arc::new(HashSet::new()));
                 let mut instance = cache
                     .get_instance(&checksums[idx], concurrent_backend, DEFAULT_INSTANCE_OPTIONS)
                     .unwrap();

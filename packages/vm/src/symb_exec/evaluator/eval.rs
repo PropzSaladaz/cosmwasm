@@ -76,7 +76,8 @@ pub trait Eval {
             }
         };
 
-        // TODO - currently converting all data to Int
+        // TODO - currently converting all data to Int - This was used when we had expressions.
+        // Now we only need to mark the reads/writes as commutative/non-commutative
         match bytes {
             Some(bytes) => Expr::Number(Number::Int(Integer::from_le_bytes(
                 [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6] , bytes[7]]))),
@@ -204,7 +205,7 @@ pub trait Eval {
 
 
 impl ReadWrite {
-    /// Used to evaluate final RWS keys into catual values.
+    /// Used to evaluate final RWS keys into actual values.
     /// RWS is first built into a well-structured tree, like so:
     /// ```
     /// Expr::StorageRead(Key::Expression { 
@@ -224,16 +225,20 @@ impl ReadWrite {
     pub fn eval(&mut self, storage: &dyn Storage, variable_context: &SEContext) -> Self {   
         match self {
             Self::Read {
+                storage_dependency,
                 key,
                 commutativity
             } => Self::Read {
+                storage_dependency: *storage_dependency,
                 key: key.eval(storage, variable_context),
                 commutativity: *commutativity
             },
             Self::Write { 
+                storage_dependency,
                 key, 
                 commutativity 
-            } => Self::Write { 
+            } => Self::Write {
+                storage_dependency: *storage_dependency, 
                 key: key.eval(storage, variable_context), 
                 commutativity: *commutativity
             }
@@ -265,7 +270,7 @@ mod tests {
 
     use crate::symb_exec::testing::mock::*;
 
-    use super::super::super::parser::nodes::*;
+    use super::super::super::parser::{nodes::*, nodes::TransactionDependency::*};
 
     use super::*;
 
@@ -460,6 +465,7 @@ mod tests {
         let mut rws = vec![
             // Get(1u8 @ msg.admin)
             ReadWrite::Read{
+                storage_dependency: INDEPENDENT,
                 key: Key::Expression { 
                     base: key_raw.to_vec(), 
                     expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
@@ -471,6 +477,7 @@ mod tests {
             },
             // Set(1u8 @ msg.admin): Inc
             ReadWrite::Write { 
+                storage_dependency: INDEPENDENT,
                 key: Key::Expression { 
                     base: key_raw.to_vec(), 
                     expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
@@ -488,11 +495,13 @@ mod tests {
         assert_eq!(
             expr,
             vec![
-                ReadWrite::Read{
+                ReadWrite::Read {
+                    storage_dependency: INDEPENDENT,
                     key: Key::Bytes(expected_key.clone()),
                     commutativity: WriteType::Commutative,
                 },
                 ReadWrite::Write { 
+                    storage_dependency: INDEPENDENT,
                     key: Key::Bytes(expected_key), 
                     commutativity: WriteType::Commutative
                 }

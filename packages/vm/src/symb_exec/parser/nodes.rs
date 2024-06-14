@@ -1,5 +1,5 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
-
+use std::ops::Not;
 use cosmwasm_std::{Env, MessageInfo};
 use num::traits::ToBytes;
 use serde::Serialize;
@@ -70,7 +70,40 @@ pub enum Expr {
         lhs: Box<Expr>,
         op: Op,
         rhs: Box<Expr>,
+    },
+
+    Result {
+        expr: Box<Expr>,
+        dependency: TransactionDependency,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+pub enum TransactionDependency {
+    DEPENDENT,
+    INDEPENDENT
+}
+
+use std::ops::BitOr;
+
+impl BitOr for TransactionDependency {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        match (self, rhs) {
+            (TransactionDependency::DEPENDENT, _) | (_, TransactionDependency::DEPENDENT) => TransactionDependency::DEPENDENT,
+            (TransactionDependency::INDEPENDENT, TransactionDependency::INDEPENDENT) => TransactionDependency::INDEPENDENT,
+        }
     }
+}
+
+/// Represents the result of parsing an expression. If an expression in a condition 
+/// depends on a read from store, then that expression is marked as DEPENDENT as it
+/// depends on state, meaning the RWS may change during execution.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExprRes {
+    pub expression: Expr, 
+    pub dependency: TransactionDependency,
 }
 
 impl Expr {
@@ -81,9 +114,8 @@ impl Expr {
                 Number::Float(f) => Some(f.to_le_bytes().to_vec()),
             },
             Expr::String(s) => unsafe { Some(s.clone().as_mut_vec().to_vec()) },
-            other => {
-                None
-            }
+            Expr::Result { expr, dependency: _ } => expr.as_bytes(),
+            _ => None,
         }
     }
 }
@@ -155,13 +187,17 @@ pub enum RelOp {
 /// Is either always True, or is a comparison between 2 expressions
 #[derive(Debug, PartialEq, Serialize)]
 pub enum PathCondition {
-    Bool(bool),
+    Result {
+        storage_dependency: TransactionDependency,
+        satisfied: bool,
+    },
     RelBinOp {
         lhs: Box<Expr>,
         rel_op: RelOp,
         rhs: Box<Expr>,
     }
 }
+
 
 /// Represents a storage key. 
 /// Can either be represented in Bytes if the SE-output is in base64,
@@ -185,6 +221,7 @@ pub enum WriteType {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ReadWrite {
     Write {
+        storage_dependency: TransactionDependency,
         key: Key,
         commutativity: WriteType,
     },
@@ -200,6 +237,7 @@ pub enum ReadWrite {
     /// ignore commutative reads, since it will already consider the respective
     /// commutative write.
     Read {
+        storage_dependency: TransactionDependency,
         key: Key,
         commutativity: WriteType,
     },
@@ -208,12 +246,16 @@ pub enum ReadWrite {
 impl Default for ReadWrite {
     fn default() -> ReadWrite {
         Self::Read {
+            storage_dependency: TransactionDependency::INDEPENDENT,
             key: Key::Bytes(vec![0]),
             commutativity: WriteType::NonCommutative
         }
     }
 }
 
+// Rc for shared access to reference -> 
+// RefCell for mutating the inner data -> 
+// Box needed since it's recursive
 pub type CondNodeRef = Rc<RefCell<Box<PathConditionNode>>>;
 /// Represents a node in the path condition tree.
 /// 
@@ -224,19 +266,20 @@ pub type CondNodeRef = Rc<RefCell<Box<PathConditionNode>>>;
 pub enum PathConditionNode {
     /// Represents a full node associated to a condition, and both child branches.
     ConditionNode {
+        storage_dependency: TransactionDependency,
         /// Represents the boolean condition
         condition: Option<PathCondition>,
         
-        // Rc for shared access to reference -> 
-        // RefCell for mutating the inner data -> 
-        // Box needed since it's recursive
         pos_branch: Option<CondNodeRef>,
         neg_branch: Option<CondNodeRef>,
     },
     // TODO - currently we only store gets that are not issued to the same position 
     // as the write (and that appear as a dependency for that write)
     /// Represents the RWS under a specific child branch (positive / negative)
-    RWSNode(Vec<ReadWrite>),
+    RWSNode {
+        storage_dependency: TransactionDependency,
+        rws: Vec<ReadWrite>,
+    },
     None,
 }
 

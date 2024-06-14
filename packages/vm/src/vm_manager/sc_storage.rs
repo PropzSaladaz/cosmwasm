@@ -276,6 +276,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use cosmwasm_std::{ContractResult, Empty, Response};
     use serial_test::serial;
     use wasmer::Store;
@@ -391,7 +393,12 @@ _msg: InstantiateMsg
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
         let store = Store::new(engine);
 
-        let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(mock_backend, &String::from(""), vec![]);
+        let rws = vec![];
+        let partitioned_items = HashSet::new();
+        let address = String::from('a');
+        
+        let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
+            mock_backend, address, rws, Arc::new(partitioned_items));
 
         let mut instance = instance_from_module(
             store, 
@@ -445,7 +452,10 @@ _msg: InstantiateMsg
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
         let store = Store::new(engine);
 
-        let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(instance_data.state, &String::from(""), vec![]);
+        let rws = vec![];
+        let partitioned_items = HashSet::new();
+        let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
+            instance_data.state, String::from(""), rws, Arc::new(partitioned_items));
 
         let mut instance = instance_from_module(
             store, 
