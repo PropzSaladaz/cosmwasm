@@ -192,6 +192,8 @@ impl SCProfileParser {
     /// Meaning PC_2 only appears after being used as either a positive or negative path for a previous
     /// path, say PC_1.
     pub fn parse_path_cond_nodes(&mut self, path_cond_nodes: Pair<Rule>) {
+        use super::nodes::TransactionDependency::*;
+
         let mut tmp_path_cond: HashMap<i32, CondNodeRef> = HashMap::new();
 
         for path_cond_node in path_cond_nodes.into_inner() { // { path_cond ~ pos_branches ~ neg_branches }
@@ -217,6 +219,7 @@ impl SCProfileParser {
             // first node
             } else {
                 curr_node = Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
+                    storage_dependency: INDEPENDENT,
                     condition: Some(bool_expr), 
                     pos_branch: None, 
                     neg_branch: None 
@@ -244,6 +247,7 @@ impl SCProfileParser {
 
     fn parse_branches(&self, id: i32, tmp_path_cond: &mut HashMap<i32, Rc<RefCell<Box<PathConditionNode>>>>, 
         branches: &mut Pairs<Rule>, branch_type: Rule) {
+        use super::nodes::TransactionDependency::*; 
 
         // ------------- Helper Functions ------------ //
         
@@ -252,8 +256,9 @@ impl SCProfileParser {
             let mut storage_write =  write.into_inner();
             let key = self.parse_storage_key(storage_write.next().unwrap());
             match storage_write.next().unwrap().into_inner().next().unwrap().as_rule() {
-                Rule::incremental     => ReadWrite::Write { key, commutativity: WriteType::Commutative },
-                Rule::non_incremental => ReadWrite::Write { key, commutativity: WriteType::NonCommutative },
+                // We mark all RWS as storage independent here, but later we evaluate them and may change them to DEPENDENT
+                Rule::incremental     => ReadWrite::Write { storage_dependency: INDEPENDENT, key, commutativity: WriteType::Commutative },
+                Rule::non_incremental => ReadWrite::Write { storage_dependency: INDEPENDENT, key, commutativity: WriteType::NonCommutative },
                 other           => unreachable!("Expected write type, got {:?}", other)
             }
             
@@ -264,8 +269,9 @@ impl SCProfileParser {
             let mut storage_read =  read.into_inner();
             let key = self.parse_storage_key(storage_read.next().unwrap());
             match storage_read.next().unwrap().into_inner().next().unwrap().as_rule() {
-                Rule::incremental     => ReadWrite::Read { key, commutativity: WriteType::Commutative },
-                Rule::non_incremental => ReadWrite::Read { key, commutativity: WriteType::NonCommutative },
+                // We mark all RWS as storage independent here, but later we evaluate them and may change them to DEPENDENT
+                Rule::incremental     => ReadWrite::Read { storage_dependency: INDEPENDENT, key, commutativity: WriteType::Commutative },
+                Rule::non_incremental => ReadWrite::Read { storage_dependency: INDEPENDENT, key, commutativity: WriteType::NonCommutative },
                 other           => unreachable!("Expected read type, got {:?}", other)
             }
         };
@@ -315,7 +321,10 @@ impl SCProfileParser {
                 // Update child branch in current path_cond_node with the RWS - detects 
                 // automatically the type of child branch (positive vs. negative)
                 set_child_branch_for_curr_node(
-                    Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(write_set)))));
+                    Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode {
+                        storage_dependency: INDEPENDENT,
+                        rws: write_set 
+                    }))));
             },
 
             // If 1st element is path_cond_id or None -> Child branch will never be read/write
@@ -332,10 +341,11 @@ impl SCProfileParser {
                         // init mock & reference it as a child path. When we parse this we fill it with data
                         let new_cond_node = 
                             Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
-                            condition: None, 
-                            pos_branch: None, 
-                            neg_branch: None, 
-                        })));
+                                storage_dependency: INDEPENDENT,
+                                condition: None, 
+                                pos_branch: None, 
+                                neg_branch: None, 
+                            })));
                         set_child_branch_for_curr_node(new_cond_node.clone());
                         // Store in hashmap, so that we can parse it and fill it with data from the SE output
                         tmp_path_cond.insert(child_id, new_cond_node.clone());
@@ -351,7 +361,7 @@ impl SCProfileParser {
         let bool_inner = bool_expr.into_inner().next().unwrap();
         
         match bool_inner.as_rule() {
-            Rule::always_true => PathCondition::Bool(true),
+            Rule::always_true => PathCondition::Result{ storage_dependency: TransactionDependency::INDEPENDENT, satisfied: true },
             Rule::rel_expr => {
                 let expr_inner = bool_inner.into_inner().next().unwrap();
                 match expr_inner.as_rule() {
@@ -518,7 +528,7 @@ impl SCProfileParser {
 #[cfg(test)]
 mod tests {
     use crate::symb_exec::EntryPoint;
-
+    use super::super::nodes::TransactionDependency::*;
     use super::*;
 
     fn key_admin() -> Key {
@@ -572,7 +582,7 @@ msg: ExecuteMsg
 
 
     let cond_node = Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
-
+        storage_dependency: INDEPENDENT,
         //  Type(msg) == AddUser
         condition: Some(PathCondition::RelBinOp { 
             lhs: Box::new(Expr::Type(Type::Expr(
@@ -583,7 +593,7 @@ msg: ExecuteMsg
         }), 
         // => [PC_2]
         pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
-
+            storage_dependency: INDEPENDENT,
             // CONDITION
             // GET(=AARiYW5r= @ _msg.admin) == null
             condition: Some(PathCondition::RelBinOp { 
@@ -595,16 +605,20 @@ msg: ExecuteMsg
             // RWS
             // => GET(=AARiYW5r= @ _msg.admin): Non-Inc
             // => SET(=AARiYW5r= @ _msg.admin): Non-Inc
-            pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
+            pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode {
+                storage_dependency: INDEPENDENT,
+                rws: vec![
                 ReadWrite::Read {
+                    storage_dependency: INDEPENDENT,
                     key: key_admin(),
                     commutativity: WriteType::NonCommutative,
                 },
                 ReadWrite::Write { 
+                    storage_dependency: INDEPENDENT,
                     key: key_admin(), 
                     commutativity: WriteType::NonCommutative
                 },
-            ]))))), 
+            ]})))), 
 
             // <- None
             neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::None)))) 
@@ -612,7 +626,7 @@ msg: ExecuteMsg
 
         // <- [PC_3]
         neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode {
-
+            storage_dependency: INDEPENDENT,
             // CONDITION
             // Type(msg) == AddOne
             condition: Some(PathCondition::RelBinOp { 
@@ -622,23 +636,28 @@ msg: ExecuteMsg
                 rel_op: RelOp::Equal, 
                 rhs: Box::new(Expr::MessageType("AddOne".to_owned())) 
             }), 
-            pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode(vec![
+            pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode {
+                storage_dependency: INDEPENDENT,
+                rws: vec![
                 
                 // RWS
                 // SET(=AARiYW5rQURNSU4=): Inc
                 // GET(=AARiYW5rQURNSU4=): Inc
                 ReadWrite::Read{
+                    storage_dependency: INDEPENDENT,
                     key: key_incr(),
                     commutativity: WriteType::Commutative,
                 },
                 ReadWrite::Write { 
+                    storage_dependency: INDEPENDENT,
                     key: key_incr(), 
                     commutativity: WriteType::Commutative
                 },
-            ]))))),
+            ]})))),
 
             // <- [PC_4]
             neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
+                storage_dependency: INDEPENDENT,
                 condition: Some(PathCondition::RelBinOp { 
                     lhs: Box::new(Expr::Type(Type::Expr(Box::new(
                          Expr::Identifier(Identifier::Variable("msg".to_owned())))

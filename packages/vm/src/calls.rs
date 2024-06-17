@@ -110,7 +110,9 @@ where
 {
     let env = to_vec(env)?;
     let info = to_vec(info)?;
+    println!("Calling instantiate");
     let data = call_instantiate_raw(instance, &env, &info, msg)?;
+    println!("Calling instantiate 3");
     let result: ContractResult<Response<U>> =
         from_slice(&data, deserialization_limits::RESULT_INSTANTIATE)?;
     Ok(result)
@@ -342,6 +344,7 @@ where
     Q: Querier + 'static,
 {
     instance.set_storage_readonly(false);
+    println!("Calling instantiate 2"); // TODO
     call_raw(
         instance,
         "instantiate",

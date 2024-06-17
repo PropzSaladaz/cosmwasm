@@ -9,6 +9,7 @@ use super::{evaluator::eval::SEContext, parser::{
 
 #[derive(Debug, PartialEq)]
 pub struct TxRWS {
+    pub storage_dependency: TransactionDependency,
     pub profile_status: SEStatus,
     pub rws: Vec<ReadWrite>
 }
@@ -53,19 +54,23 @@ impl SCProfile {
                 match cosmwasm_inputs {
                     CosmwasmInputs::Execute     { deps, env: _, info: _ } => {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
+                        let (storage_dependency, rws) = self.parse_tree(path_cond, deps.storage, &context);
                         TxRWS {
+                            storage_dependency,
                             profile_status: self.status,
-                            rws: self.parse_tree(path_cond, deps.storage, &context)
+                            rws,
                         }
                     },
                     CosmwasmInputs::Instantiate { deps: _, env: _, info: _ } => 
                     {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
+                        let (storage_dependency, rws) = self.parse_tree(path_cond, &MockStoragePartitioned::default(), &context);
                         // TODO we are sending empty storage for instatiates -> Instantiates should not have yet a storage (the tx wasn't executed yet)
                         // thus we send a mock storage. Need to think better about this
                         TxRWS {
+                            storage_dependency,
                             profile_status: self.status,
-                            rws: self.parse_tree(path_cond, &MockStoragePartitioned::default(), &context)
+                            rws,
                         }
                     }
 
@@ -77,10 +82,10 @@ impl SCProfile {
         }
     }
 
-    fn parse_tree(&self, path_cond: &Rc<RefCell<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> Vec<ReadWrite> {
+    fn parse_tree(&self, path_cond: &Rc<RefCell<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> (TransactionDependency, Vec<ReadWrite>) {
         match path_cond.borrow_mut().parse_tree(storage, &context) {
-            PathConditionNode::RWSNode(rws) => rws,
-            PathConditionNode::None => vec![],
+            PathConditionNode::RWSNode{ storage_dependency, rws} => (storage_dependency, rws),
+            PathConditionNode::None => (TransactionDependency::INDEPENDENT, vec![]),
             other => unreachable!("Expecting RWSNode, got {:?}", other)
         }
     }

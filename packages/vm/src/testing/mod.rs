@@ -7,6 +7,7 @@ mod querier;
 mod storage;
 
 mod storage_partitioned;
+mod storage_wrapper;
 
 pub use calls::{execute, instantiate, migrate, query, reply, sudo};
 #[cfg(feature = "stargate")]
@@ -25,4 +26,5 @@ pub use mock::{
 pub use querier::MockQuerier;
 pub use storage::MockStorage;
 
-pub use storage_partitioned::{MockStoragePartitioned, MockStorageWrapper, StorageWrapper, ValueType, PartitionedStorage, BaseStorage};
+pub use storage_partitioned::{MockStoragePartitioned, ValueType, PartitionedStorage, BaseStorage};
+pub use storage_wrapper::{MockStorageWrapper, StorageWrapper};

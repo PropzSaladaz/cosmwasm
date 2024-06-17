@@ -4,7 +4,7 @@ use super::super::parser::nodes::*;
 use super::eval::{Eval, SEContext};
 
 impl Eval for PathCondition {
-    type Output = bool;
+    type Output = PathCondition;
     type Operand = Expr;
     type Operator = RelOp;
     type OpOut = bool;
@@ -20,10 +20,29 @@ impl Eval for PathCondition {
                 (a, b) => {
                     let lhs = a.eval(storage, variable_context);
                     let rhs = b.eval(storage, variable_context);
-                    Self::op(&lhs, rel_op, &rhs)
+
+                    let lhs_dep = match lhs {
+                        Expr::Result { expr: _, dependency } => dependency,
+                        other => unreachable!("Expected Expr::Result, got {:?}", other),
+                    };
+                    let rhs_dep = match rhs {
+                        Expr::Result { expr: _, dependency } => dependency,
+                        other => unreachable!("Expected Expr::Result, got {:?}", other),
+                    };
+
+                    // decide if is dependent or independent based on both branches
+                    let storage_dependency = lhs_dep | rhs_dep;
+                    
+                    let satisfied = Self::op(&lhs, rel_op, &rhs);
+
+                    Self::Result {
+                        storage_dependency,
+                        satisfied,
+                    }
                 }
             } ,
-            Self::Bool(b) => *b
+            Self::Result { storage_dependency, satisfied } => 
+                Self::Result { storage_dependency: *storage_dependency, satisfied: *satisfied }
         }
     }
 
@@ -42,6 +61,10 @@ impl Eval for PathCondition {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use cosmwasm_std::Storage;
+
+    use crate::symb_exec::evaluator::eval::SEContext;
+    use crate::symb_exec::parser::nodes::TransactionDependency::*;
 
     use crate::symb_exec::{
         evaluator::{
@@ -52,6 +75,15 @@ mod tests {
 
     use super::Type;
 
+    fn path_cond_result(path_cond_res: PathCondition, storage: &dyn Storage, ctx: &SEContext) -> bool {
+        let res = path_cond_res.eval(storage, ctx);
+
+        match res {
+            PathCondition::Result { storage_dependency, satisfied } => satisfied,
+            _ => false,
+        }
+    }
+
 
     #[test]
     fn path_cond_true() {
@@ -59,7 +91,11 @@ mod tests {
         let ctx = mock_context(&arg_types);
         let storage = mock_storage(HashMap::new());
 
-        assert!(PathCondition::Bool(true).eval(&storage, &ctx));
+        let path_cond = PathCondition::Result { 
+            storage_dependency: INDEPENDENT, 
+            satisfied: true 
+        };
+        assert!(path_cond_result(path_cond, &storage, &ctx));
     }
 
 
@@ -76,7 +112,7 @@ mod tests {
             rhs: Box::new(Expr::MessageType("AddUser".to_owned())) 
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
 
         let cond = PathCondition::RelBinOp { 
             lhs: Box::new(Expr::Type(Type::Expr(
@@ -86,7 +122,7 @@ mod tests {
             rhs: Box::new(Expr::MessageType("AddOne".to_owned()))
         };
 
-        assert!(!cond.eval(&storage, &ctx));
+        assert!(!path_cond_result(cond, &storage, &ctx));
 
 
         let cond = PathCondition::RelBinOp { 
@@ -103,7 +139,7 @@ mod tests {
                 )) 
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
     }
 
     #[test]
@@ -121,7 +157,7 @@ mod tests {
             rhs: Box::new(Expr::Null)
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
 
         // Get(bytes) != Null, when bytes is in storage
         let cond = PathCondition::RelBinOp { 
@@ -130,7 +166,7 @@ mod tests {
             rhs: Box::new(Expr::Null)
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
 
         // msg.balance == 2
         let cond = PathCondition::RelBinOp { 
@@ -142,7 +178,7 @@ mod tests {
             rhs: Box::new(Expr::Number(Number::Int(2)))
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
 
         // msg.admin == "name1"
         let cond = PathCondition::RelBinOp { 
@@ -154,7 +190,7 @@ mod tests {
             rhs: Box::new(Expr::String("name1".to_owned()))
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
     }
 
     #[test]
@@ -175,7 +211,7 @@ mod tests {
             ]))),
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
 
         // 1 < msg.fee
         let cond = PathCondition::RelBinOp {
@@ -187,7 +223,7 @@ mod tests {
             ]))),
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
 
         // msg.admin > "n"
         let cond = PathCondition::RelBinOp { 
@@ -199,6 +235,6 @@ mod tests {
             rhs: Box::new(Expr::String("n".to_owned()))
         };
 
-        assert!(cond.eval(&storage, &ctx));
+        assert!(path_cond_result(cond, &storage, &ctx));
     }
 }

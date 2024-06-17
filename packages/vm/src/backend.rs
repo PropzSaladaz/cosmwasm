@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::RwLock;
 use std::{fmt::Debug, sync::Arc};
 use std::ops::AddAssign;
@@ -90,10 +91,6 @@ pub struct Backend<A: BackendApi, S: Storage, Q: Querier> {
     pub querier: Q,
 }
 
-/// TODO
-/// Note the comment on the Backend struct above. Here we can clone
-/// as we will only clone the Arc, not the storage itself.
-#[derive(Clone)]
 pub struct ConcurrentBackend<A, S, Q> 
 where
     A: BackendApi, 
@@ -111,7 +108,12 @@ where
     S: StorageWrapper, 
     Q: Querier
 {
-    pub fn new<S2>(backend: Arc<PersistentBackend<A, S2, Q>>, sender_addres: &String, rws: Vec<ReadWrite>) -> ConcurrentBackend<A, MockStorageWrapper, Q>
+    pub fn new<S2>(
+        backend: Arc<PersistentBackend<A, S2, Q>>, 
+        sender_addres: String, 
+        rws: Vec<ReadWrite>, 
+        partitioned_items: Arc<HashSet<Vec<u8>>>
+    ) -> ConcurrentBackend<A, MockStorageWrapper, Q>
     where
         S2: PartitionedStorage + 'static, 
     {
@@ -120,7 +122,7 @@ where
         let storage = Arc::clone(&backend.storage);
         let querier = Arc::clone(&backend.querier);
 
-        let storage_wrapper = MockStorageWrapper::new(storage, sender_addres, rws);
+        let storage_wrapper: MockStorageWrapper = MockStorageWrapper::new(storage, sender_addres, rws, partitioned_items);
         
         ConcurrentBackend {
             api: api,
