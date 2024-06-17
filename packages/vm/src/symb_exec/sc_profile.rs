@@ -40,8 +40,15 @@ impl SCProfile {
         )
     }
 
-    pub fn get_rws_query<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, msg_info: &'a MessageInfo, custom: &[u8]) -> TxRWS {
-        todo!();
+    pub fn get_rws_query<'a>(&self, deps: &'a DepsMut<'a>, env: &'a Env, custom: &[u8]) -> TxRWS {
+        self.get_rws_entry_point(
+            CosmwasmInputs::Query { 
+                deps: deps, 
+                env:  env, 
+            }, 
+            &EntryPoint::Query,
+            custom
+        )
     }
 
     /// Auxiliary method to map entry point to root path_cond_node & parse the corresponding tree, returning the RWS
@@ -52,7 +59,8 @@ impl SCProfile {
         match &execute_entry_point.root_path_cond {
             Some(path_cond) => {
                 match cosmwasm_inputs {
-                    CosmwasmInputs::Execute     { deps, env: _, info: _ } => {
+                    CosmwasmInputs::Execute     { deps, env: _, info: _ } |
+                    CosmwasmInputs::Query       { deps, env: _          } => {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
                         let (storage_dependency, rws) = self.parse_tree(path_cond, deps.storage, &context);
                         TxRWS {
@@ -72,7 +80,7 @@ impl SCProfile {
                             profile_status: self.status,
                             rws,
                         }
-                    }
+                    },
 
                     _ => todo!()
                 }
@@ -165,6 +173,5 @@ _msg: ExecuteMsg
             querier: cosmwasm_std::QuerierWrapper::new( &querier)
         };
         let rws = contract.get_rws_execute(&mut_deps, &env, &msg_info, custom);
-        println!("RWS: {:#?}", rws);
     }
 }

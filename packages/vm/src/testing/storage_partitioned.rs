@@ -397,7 +397,6 @@ pub trait BaseStorage {
 impl PartitionedStorage for MockStoragePartitioned {
 
     fn get(&self, key: &[u8], sender_address: &[u8], commutative: bool, partitioned: bool) -> BackendResult<Option<Vec<u8>>> {
-        println!("StorageRead - {:?}", key);
         let gas_info = GasInfo::with_externally_used(key.len() as u64);
         let item;
 
@@ -450,7 +449,6 @@ impl PartitionedStorage for MockStoragePartitioned {
     }
 
     fn set(&self, key: &[u8], value: &[u8], sender_address: &[u8], commutative: bool, partitioned: bool) -> BackendResult<()> {
-        println!("StorageWrite - {:?}", key);
         // TODO - currently we read, check if exists, if not we insert. Then we read again, modify & write
         // Needs to be more efficient!
         if !self.data.contains_key(key) {
@@ -482,7 +480,6 @@ impl PartitionedStorage for MockStoragePartitioned {
             n_partitions: 2.pow(n_partition_shifts) as u8,
         }
     }
-
 
 }
 

@@ -462,39 +462,32 @@ pub mod tests {
         });
 
 
-        println!("hey");
-
         test_parser_f("(GET(=AARiYW5r= @ admin.yes)) >= 3.23", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("(GET(=AARiYW5r= @ admin.yes)) >= 3.23", pair.as_str());
             assert_eq!(Rule::rel_expr, pair.as_rule());
 
-            println!("a1");
 
             let pair = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("(GET(=AARiYW5r= @ admin.yes)) >= 3.23", pair.as_str());
             assert_eq!(Rule::comparison, pair.as_rule());
 
-            println!("a2");
 
             let expr1 = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("(GET(=AARiYW5r= @ admin.yes)) ", expr1.as_str()); // TODO includes the space, but inner rules are fine
             assert_eq!(Rule::expr, expr1.as_rule());
 
-            println!("a3");
 
             let gte = pair.clone().into_inner().nth(1).unwrap();
             assert_eq!(">=", gte.as_str());
             assert_eq!(Rule::gte, gte.as_rule());
 
-            println!("a4");
 
             let expr2 = pair.clone().into_inner().nth(2).unwrap();
             assert_eq!("3.23", expr2.as_str());
             assert_eq!(Rule::expr, expr2.as_rule());
         });
 
-        println!("hey2");
 
         test_parser_f("True", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();
@@ -502,8 +495,6 @@ pub mod tests {
             assert_eq!(Rule::always_true, pair.as_rule());
         });
 
-
-        println!("hey3");
 
         test_parser_f("Type(msg) == BlaBla", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();
@@ -528,8 +519,6 @@ pub mod tests {
         });
 
 
-        println!("hey4");
-
         test_parser_f("Type(msg) != BlaBla", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();
             assert_eq!("Type(msg) != BlaBla", pair.as_str());
@@ -552,8 +541,6 @@ pub mod tests {
             assert_eq!(Rule::rust_identifier, rhs.as_rule());
         });
 
-
-        println!("hey5");
 
         test_parser_f("GET(=AARiYW5r= @ _msg.admin) == null", Rule::bool_expr, |pair| {
             let pair = pair.clone().into_inner().nth(0).unwrap();

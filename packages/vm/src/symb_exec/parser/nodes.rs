@@ -152,6 +152,10 @@ pub enum CosmwasmInputs<'a> {
         env:    &'a Env,
         info:   &'a MessageInfo
     },
+    Query {
+        deps:   &'a DepsMut<'a>,
+        env:    &'a Env,
+    },
     Mock
 }
 

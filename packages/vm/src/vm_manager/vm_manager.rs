@@ -4,13 +4,7 @@ use cosmwasm_std::{Api, CustomQuery, Empty, QuerierWrapper};
 use wasmer::Store;
 
 use crate::{
-    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, 
-    internals::instance_from_module, 
-    symb_exec::{Key, ReadWrite, SEStatus, TransactionDependency, TxRWS, WriteType}, 
-    testing::{mock_env, mock_info, MockApi, MockQuerier, MockStorageWrapper, PartitionedStorage}, 
-    vm_manager::ContractRWS, 
-    wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
-    BackendApi, InstanceOptions, Querier, Size, Storage
+    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, internals::instance_from_module, symb_exec::{Key, ReadWrite, SEStatus, TransactionDependency, TxRWS, WriteType}, testing::{mock_env, mock_info, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper, PartitionedStorage}, vm_manager::ContractRWS, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, BackendApi, InstanceOptions, Querier, SCProfile, Size, Storage
 };
 
 use super::sc_storage::{PersistentBackend, SCManager};
@@ -24,6 +18,7 @@ enum VMCall {
     Query,
 }
 
+#[derive(Debug)]
 pub enum VMMessage<'a> {
     Instantiation {
         message: &'a [u8],
@@ -39,6 +34,7 @@ pub enum VMMessage<'a> {
     },
 }
 
+#[derive(Debug)]
 pub enum InstantiatedEntryPoint {
     Execute,
     Query,
@@ -174,11 +170,13 @@ where
                 VMMessage::Instantiation { 
                     message, 
                     contract_code_id,
-                    sender_address: _
+                    sender_address: _,
                 } => RWSContext {
-                        rws: TxRWS { storage_dependency: TransactionDependency::INDEPENDENT, profile_status: SEStatus::Complete, rws: vec![ReadWrite::default()]},
+                        // rws goes empty - there are no conflicts within instantiates for the same contract storage since instantiates
+                        // generate a brand new storage
+                        rws: TxRWS { storage_dependency: TransactionDependency::INDEPENDENT, profile_status: SEStatus::Complete, rws: vec![]},
                         address: String::from("")
-                 }, // TODO this needs to be implemented!!
+                 },
 
                 VMMessage::Invocation { 
                     message, 
@@ -192,31 +190,42 @@ where
                         Some(sc_instance) => {
                             // Build mock depsMut
                             let storage = Arc::clone(&sc_instance.state.storage);
-                            let querier = cosmwasm_std::testing::MockQuerier::default();
-                            let mut_deps = DepsMut { 
-                                storage: &*storage,
-                                api: &cosmwasm_std::testing::MockApi::default(), 
-                                querier: cosmwasm_std::QuerierWrapper::new( &querier)
-                            };
-                            match entry_point {
-                                InstantiatedEntryPoint::Execute => RWSContext {
-                                    rws: profile.get_rws_execute(&mut_deps, &mock_env(), &mock_info("", &[]), message),
-                                    address: contract_address.clone()
-                                },
-                                InstantiatedEntryPoint::Query   => RWSContext {
-                                    rws: profile.get_rws_query(&mut_deps, &mock_env(), &mock_info("", &[]), message),
-                                    address: contract_address.clone(),
-                                },
-                                InstantiatedEntryPoint::Reply => todo!(),
-                            }
+                            VMManager::<A, S, Q>::get_rws_for_invocation(entry_point, profile, message, contract_address, storage)
                         }
-                        // If invocation on a contract that wasn't yet instantiated --> Do not partition anything
-                        None => continue
+                        // If invocation on a contract that wasn't yet instantiated
+                        None => {
+                            // creates empty storage for such cases
+                            VMManager::<A, S, Q>::get_rws_for_invocation(entry_point, profile, message, contract_address, Arc::new(S::new(0)))
+                        }
                     }
                 }
             });
         };
         rws
+    }
+
+    fn get_rws_for_invocation(entry_point: &InstantiatedEntryPoint, profile: Arc<SCProfile>, message: &[u8], 
+        contract_address: &String, storage: Arc<S>) -> RWSContext 
+    {
+        let querier = cosmwasm_std::testing::MockQuerier::default();
+        let mut_deps = DepsMut { 
+            storage: &*storage,
+            api: &cosmwasm_std::testing::MockApi::default(), 
+            querier: cosmwasm_std::QuerierWrapper::new( &querier)
+        };
+        match entry_point {
+            InstantiatedEntryPoint::Execute => RWSContext {
+                rws: profile.get_rws_execute(&mut_deps, &mock_env(), &mock_info("", &[]), message),
+                address: contract_address.clone()
+            },
+            InstantiatedEntryPoint::Query   => {
+                RWSContext {
+                    rws: profile.get_rws_query(&mut_deps, &mock_env(), message),
+                    address: contract_address.clone(),
+                }
+            },
+            InstantiatedEntryPoint::Reply => todo!(),
+        }
     }
 
 
@@ -309,7 +318,6 @@ where
         for (address, sc_counters) in partial_read_map.into_iter() {
             let contract_rws = rws_per_contract.get_mut(&address).unwrap();
             for (key, counter) in sc_counters.into_iter() {
-                println!("{:?} - {:?}", key, counter);
                 if counter > 0 {
                     contract_rws.rws.push(key);
                 }
@@ -433,7 +441,6 @@ where
 
         Ok(match call_type {
             VMCall::Execute => {
-                println!("calling execute for contract: {:?}", contract_address);
                 let resp = call_execute::<_, _, _, Empty>(&mut instance, &mock_env(), &mock_info("", &[]), message).unwrap();
                 format!("{:?}", resp)
             },
@@ -575,7 +582,6 @@ mod tests {
             &mock_info("", &[]), 
             msg
         );
-        println!("{:#?}", contract_res);
 
         assert_eq!(contract_res.unwrap(), ContractResult::Ok(Response::new()));
         assert_eq!(state_manager.get_instantiation_count(0), 1);
@@ -640,101 +646,101 @@ mod tests {
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
-            // VMMessage::Invocation {
-            //     entry_point: InstantiatedEntryPoint::Query,
-            //     contract_address: "a".to_owned(),
-            //     message: br#"{
-            //         "GetBalance": {}
-            //     }"#,
-            //     code_id: 0,
-            //     sender_address: String::from(""),
-            // },
-            // VMMessage::Invocation {
-            //     entry_point: InstantiatedEntryPoint::Execute,
-            //     contract_address: "a".to_owned(),
-            //     message: br#"{
-            //         "AddOne": {}
-            //     }"#,
-            //     code_id: 0,
-            //     sender_address: String::from(""),
-            // },
-            // VMMessage::Invocation {
-            //     entry_point: InstantiatedEntryPoint::Query,
-            //     contract_address: "a".to_owned(),
-            //     message: br#"{
-            //         "GetBalance": {}
-            //     }"#,
-            //     code_id: 0,
-            //     sender_address: String::from(""),
-            // },
-            // VMMessage::Invocation {
-            //     entry_point: InstantiatedEntryPoint::Execute,
-            //     contract_address: "a".to_owned(),
-            //     message: br#"{
-            //         "AddUser": {
-            //             "admin": "Balelas"
-            //         }
-            //     }"#,
-            //     code_id: 0,
-            //     sender_address: String::from(""),
-            // },
-            // VMMessage::Instantiation {
-            //     contract_code_id: 0,
-            //     message: br#"{}"#,
-            //     sender_address: String::from(""),
-            // },
-            // VMMessage::Invocation {
-            //     entry_point: InstantiatedEntryPoint::Execute,
-            //     contract_address: "b".to_owned(),
-            //     message: br#"{
-            //         "AddOne": {}
-            //     }"#,
-            //     code_id: 0,
-            //     sender_address: String::from(""),
-            // },
-            // VMMessage::Invocation {
-            //     entry_point: InstantiatedEntryPoint::Execute,
-            //     contract_address: "a".to_owned(),
-            //     message: br#"{
-            //         "AddOne": {}
-            //     }"#,
-            //     code_id: 0,
-            //     sender_address: String::from(""),
-            // },
-            // VMMessage::Invocation {
-            //     entry_point: InstantiatedEntryPoint::Query,
-            //     contract_address: "a".to_owned(),
-            //     message: br#"{
-            //         "GetBalance": {}
-            //     }"#,
-            //     code_id: 0,
-            //     sender_address: String::from(""),
-            // },
-            // VMMessage::Invocation {
-            //     entry_point: InstantiatedEntryPoint::Query,
-            //     contract_address: "b".to_owned(),
-            //     message: br#"{
-            //         "GetBalance": {}
-            //     }"#,
-            //     code_id: 0,
-            //     sender_address: String::from(""),
-            // },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Query,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "GetBalance": {}
+                }"#,
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Execute,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "AddOne": {}
+                }"#,
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Query,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "GetBalance": {}
+                }"#,
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Execute,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "AddUser": {
+                        "admin": "Balelas"
+                    }
+                }"#,
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Instantiation {
+                contract_code_id: 0,
+                message: br#"{}"#,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Execute,
+                contract_address: "b".to_owned(),
+                message: br#"{
+                    "AddOne": {}
+                }"#,
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Execute,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "AddOne": {}
+                }"#,
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Query,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "GetBalance": {}
+                }"#,
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Query,
+                contract_address: "b".to_owned(),
+                message: br#"{
+                    "GetBalance": {}
+                }"#,
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
         ];
 
         let resps = vm_manager.handle_block(msgs).unwrap();
         
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[0]);
-        // assert_eq!("{\"balance\":1000}", resps[1]);
-        // assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[2]);
-        // assert_eq!("{\"balance\":1001}", resps[3]);
-        // assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[4]);
-        // assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[5]);
-        // assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[6]);
-        // assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[7]);
-        // assert_eq!("{\"balance\":1002}", resps[8]);
-        // assert_eq!("{\"balance\":1001}", resps[9]);
+        assert_eq!("{\"balance\":1000}", resps[1]);
+        assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[2]);
+        assert_eq!("{\"balance\":1001}", resps[3]);
+        assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[4]);
+        assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[5]);
+        assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[6]);
+        assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[7]);
+        assert_eq!("{\"balance\":1002}", resps[8]);
+        assert_eq!("{\"balance\":1001}", resps[9]);
 
         vm_manager.state_manager.read().unwrap().cleanup();
 
@@ -793,7 +799,6 @@ mod tests {
                 }
             }]
         );
-        println!("{:#?}", rws);
         
         vm_manager.state_manager.read().unwrap().cleanup();
     }

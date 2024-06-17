@@ -108,7 +108,6 @@ impl StorageWrapper for MockStorageWrapper {
         let res = match self.rws.get(self.rws_idx) {
             Some(rws) => match rws {
                 ReadWrite::Write { storage_dependency: _, key, commutativity: _ } => {
-                    println!("Expected: Read, got WRITE({:?})", key);
                     (Ok(Some(vec![1u8])), GasInfo::new(0, 0)) // TODO - testing only
                     // unreachable!("Trying to read an item from storage, but the corresponding operation was a write in the predicted RWS")
                 },
@@ -116,7 +115,6 @@ impl StorageWrapper for MockStorageWrapper {
                     WriteType::Commutative => {
                         match key_read {
                             Key::Bytes(k) => {
-                                println!("Expected: Read, got Read({:?})", key);
                                 if k.as_slice() == key {
                                     let commutative = true;
                                     let is_partitioned = self.partitioned_items.contains(key);
@@ -147,20 +145,17 @@ impl StorageWrapper for MockStorageWrapper {
             Some(rws) => match rws {
                 ReadWrite::Write { storage_dependency: _, key: k, commutativity } => match commutativity {
                     WriteType::Commutative    => {
-                        println!("Expected: Write, got Write({:?})", k);
                         let commutative = true;
                         let is_partitioned = self.partitioned_items.contains(key);
                         PartitionedStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
                     }
                     WriteType::NonCommutative => {
-                        println!("Expected: Write, got Write({:?})", k);
                         let commutative = false;
                         let is_partitioned = self.partitioned_items.contains(key);
                         PartitionedStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
                     }
                 },
-                ReadWrite::Read { storage_dependency: _, key, commutativity: _ } => {
-                    println!("Expected: Write, got Read({:?})", key);
+                ReadWrite::Read { storage_dependency: _, key: _, commutativity: _ } => {
                     (Ok(()), GasInfo::new(0, 0)) // TODO - testing only
                     // unreachable!("Trying to set an item in storage, but the corresponding operation was a read in the predicted RWS")
                 }

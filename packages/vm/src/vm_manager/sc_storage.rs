@@ -483,8 +483,6 @@ _msg: InstantiateMsg
         let instance = sc_manager.get_instance_data(&"a".to_owned()).unwrap();
         let storage = &(*instance.state.storage) as *const MockStoragePartitioned;
         let item = unsafe { (*storage).get_item(&key_written) };
-        
-        println!("{:?}", item);
 
     }
 
