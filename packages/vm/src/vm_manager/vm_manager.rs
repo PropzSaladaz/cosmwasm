@@ -59,9 +59,6 @@ where
 {
     state_manager: Arc<RwLock<SCManager<A, S, Q>>>,
 
-    /// RWS per message, following the order of messages in the block
-    rws: Vec<RWSContext>,
-
     /// Storage keys that are partitioned, by SC address
     /// These keys will be passed to the ConcurrentBackend, when executing,
     /// just before creating the instance, so that it has knowledge of which items
@@ -87,10 +84,6 @@ pub struct DepsMut<'a, C: CustomQuery = Empty> {
     pub querier: QuerierWrapper<'a, C>,
 }
 
-enum RWS {
-    ReadWrite(TxRWS),
-    Bytes(Vec<Vec<u8>>)
-}
 
 /// Used before apllying the algorithm that identifies the keys to partition.
 /// This struct is used only to store temporarily the RWS and the profile completeness gotten
@@ -113,7 +106,6 @@ where
     {
         VMManager {
             state_manager,
-            rws: vec![],
             partitioned_items_per_sc: HashMap::new(),
             address_mapper,
             storage_partitions,
@@ -168,8 +160,8 @@ where
         for msg in block {
             rws.push(match msg {
                 VMMessage::Instantiation { 
-                    message, 
-                    contract_code_id,
+                    message: _, 
+                    contract_code_id: _,
                     sender_address: _,
                 } => RWSContext {
                         // rws goes empty - there are no conflicts within instantiates for the same contract storage since instantiates
@@ -340,14 +332,13 @@ where
                     sender_address
                 } => self.compile_instantiate_vm(contract_code_id, message, sender_address, rws).unwrap(),
 
-                VMMessage::Invocation { 
+                VMMessage::Invocation {
                     message, 
                     entry_point,
                     sender_address, 
                     contract_address, 
                     code_id
                 } => {
-                        // receiving a message from a contract that has no partitioned items
                         let mut partitioned_items = &Arc::new(HashSet::new()); 
                         if let Some(part) = self.partitioned_items_per_sc.get(&contract_address) {
                             partitioned_items = part;
@@ -393,7 +384,7 @@ where
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
         let store = Store::new(engine);
         
-        // For Instantiation calls we don't yet have the SC address, thus we can't know if it has or not partitioned items.
+        // For Instantiation calls we don't yet have the SC storage partitioned.
         // Also, there is only 1 instantiation for some SC, so it doesnt make much sense to partition since there will be only 1 call
         // Thus the HashSet::new() -> no partitioned items
         let partitioned_items = HashSet::new();
@@ -425,6 +416,7 @@ where
 
         let code = self.state_manager.read().unwrap().get_code(code_id)?;
         let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
+        // TODO - we should fetch this module from the instance_data variable!!
         let module = Arc::new(Box::new(compile( &engine, code.as_slice()).unwrap()));
         let store = Store::new(engine);
 
@@ -462,7 +454,12 @@ mod tests {
     use wasmer::Store;
 
     use crate::{
-        backend::ConcurrentBackend, call_instantiate, internals::instance_from_module, symb_exec::{Key, ReadWrite, TransactionDependency, TxRWS, WriteType}, testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper}, vm_manager::vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, InstanceOptions, InstantiatedEntryPoint, SCManager, SEStatus, VMMessage
+        backend::ConcurrentBackend, call_instantiate, internals::instance_from_module, 
+        symb_exec::{Key, ReadWrite, TransactionDependency, TxRWS, WriteType}, 
+        testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper}, 
+        vm_manager::vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}, 
+        wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
+        InstanceOptions, InstantiatedEntryPoint, SCManager, SEStatus, VMMessage
     };
 
     use super::{AddressMapper, BackendBuilder, VMManager};
@@ -806,7 +803,7 @@ mod tests {
     #[test]
     #[serial]
     fn decide_keys_to_partition() {
-        let mut vm_manager = mock_vm_manager();
+        let vm_manager = mock_vm_manager();
         
         let key_a = vec![1];
         let key_b = vec![2];

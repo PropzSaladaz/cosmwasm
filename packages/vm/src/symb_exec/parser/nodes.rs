@@ -297,22 +297,21 @@ pub type CustomArgTypes = HashMap<String, HashMap<String, Type>>;
 #[derive(Debug, PartialEq)]
 pub struct EntryPointProfile {
     /// Maps all input variable names to their types.
-    /// ```
-    /// _msg -> Custom
-    /// _deps -> DepsMut
-    /// ...
-    /// ```
+    /// 
+    ///  _msg -> Custom
+    ///  
+    ///  _deps -> DepsMut
+    /// 
+    /// 
     pub inputs: ArgTypes,
     
     /// Stores type_defs for each atribute within each custom message type:
-    /// ```
-    /// struct AddUSer {
     /// 
-    ///     field1: string,
-    ///     field2: string 
+    ///   struct AddUSer {
+    ///     field1: String,
+    ///     field2: String 
+    ///   }
     /// 
-    /// }
-    /// ```
     /// 
     /// These type_defs refer only to the input variable of type Custom
     pub type_defs: CustomArgTypes,

@@ -16,10 +16,17 @@ fn contract_path(id: u128) -> String {
 
 /// Represents static data (need only to store 1 for each contract code) 
 /// for each contract.
+/// There will only be 1 code for each different SC bytecode. This stores:
+/// 
+/// - SC Profile for each SC: tree-like structure with all possible RWS given the tx inputs (may be incomplete)
+/// - Current SC code id: Monotonically increasing int (given all previous SCs that were installed)
+/// - Instantiation Count: How many times a SC was instantiated. Also monotonically increasing
 #[derive(Debug)]
 struct SCStaticData {
     sc_code_id: u128,
+    /// Stores SCProfile for each different SC code.
     profiles: HashMap<u128, Arc<SCProfile>>,
+    /// Stores number of instantiated SCs per contract_id
     instantiation_count: Arc<Mutex<HashMap<u128, u128>>>,
 }
 
@@ -92,7 +99,9 @@ impl SCStaticData {
 
 
 
-
+/// Stores persistent information about the SC state.
+/// The most important is Storage. Keeps track of a reference to the storage
+/// of a SC
 #[derive(Clone)]
 pub struct PersistentBackend<A, S, Q> 
 where
@@ -101,9 +110,6 @@ where
     Q: Querier
 {
     pub api: Arc<A>,
-    /// The lock is always used as read, unless when we start the block execution.
-    /// That is the only time we lock as write, to partition the items at the start of the block,
-    /// Only 1 thread does this
     pub storage: Arc<S>,
     pub querier: Arc<RwLock<Q>>,
 }
@@ -199,7 +205,7 @@ where
     pub fn partition_storage(&self, contract_keys: Vec<ContractRWS>) {
         for contract in contract_keys {
             match self.sc_storage.get(&contract.address) {
-                Some(mut storage) => {
+                Some(storage) => {
                     storage.state.storage
                     .partition_items(contract.rws);
                 },
