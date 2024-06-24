@@ -27,4 +27,6 @@ pub use querier::MockQuerier;
 pub use storage::MockStorage;
 
 pub use storage_partitioned::{MockStoragePartitioned, ValueType, PartitionedStorage, BaseStorage};
+
 pub use storage_wrapper::{MockStorageWrapper, StorageWrapper};
+

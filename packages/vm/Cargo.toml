@@ -33,7 +33,7 @@ log = '0.4.20'
 bytes = "1.4.0"     # need a higher version than the one required by Wasmer for the Bytes -> Vec<u8> implementation
 clru = "0.6.1"
 crc32fast = "1.3.2"
-bech32 = "0.9.1"
+bech32 = "0.11.0"
 # Uses the path when built locally; uses the given version from crates.io when published
 cosmwasm-std = { path = "../std", version = "2.0.0-rc.1", default-features = false, features = ["std"] }
 cosmwasm-crypto = { path = "../crypto", version = "2.0.0-rc.1" }
@@ -69,7 +69,7 @@ base64 = "0.22"
 num = "0.4.1"
 # concurrent hashmap
 dashmap = "5.5.3"
-once_cell = "1.10.0"  # or the latest version
+concurrent-map = "5.0.33"
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["html_reports"] }

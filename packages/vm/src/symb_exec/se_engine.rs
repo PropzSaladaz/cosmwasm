@@ -66,7 +66,18 @@ _msg: ExecuteMsg
 
 [PC_4] Type(_msg) == Transfer
 => None
-<- None"#
+<- None
+
+Q ----------------------------
+
+_deps: DepsMut
+_env: Env
+_msg: ExecuteMsg
+
+[PC_1] True
+=> GET(=AARiYW5rQURNSU4=): Non-Inc
+<- None
+"#
             .to_owned()
         }
     }

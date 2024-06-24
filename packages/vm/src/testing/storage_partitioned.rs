@@ -1,3 +1,4 @@
+use concurrent_map::ConcurrentMap;
 use strum::Display;
 use std::{fmt, sync::RwLock};
 #[cfg(feature = "iterator")]
@@ -261,9 +262,9 @@ type ConcurrentItem = Arc<RwLock<ValueType>>;
 
 #[derive(Default)]
 pub struct MockStoragePartitioned {
-    data: DashMap<Vec<u8>, ConcurrentItem>,
+    data: ConcurrentMap<Vec<u8>, ConcurrentItem>,
     #[cfg(feature = "iterator")]
-    iterators: HashMap<u32, Mutex<Iter>>,
+    iterators: Mutex<HashMap<u32, Mutex<Iter>>>,
     n_partition_shifts: u8,
     n_partitions: u8,
 }
@@ -436,36 +437,37 @@ impl PartitionedStorage for MockStoragePartitioned {
 
     fn partition_items(&self, items: Vec<Vec<u8>>) {
         for item in items {
-            self.data.entry(item).and_modify(|item| 
-                (*item).write().unwrap().partition(self.n_partition_shifts));
+            let mut val = self.data.get(&item).unwrap();
+            (*val).write().unwrap().partition(self.n_partition_shifts);
+            self.data.insert(item, val);
         }
     }
 
     fn sum_partitioned_items(&self, items: Vec<Vec<u8>>) {
         for item in items {
-            self.data.entry(item).and_modify(|item| 
-                (*item).write().unwrap().sum_partition());
+            let mut val = self.data.get(&item).unwrap();
+            (*val).write().unwrap().sum_partition();
+            self.data.insert(item, val);
         }
     }
 
     fn set(&self, key: &[u8], value: &[u8], sender_address: &[u8], commutative: bool, partitioned: bool) -> BackendResult<()> {
-
         // TODO - currently we read, check if exists, if not we insert. Then we read again, modify & write
         // Needs to be more efficient!
         if !self.data.contains_key(key) {
             self.data.insert(key.to_vec(), Arc::new(RwLock::new(ValueType::Single([0u8].to_vec()))));
             if partitioned {
-                self.data.get_mut(key).unwrap().write().unwrap().partition(self.n_partition_shifts);
+                self.data.get(key).unwrap().write().unwrap().partition(self.n_partition_shifts);
             }
         }
 
         if commutative && partitioned {
             let partition = (sender_address[0] % self.n_partitions) as usize;
-            let item = self.data.get_mut(key).unwrap();
+            let item = self.data.get(key).unwrap();
             item.read().unwrap().set_partition(value, partition);
         }
         else {
-            self.data.get_mut(key).unwrap().write().unwrap().set(value);
+            self.data.get(key).unwrap().write().unwrap().set(value);
         }
 
         let gas_info = GasInfo::with_externally_used((key.len() + value.len()) as u64);
@@ -475,13 +477,12 @@ impl PartitionedStorage for MockStoragePartitioned {
     
     fn new(n_partition_shifts: u8) -> Self {
         Self {
-            data: DashMap::new(),
-            iterators: HashMap::new(),
+            data: ConcurrentMap::new(),
+            iterators: Mutex::new(HashMap::new()),
             n_partition_shifts: n_partition_shifts,
             n_partitions: 2.pow(n_partition_shifts) as u8,
         }
     }
-
 
 }
 
@@ -521,7 +522,7 @@ impl BaseStorage for MockStoragePartitioned {
         end: Option<&[u8]>,
         order: Order,
     ) -> BackendResult<u32> {
-        /* TODO
+        /* TODO */
         let gas_info = GasInfo::with_externally_used(GAS_COST_RANGE);
         let bounds = range_bounds(start, end);
 
@@ -535,26 +536,28 @@ impl BaseStorage for MockStoragePartitioned {
             },
         };
 
-        let last_id: u32 = self
-            .iterators
-            .len()
-            .try_into()
-            .expect("Found more iterator IDs than supported");
-        let new_id = last_id + 1;
-        let iter = Iter {
-            data: values,
-            position: 0,
-        };
-        self.iterators.insert(new_id, iter);
+        { // hold lock for self.iterators
+            let mut iterators = self.iterators.lock().unwrap();
+            let last_id: u32 = iterators
+                .len()
+                .try_into()
+                .expect("Found more iterator IDs than supported");
+            let new_id = last_id + 1;
+            let iter = Iter {
+                data: values,
+                position: 0,
+            };
+            iterators.insert(new_id, Mutex::new(iter));
+            (Ok(new_id), gas_info)
+        }
 
-        (Ok(new_id), gas_info)*/
-        (Ok(1), GasInfo::with_externally_used(GAS_COST_RANGE))
     }
 
     #[cfg(feature = "iterator")]
     fn next(&self, iterator_id: u32) -> BackendResult<Option<Record>> {
-        // TODO
-        let iterator = match self.iterators.get(&iterator_id) {
+
+        let iterators = self.iterators.lock().unwrap();
+        let iterator = match iterators.get(&iterator_id) {
             Some(i) => i,
             None => {
                 return (
@@ -563,6 +566,7 @@ impl BaseStorage for MockStoragePartitioned {
                 )
             }
         };
+
         let mut iterator = iterator.lock().unwrap();
 
         let (value, gas_info): (Option<Record>, GasInfo) =
@@ -606,12 +610,13 @@ fn range_bounds(start: Option<&[u8]>, end: Option<&[u8]>) -> impl RangeBounds<Ve
 #[cfg(feature = "iterator")]
 /// The BTreeMap specific key-value pair reference type, as returned by BTreeMap<Vec<u8>, Vec<u8>>::range.
 /// This is internal as it can change any time if the map implementation is swapped out.
-type BTreeMapRecordRef<'a> = (&'a Vec<u8>, &'a Vec<u8>);
+type BTreeMapRecord = (Vec<u8>, ConcurrentItem);
 
 #[cfg(feature = "iterator")]
-fn clone_item(item_ref: BTreeMapRecordRef) -> Record {
+fn clone_item(item_ref: BTreeMapRecord) -> Record {
     let (key, value) = item_ref;
-    (key.clone(), value.clone())
+    let value = value.read().unwrap();
+    (key.clone(), value.read())
 }
 
 #[cfg(test)]

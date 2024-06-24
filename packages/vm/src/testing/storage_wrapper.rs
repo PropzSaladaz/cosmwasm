@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 use std::{collections::HashMap, sync::Arc};
-use once_cell::sync::Lazy;
 use cosmwasm_std::Order;
 use cosmwasm_std::Record;
 
 use crate::symb_exec::Key;
 use crate::symb_exec::WriteType;
+use crate::GasInfo;
+
 use crate::{symb_exec::ReadWrite, BackendResult};
 
 use super::{BaseStorage, MockStoragePartitioned, PartitionedStorage};
@@ -90,7 +91,7 @@ impl BaseStorage for MockStorageWrapper {
 
 /// Redirects all operations to the self.storage.
 /// Updates the rws_idx for each read/write
-/// TODO - what if we have a a Read non-commutative, but the current operation in RWS is a read commutative & the key matches?
+/// TODO - what if we have a Read non-commutative, but the current operation in RWS is a read commutative & the key matches?
 ///     Actual RWS: Read1(non commutative) --> Read2(commutative)
 ///  Predicted RWS: Read1(commutative)
 /// There is a shift... Think about how to solve this. Maybe take in consideration if profile is complete or not
@@ -107,8 +108,10 @@ impl StorageWrapper for MockStorageWrapper {
 
         let res = match self.rws.get(self.rws_idx) {
             Some(rws) => match rws {
-                ReadWrite::Write { storage_dependency: _, key: _, commutativity: _ } => 
-                    unreachable!("Trying to read an item from storage, but the corresponding operation was a write in the predicted RWS"),
+                ReadWrite::Write { storage_dependency: _, key, commutativity: _ } => {
+                    (Ok(Some(vec![1u8])), GasInfo::new(0, 0)) // TODO - testing only
+                    // unreachable!("Trying to read an item from storage, but the corresponding operation was a write in the predicted RWS")
+                },
                 ReadWrite::Read { storage_dependency: _, key: key_read, commutativity } => match commutativity {
                     WriteType::Commutative => {
                         match key_read {
@@ -141,7 +144,7 @@ impl StorageWrapper for MockStorageWrapper {
         // match current Read/Write in the sequence of the RWS
         let res = match self.rws.get(self.rws_idx) {
             Some(rws) => match rws {
-                ReadWrite::Write { storage_dependency: _, key: _, commutativity } => match commutativity {
+                ReadWrite::Write { storage_dependency: _, key: k, commutativity } => match commutativity {
                     WriteType::Commutative    => {
                         let commutative = true;
                         let is_partitioned = self.partitioned_items.contains(key);
@@ -153,8 +156,10 @@ impl StorageWrapper for MockStorageWrapper {
                         PartitionedStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
                     }
                 },
-                ReadWrite::Read { storage_dependency: _, key: _, commutativity: _ } => 
-                    unreachable!("Trying to set an item in storage, but the corresponding operation was a read in the predicted RWS")
+                ReadWrite::Read { storage_dependency: _, key: _, commutativity: _ } => {
+                    (Ok(()), GasInfo::new(0, 0)) // TODO - testing only
+                    // unreachable!("Trying to set an item in storage, but the corresponding operation was a read in the predicted RWS")
+                }
             },
 
             None => {

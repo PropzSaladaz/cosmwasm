@@ -1,15 +1,18 @@
 use cosmwasm_std::Storage;
 
-use crate::symb_exec::parser::nodes::{PathCondition, PathConditionNode};
+use crate::symb_exec::{parser::nodes::{PathCondition, PathConditionNode}, ReadWrite, TransactionDependency};
+
 
 use super::eval::{Eval, SEContext};
 
 impl PathConditionNode {
     pub fn parse_tree(&mut self, storage: &dyn Storage, variable_context: &SEContext) -> PathConditionNode
     {
+        use crate::symb_exec::parser::nodes::TransactionDependency::*;
         match self {
             Self::ConditionNode { 
-                storage_dependency,
+
+                storage_dependency: _,
                 condition: Some(condition), 
                 pos_branch: Some(pos_branch), 
                 neg_branch: Some(neg_branch) 
@@ -49,6 +52,32 @@ impl PathConditionNode {
                         rws 
                     },
                     PathConditionNode::None => PathConditionNode::None
+
+                }
+
+            },
+            // When we parse all conditions, and reach the final RWS, we still have to evaluate it.
+            // The received RWS is of the type "SET(GET(xyz)): 1" -> thus we need to evaluate the GETs to know the exact key 
+            // in bytes (note that this key can still change during execution)
+            Self::RWSNode { storage_dependency, rws} => {
+                let rws: Vec<ReadWrite> = rws.iter_mut().map(|read_write| {
+                    read_write.eval(storage, variable_context)
+                }).collect();
+                let mut dependency = INDEPENDENT;
+                // Run over all RWS, and try to find any operation depending on state
+                for rw in &rws {
+                    match rw {
+                        ReadWrite::Read  { storage_dependency, key: _, commutativity: _ } |
+                        ReadWrite::Write { storage_dependency, key: _, commutativity: _ } =>
+                            if *storage_dependency == TransactionDependency::DEPENDENT {
+                                dependency = TransactionDependency::DEPENDENT;
+                                break;
+                            }
+                    }
+                }
+                Self::RWSNode { 
+                    storage_dependency: *storage_dependency | dependency, 
+                    rws
                 }
 
             },

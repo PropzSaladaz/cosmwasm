@@ -4,13 +4,7 @@ use cosmwasm_std::{Api, CustomQuery, Empty, QuerierWrapper};
 use wasmer::Store;
 
 use crate::{
-    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, 
-    internals::instance_from_module, 
-    symb_exec::{Key, ReadWrite, SEStatus, TransactionDependency, TxRWS, WriteType}, 
-    testing::{mock_env, mock_info, MockApi, MockQuerier, MockStorageWrapper, PartitionedStorage}, 
-    vm_manager::ContractRWS, 
-    wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
-    BackendApi, InstanceOptions, Querier, Size, Storage
+    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, internals::instance_from_module, symb_exec::{Key, ReadWrite, SEStatus, TransactionDependency, TxRWS, WriteType}, testing::{mock_env, mock_info, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper, PartitionedStorage}, vm_manager::ContractRWS, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, BackendApi, InstanceOptions, Querier, SCProfile, Size, Storage
 };
 
 use super::sc_storage::{PersistentBackend, SCManager};
@@ -24,6 +18,7 @@ enum VMCall {
     Query,
 }
 
+#[derive(Debug)]
 pub enum VMMessage<'a> {
     Instantiation {
         message: &'a [u8],
@@ -39,6 +34,7 @@ pub enum VMMessage<'a> {
     },
 }
 
+#[derive(Debug)]
 pub enum InstantiatedEntryPoint {
     Execute,
     Query,
@@ -62,9 +58,6 @@ where
     Q: Querier + 'static,
 {
     state_manager: Arc<RwLock<SCManager<A, S, Q>>>,
-
-    /// RWS per message, following the order of messages in the block
-    rws: Vec<RWSContext>,
 
     /// Storage keys that are partitioned, by SC address
     /// These keys will be passed to the ConcurrentBackend, when executing,
@@ -91,10 +84,6 @@ pub struct DepsMut<'a, C: CustomQuery = Empty> {
     pub querier: QuerierWrapper<'a, C>,
 }
 
-enum RWS {
-    ReadWrite(TxRWS),
-    Bytes(Vec<Vec<u8>>)
-}
 
 /// Used before apllying the algorithm that identifies the keys to partition.
 /// This struct is used only to store temporarily the RWS and the profile completeness gotten
@@ -117,7 +106,6 @@ where
     {
         VMManager {
             state_manager,
-            rws: vec![],
             partitioned_items_per_sc: HashMap::new(),
             address_mapper,
             storage_partitions,
@@ -127,6 +115,10 @@ where
 
     /// Given a block of messages, fetch the RWS for each individual tx - this is done using information from the
     /// contract inputs and the already built SE profile when the SC was installed.
+    /// 
+    /// Then partitions a set of storage items according to the operation type (Commutative vs. Non commutative)
+    /// and executes the block.
+    /// Finally sums all partitions.
     pub fn handle_block(&mut self, block: Block) -> std::io::Result<Vec<String>> {
         let rws = self.get_rws(&block);
         let partitioned_keys = self.partition_storage(&rws);
@@ -168,13 +160,15 @@ where
         for msg in block {
             rws.push(match msg {
                 VMMessage::Instantiation { 
-                    message, 
-                    contract_code_id,
-                    sender_address: _
+                    message: _, 
+                    contract_code_id: _,
+                    sender_address: _,
                 } => RWSContext {
-                        rws: TxRWS { storage_dependency: TransactionDependency::INDEPENDENT, profile_status: SEStatus::Complete, rws: vec![ReadWrite::default()]},
+                        // rws goes empty - there are no conflicts within instantiates for the same contract storage since instantiates
+                        // generate a brand new storage
+                        rws: TxRWS { storage_dependency: TransactionDependency::INDEPENDENT, profile_status: SEStatus::Complete, rws: vec![]},
                         address: String::from("")
-                 }, // TODO this needs to be implemented!!
+                 },
 
                 VMMessage::Invocation { 
                     message, 
@@ -188,31 +182,42 @@ where
                         Some(sc_instance) => {
                             // Build mock depsMut
                             let storage = Arc::clone(&sc_instance.state.storage);
-                            let querier = cosmwasm_std::testing::MockQuerier::default();
-                            let mut_deps = DepsMut { 
-                                storage: &*storage,
-                                api: &cosmwasm_std::testing::MockApi::default(), 
-                                querier: cosmwasm_std::QuerierWrapper::new( &querier)
-                            };
-                            match entry_point {
-                                InstantiatedEntryPoint::Execute => RWSContext {
-                                    rws: profile.get_rws_execute(&mut_deps, &mock_env(), &mock_info("", &[]), message),
-                                    address: contract_address.clone()
-                                },
-                                InstantiatedEntryPoint::Query   => RWSContext {
-                                    rws: profile.get_rws_query(&mut_deps, &mock_env(), &mock_info("", &[]), message),
-                                    address: contract_address.clone(),
-                                },
-                                InstantiatedEntryPoint::Reply => todo!(),
-                            }
+                            VMManager::<A, S, Q>::get_rws_for_invocation(entry_point, profile, message, contract_address, storage)
                         }
-                        // If invocation on a contract that wasn't yet instantiated --> Do not partition anything
-                        None => continue
+                        // If invocation on a contract that wasn't yet instantiated
+                        None => {
+                            // creates empty storage for such cases
+                            VMManager::<A, S, Q>::get_rws_for_invocation(entry_point, profile, message, contract_address, Arc::new(S::new(0)))
+                        }
                     }
                 }
             });
         };
         rws
+    }
+
+    fn get_rws_for_invocation(entry_point: &InstantiatedEntryPoint, profile: Arc<SCProfile>, message: &[u8], 
+        contract_address: &String, storage: Arc<S>) -> RWSContext 
+    {
+        let querier = cosmwasm_std::testing::MockQuerier::default();
+        let mut_deps = DepsMut { 
+            storage: &*storage,
+            api: &cosmwasm_std::testing::MockApi::default(), 
+            querier: cosmwasm_std::QuerierWrapper::new( &querier)
+        };
+        match entry_point {
+            InstantiatedEntryPoint::Execute => RWSContext {
+                rws: profile.get_rws_execute(&mut_deps, &mock_env(), &mock_info("", &[]), message),
+                address: contract_address.clone()
+            },
+            InstantiatedEntryPoint::Query   => {
+                RWSContext {
+                    rws: profile.get_rws_query(&mut_deps, &mock_env(), message),
+                    address: contract_address.clone(),
+                }
+            },
+            InstantiatedEntryPoint::Reply => todo!(),
+        }
     }
 
 
@@ -305,7 +310,6 @@ where
         for (address, sc_counters) in partial_read_map.into_iter() {
             let contract_rws = rws_per_contract.get_mut(&address).unwrap();
             for (key, counter) in sc_counters.into_iter() {
-                println!("{:?} - {:?}", key, counter);
                 if counter > 0 {
                     contract_rws.rws.push(key);
                 }
@@ -328,14 +332,13 @@ where
                     sender_address
                 } => self.compile_instantiate_vm(contract_code_id, message, sender_address, rws).unwrap(),
 
-                VMMessage::Invocation { 
+                VMMessage::Invocation {
                     message, 
                     entry_point,
                     sender_address, 
                     contract_address, 
                     code_id
                 } => {
-                        // receiving a message from a contract that has no partitioned items
                         let mut partitioned_items = &Arc::new(HashSet::new()); 
                         if let Some(part) = self.partitioned_items_per_sc.get(&contract_address) {
                             partitioned_items = part;
@@ -381,7 +384,7 @@ where
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
         let store = Store::new(engine);
         
-        // For Instantiation calls we don't yet have the SC address, thus we can't know if it has or not partitioned items.
+        // For Instantiation calls we don't yet have the SC storage partitioned.
         // Also, there is only 1 instantiation for some SC, so it doesnt make much sense to partition since there will be only 1 call
         // Thus the HashSet::new() -> no partitioned items
         let partitioned_items = HashSet::new();
@@ -413,6 +416,7 @@ where
 
         let code = self.state_manager.read().unwrap().get_code(code_id)?;
         let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
+        // TODO - we should fetch this module from the instance_data variable!!
         let module = Arc::new(Box::new(compile( &engine, code.as_slice()).unwrap()));
         let store = Store::new(engine);
 
@@ -429,7 +433,6 @@ where
 
         Ok(match call_type {
             VMCall::Execute => {
-                println!("calling execute for contract: {:?}", contract_address);
                 let resp = call_execute::<_, _, _, Empty>(&mut instance, &mock_env(), &mock_info("", &[]), message).unwrap();
                 format!("{:?}", resp)
             },
@@ -451,7 +454,12 @@ mod tests {
     use wasmer::Store;
 
     use crate::{
-        backend::ConcurrentBackend, call_instantiate, internals::instance_from_module, symb_exec::{Key, ReadWrite, TransactionDependency, TxRWS, WriteType}, testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper}, vm_manager::vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, InstanceOptions, InstantiatedEntryPoint, SCManager, SEStatus, VMMessage
+        backend::ConcurrentBackend, call_instantiate, internals::instance_from_module, 
+        symb_exec::{Key, ReadWrite, TransactionDependency, TxRWS, WriteType}, 
+        testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper}, 
+        vm_manager::vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}, 
+        wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
+        InstanceOptions, InstantiatedEntryPoint, SCManager, SEStatus, VMMessage
     };
 
     use super::{AddressMapper, BackendBuilder, VMManager};
@@ -571,7 +579,6 @@ mod tests {
             &mock_info("", &[]), 
             msg
         );
-        println!("{:#?}", contract_res);
 
         assert_eq!(contract_res.unwrap(), ContractResult::Ok(Response::new()));
         assert_eq!(state_manager.get_instantiation_count(0), 1);
@@ -636,7 +643,7 @@ mod tests {
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -645,7 +652,7 @@ mod tests {
                     "GetBalance": {}
                 }"#,
                 code_id: 0,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -654,7 +661,7 @@ mod tests {
                     "AddOne": {}
                 }"#,
                 code_id: 0,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -663,7 +670,7 @@ mod tests {
                     "GetBalance": {}
                 }"#,
                 code_id: 0,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -674,12 +681,12 @@ mod tests {
                     }
                 }"#,
                 code_id: 0,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -688,7 +695,7 @@ mod tests {
                     "AddOne": {}
                 }"#,
                 code_id: 0,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -697,7 +704,7 @@ mod tests {
                     "AddOne": {}
                 }"#,
                 code_id: 0,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -706,7 +713,7 @@ mod tests {
                     "GetBalance": {}
                 }"#,
                 code_id: 0,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -715,7 +722,7 @@ mod tests {
                     "GetBalance": {}
                 }"#,
                 code_id: 0,
-                sender_address: String::from(""),
+                sender_address: String::from("a"),
             },
         ];
 
@@ -789,7 +796,6 @@ mod tests {
                 }
             }]
         );
-        println!("{:#?}", rws);
         
         vm_manager.state_manager.read().unwrap().cleanup();
     }
@@ -797,7 +803,7 @@ mod tests {
     #[test]
     #[serial]
     fn decide_keys_to_partition() {
-        let mut vm_manager = mock_vm_manager();
+        let vm_manager = mock_vm_manager();
         
         let key_a = vec![1];
         let key_b = vec![2];

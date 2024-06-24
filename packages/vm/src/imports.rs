@@ -1135,7 +1135,6 @@ mod tests {
         let dest_ptr = create_empty(&instance, &mut fe_mut, CANONICAL_ADDRESS_BUFFER_LENGTH);
 
         leave_default_data(&mut fe_mut);
-
         let res = do_addr_canonicalize(fe_mut.as_mut(), source_ptr, dest_ptr).unwrap();
         assert_eq!(res, 0);
         let data = force_read(&mut fe_mut, dest_ptr);

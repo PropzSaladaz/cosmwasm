@@ -207,15 +207,20 @@ pub trait Eval {
 impl ReadWrite {
     /// Used to evaluate final RWS keys into actual values.
     /// RWS is first built into a well-structured tree, like so:
-    /// ```
+    /// 
     /// Expr::StorageRead(Key::Expression { 
-    ///     base: key_raw.to_vec(), 
-    ///     expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
-    ///         "msg".to_owned(), 
-    ///         "admin".to_owned()
-    ///     ]
-    /// ))
-    /// ```
+    /// 
+    ///  base: key_raw.to_vec(), 
+    /// 
+    ///  expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
+    /// 
+    ///   "msg".to_owned(), 
+    /// 
+    ///   "admin".to_owned()])))
+    /// 
+    ///  }
+    /// 
+    /// )
     /// 
     /// This evaluation turns key expressions into values. In the above example, turns `msg.admin` into `"name1"` by
     /// fetching the value of `msg.admin` from the current variable_context.
