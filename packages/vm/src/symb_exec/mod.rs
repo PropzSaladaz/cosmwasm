@@ -7,7 +7,7 @@ mod testing;
 pub use se_engine::{SEEngine, SEProfile, SEEngineParse, SEStatus};
 pub use sc_profile::TxRWS;
 pub use parser::{
-    nodes::{EntryPoint, ReadWrite, Key, WriteType, TransactionDependency},
+    nodes::{EntryPoint, ReadWrite, Key, Commutativity, StorageDependency},
     SCProfile,
     SCProfileParser,
 };

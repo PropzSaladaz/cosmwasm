@@ -5,7 +5,7 @@ use crate::{testing::PartitionedStorage, vm_manager::{SCManager, VMManager, VMMe
 const BLOCK_SIZE: usize = 1;
 
 pub enum Message<'a> {
-    Invocation(VMMessage<'a>),
+    Invocation(VMMessage),
     Deployment {
         contract_code: &'a [u8],
     }

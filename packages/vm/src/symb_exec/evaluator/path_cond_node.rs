@@ -1,6 +1,6 @@
 use cosmwasm_std::Storage;
 
-use crate::symb_exec::{parser::nodes::{PathCondition, PathConditionNode}, ReadWrite, TransactionDependency};
+use crate::symb_exec::{parser::nodes::{PathCondition, PathConditionNode}, ReadWrite, StorageDependency};
 
 
 use super::eval::{Eval, SEContext};
@@ -8,7 +8,7 @@ use super::eval::{Eval, SEContext};
 impl PathConditionNode {
     pub fn parse_tree(&mut self, storage: &dyn Storage, variable_context: &SEContext) -> PathConditionNode
     {
-        use crate::symb_exec::parser::nodes::TransactionDependency::*;
+        use crate::symb_exec::parser::nodes::StorageDependency::*;
         match self {
             Self::ConditionNode { 
 
@@ -63,14 +63,14 @@ impl PathConditionNode {
                 let rws: Vec<ReadWrite> = rws.iter_mut().map(|read_write| {
                     read_write.eval(storage, variable_context)
                 }).collect();
-                let mut dependency = INDEPENDENT;
+                let mut dependency = Independent;
                 // Run over all RWS, and try to find any operation depending on state
                 for rw in &rws {
                     match rw {
                         ReadWrite::Read  { storage_dependency, key: _, commutativity: _ } |
                         ReadWrite::Write { storage_dependency, key: _, commutativity: _ } =>
-                            if *storage_dependency == TransactionDependency::DEPENDENT {
-                                dependency = TransactionDependency::DEPENDENT;
+                            if *storage_dependency == StorageDependency::Dependent {
+                                dependency = StorageDependency::Dependent;
                                 break;
                             }
                     }
@@ -100,7 +100,7 @@ impl PathConditionNode {
 mod tests {
     use std::{cell::RefCell, collections::HashMap, rc::Rc};
     use crate::symb_exec::{
-        evaluator::eval::SEContext, parser::nodes::*, parser::nodes::TransactionDependency::*, testing::mock::*
+        evaluator::eval::SEContext, parser::nodes::*, parser::nodes::StorageDependency::*, testing::mock::*
     };
     
     fn key_admin() -> Key {
@@ -138,7 +138,7 @@ mod tests {
 
         // [PC_1]
         PathConditionNode::ConditionNode { 
-            storage_dependency: INDEPENDENT,
+            storage_dependency: Independent,
             //  Type(msg) == AddUser
             condition: Some(PathCondition::RelBinOp { 
                 lhs: Box::new(Expr::Type(Type::Expr(
@@ -148,7 +148,7 @@ mod tests {
             }), 
             // => [PC_2]
             pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
-                storage_dependency: INDEPENDENT,
+                storage_dependency: Independent,
                 // GET(=AARiYW5r= @ _msg.admin) == null
                 condition: Some(PathCondition::RelBinOp { 
                     lhs:  Box::new(Expr::StorageRead(key_admin())), 
@@ -159,17 +159,17 @@ mod tests {
                 // => SET(=AARiYW5r= @ _msg.admin): Non-Inc
                 // => GET(=AARiYW5r= @ _msg.admin)
                 pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode{ 
-                    storage_dependency: INDEPENDENT,
+                    storage_dependency: Independent,
                     rws: vec![
                     ReadWrite::Write { 
-                        storage_dependency: INDEPENDENT,
+                        storage_dependency: Independent,
                         key: key_admin(), 
-                        commutativity: WriteType::NonCommutative
+                        commutativity: Commutativity::NonCommutative
                     },
                     ReadWrite::Read{
-                        storage_dependency: INDEPENDENT,
+                        storage_dependency: Independent,
                         key: key_admin(),
-                        commutativity: WriteType::NonCommutative,
+                        commutativity: Commutativity::NonCommutative,
                     }
                 ]})))), 
 
@@ -179,7 +179,7 @@ mod tests {
 
             // <- [PC_3]
             neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode {
-                storage_dependency: INDEPENDENT,
+                storage_dependency: Independent,
                 // Type(msg) == AddOne
                 condition: Some(PathCondition::RelBinOp { 
                     lhs: Box::new(Expr::Type(Type::Expr(
@@ -188,25 +188,25 @@ mod tests {
                     rhs: Box::new(Expr::Type(Type::Custom("AddOne".to_owned()))) 
                 }), 
                 pos_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::RWSNode {
-                    storage_dependency: INDEPENDENT,
+                    storage_dependency: Independent,
                     rws: vec![
                     // SET(GET(=AARiYW5rQURNSU4=)): Inc
                     // GET(=AARiYW5rQURNSU4=)
                     ReadWrite::Read{
-                        storage_dependency: INDEPENDENT,
+                        storage_dependency: Independent,
                         key: key_incr(),
-                        commutativity: WriteType::Commutative,
+                        commutativity: Commutativity::Commutative,
                     },
                     ReadWrite::Write { 
-                        storage_dependency: DEPENDENT,
+                        storage_dependency: Dependent,
                         key: key_incr(), 
-                        commutativity: WriteType::Commutative
+                        commutativity: Commutativity::Commutative
                     }
                 ]})))),
 
                 // <- [PC_4]
                 neg_branch: Some(Rc::new(RefCell::new(Box::new(PathConditionNode::ConditionNode { 
-                    storage_dependency: INDEPENDENT,
+                    storage_dependency: Independent,
                     condition: Some(PathCondition::RelBinOp { 
                         lhs: Box::new(Expr::Type(Type::Expr(
                              Box::new(Expr::Identifier(Identifier::Variable("msg".to_owned())))))), 
@@ -247,17 +247,17 @@ mod tests {
         let rws = node.parse_tree(&storage, &ctx);
 
         assert_eq!(rws, PathConditionNode::RWSNode {
-            storage_dependency: DEPENDENT, // the condition depends on a GET from storage!
+            storage_dependency: Dependent, // the condition depends on a GET from storage!
             rws: vec![
             ReadWrite::Write { 
-                storage_dependency: INDEPENDENT,
+                storage_dependency: Independent,
                 key: key_admin().eval(&storage, &ctx), 
-                commutativity: WriteType::NonCommutative
+                commutativity: Commutativity::NonCommutative
             },
             ReadWrite::Read{
-                storage_dependency: INDEPENDENT,
+                storage_dependency: Independent,
                 key: key_admin().eval(&storage, &ctx),
-                commutativity: WriteType::NonCommutative,
+                commutativity: Commutativity::NonCommutative,
             },
         ]})
     }
@@ -314,17 +314,17 @@ mod tests {
         let rws = node.parse_tree(&storage, &ctx);
 
         assert_eq!(rws, PathConditionNode::RWSNode{
-            storage_dependency: DEPENDENT,
+            storage_dependency: Dependent,
             rws: vec![
             ReadWrite::Read {
-                storage_dependency: INDEPENDENT,
+                storage_dependency: Independent,
                 key: key_incr(), 
-                commutativity: WriteType::Commutative
+                commutativity: Commutativity::Commutative
             },
             ReadWrite::Write { 
-                storage_dependency: DEPENDENT,
+                storage_dependency: Dependent,
                 key: key_incr(), 
-                commutativity: WriteType::Commutative
+                commutativity: Commutativity::Commutative
             },
         ]})
     }

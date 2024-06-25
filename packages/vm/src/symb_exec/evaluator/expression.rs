@@ -99,9 +99,9 @@ impl Eval for Expr {
             Self::Identifier(id) => {
                 let tmp = self.parse_identifier(id, variable_context);
                 match tmp {
-                    Expr::Number(n)          => Self::Result { expr: Box::new(Expr::Number(n)),      dependency: TransactionDependency::INDEPENDENT },
-                    Expr::String(s)          => Self::Result { expr: Box::new(Expr::String(s)),      dependency: TransactionDependency::INDEPENDENT },
-                    Expr::Identifier(id) => Self::Result { expr: Box::new(Expr::Identifier(id)), dependency: TransactionDependency::INDEPENDENT },
+                    Expr::Number(n)          => Self::Result { expr: Box::new(Expr::Number(n)),      dependency: StorageDependency::Independent },
+                    Expr::String(s)          => Self::Result { expr: Box::new(Expr::String(s)),      dependency: StorageDependency::Independent },
+                    Expr::Identifier(id) => Self::Result { expr: Box::new(Expr::Identifier(id)), dependency: StorageDependency::Independent },
                     other => unreachable!("Expecting only primitive (number/string/Identifier) types as Expr::Identifier, got {:?}", other)
                 }
             },
@@ -110,28 +110,28 @@ impl Eval for Expr {
                 match ty {
                     Type::Expr(e) => match &**e {
                         Expr::Number(n) => match n {
-                            Number::Float(_) => Self::Result { expr: Box::new(Expr::Type(Type::Float)), dependency: TransactionDependency::INDEPENDENT },
-                            Number::Int(_)   => Self::Result { expr: Box::new(Expr::Type(Type::Int)),   dependency: TransactionDependency::INDEPENDENT },
+                            Number::Float(_) => Self::Result { expr: Box::new(Expr::Type(Type::Float)), dependency: StorageDependency::Independent },
+                            Number::Int(_)   => Self::Result { expr: Box::new(Expr::Type(Type::Int)),   dependency: StorageDependency::Independent },
                         },
-                        Expr::String(_)                  => Self::Result { expr: Box::new(Expr::Type(Type::String)),                 dependency: TransactionDependency::INDEPENDENT },
-                        Expr::Identifier(i) => Self::Result { expr: Box::new(self.parse_type(&i, variable_context)), dependency: TransactionDependency::INDEPENDENT },
+                        Expr::String(_)                  => Self::Result { expr: Box::new(Expr::Type(Type::String)),                 dependency: StorageDependency::Independent },
+                        Expr::Identifier(i) => Self::Result { expr: Box::new(self.parse_type(&i, variable_context)), dependency: StorageDependency::Independent },
                         other                     => Self::Result { expr: Box::new(Expr::Type(Type::Expr(Box::new(other.eval(storage, variable_context))))), 
-                            dependency: TransactionDependency::INDEPENDENT },
+                            dependency: StorageDependency::Independent },
                     },
-                    leaf_type => Self::Result { expr: Box::new(Expr::Type(leaf_type.clone())), dependency: TransactionDependency::INDEPENDENT },
+                    leaf_type => Self::Result { expr: Box::new(Expr::Type(leaf_type.clone())), dependency: StorageDependency::Independent },
                 }
             },
 
             // Primitive types - Below are the root types after which the evaluation's recursiveness ends, and we start returning the results of evaluation
-            Self::StorageRead(key)   => Self::Result { expr: Box::new(self.eval_storage_read(key, storage, variable_context)), dependency: TransactionDependency::DEPENDENT },
+            Self::StorageRead(key)   => Self::Result { expr: Box::new(self.eval_storage_read(key, storage, variable_context)), dependency: StorageDependency::Dependent },
             // we should check if is either a variable vs. attribute accessor
-            Self::MessageType(id) => Self::Result { expr: Box::new(Expr::MessageType(id.clone())),                          dependency: TransactionDependency::INDEPENDENT },
+            Self::MessageType(id) => Self::Result { expr: Box::new(Expr::MessageType(id.clone())),                          dependency: StorageDependency::Independent },
 
-            Self::String(s)       => Self::Result { expr: Box::new(Expr::String(s.clone())),                                dependency: TransactionDependency::INDEPENDENT },
+            Self::String(s)       => Self::Result { expr: Box::new(Expr::String(s.clone())),                                dependency: StorageDependency::Independent },
 
-            Self::Number(numb)    => Self::Result { expr: Box::new(Expr::Number(numb.clone())),                             dependency: TransactionDependency::INDEPENDENT },
+            Self::Number(numb)    => Self::Result { expr: Box::new(Expr::Number(numb.clone())),                             dependency: StorageDependency::Independent },
             
-            Self::Null                     => Self::Result { expr: Box::new(Expr::Null),                                             dependency: TransactionDependency::INDEPENDENT },
+            Self::Null                     => Self::Result { expr: Box::new(Expr::Null),                                             dependency: StorageDependency::Independent },
 
             Self::Result { expr: _, dependency: _ } => self.clone(),
         }
@@ -237,7 +237,7 @@ mod tests {
             init.eval( &storage, &context), 
             Expr::Result {
                 expr: Box::new(Expr::Number(Number::Float(4.5))),
-                dependency: TransactionDependency::INDEPENDENT,
+                dependency: StorageDependency::Independent,
             }
         );
     }
@@ -270,7 +270,7 @@ mod tests {
             init.eval(&storage, &context), 
             Expr::Result {
                 expr: Box::new(Expr::Number(Number::Float(16.5))),
-                dependency: TransactionDependency::DEPENDENT,
+                dependency: StorageDependency::Dependent,
             }
         );
     }
@@ -321,7 +321,7 @@ mod tests {
             init.eval(&storage, &context), 
             Expr::Result {
                 expr: Box::new(Expr::Number(Number::Float(31.5))),
-                dependency: TransactionDependency::DEPENDENT,
+                dependency: StorageDependency::Dependent,
             }
         );
     }
@@ -338,7 +338,7 @@ mod tests {
                 vec!["msg".to_owned(), "admin".to_owned()])))));
         let expr = expr.eval(&storage, &ctx);
 
-        assert_eq!(expr, Expr::Result { expr: Box::new(Expr::Type(Type::String)), dependency: TransactionDependency::INDEPENDENT });
+        assert_eq!(expr, Expr::Result { expr: Box::new(Expr::Type(Type::String)), dependency: StorageDependency::Independent });
 
         let expr = Expr::Type(
             Type::Expr(Box::new(
@@ -346,7 +346,7 @@ mod tests {
                 vec!["msg".to_owned(), "balance".to_owned()])))));
         let expr = expr.eval(&storage, &ctx);
 
-        assert_eq!(expr, Expr::Result { expr: Box::new(Expr::Type(Type::Int)), dependency: TransactionDependency::INDEPENDENT });
+        assert_eq!(expr, Expr::Result { expr: Box::new(Expr::Type(Type::Int)), dependency: StorageDependency::Independent });
 
         let expr = Expr::Type(
             Type::Expr(Box::new(
@@ -354,6 +354,6 @@ mod tests {
                 vec!["msg".to_owned(), "fee".to_owned()])))));
         let expr = expr.eval(&storage, &ctx);
 
-        assert_eq!(expr, Expr::Result { expr: Box::new(Expr::Type(Type::Float)), dependency: TransactionDependency::INDEPENDENT });
+        assert_eq!(expr, Expr::Result { expr: Box::new(Expr::Type(Type::Float)), dependency: StorageDependency::Independent });
     }
 }

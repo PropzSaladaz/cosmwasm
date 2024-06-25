@@ -50,7 +50,7 @@ fn run_persistent_vm() {
         Message::Invocation(
             VMMessage::Instantiation {
                 contract_code_id: 0,
-                message: br#"{}"#,
+                message: br#"{}"#.to_vec(),
                 sender_address: String::from(""),
             }
         ),
@@ -61,7 +61,7 @@ fn run_persistent_vm() {
                 code_id: 0,
                 message: br#"{
                     "AddOne": {}
-                }"#,
+                }"#.to_vec(),
                 sender_address: String::from("")
             }
         ),

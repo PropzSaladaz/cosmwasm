@@ -1,10 +1,14 @@
-use std::{collections::{HashMap, HashSet}, sync::{Arc, RwLock}};
+use std::{cmp::Ordering, collections::{HashMap, HashSet}, sync::{Arc, RwLock}};
 
 use cosmwasm_std::{Api, CustomQuery, Empty, QuerierWrapper};
 use wasmer::Store;
 
 use crate::{
-    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, internals::instance_from_module, symb_exec::{Key, ReadWrite, SEStatus, TransactionDependency, TxRWS, WriteType}, testing::{mock_env, mock_info, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper, PartitionedStorage}, vm_manager::ContractRWS, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, BackendApi, InstanceOptions, Querier, SCProfile, Size, Storage
+    backend::ConcurrentBackend, call_execute, call_instantiate, call_query, internals::instance_from_module, 
+    symb_exec::{Key, ReadWrite, SEStatus, StorageDependency, TxRWS, Commutativity}, 
+    testing::{mock_env, mock_info, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper, PartitionedStorage}, 
+    vm_manager::ContractRWS, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
+    BackendApi, InstanceOptions, Querier, SCProfile, Size, Storage
 };
 
 use super::sc_storage::{PersistentBackend, SCManager};
@@ -18,15 +22,15 @@ enum VMCall {
     Query,
 }
 
-#[derive(Debug)]
-pub enum VMMessage<'a> {
+#[derive(Debug, PartialEq, Clone)]
+pub enum VMMessage {
     Instantiation {
-        message: &'a [u8],
+        message: Vec<u8>,
         contract_code_id: u128,
         sender_address: String
     },
     Invocation {
-        message: &'a [u8],
+        message: Vec<u8>,
         entry_point: InstantiatedEntryPoint,
         sender_address: String,
         contract_address: String,
@@ -34,7 +38,19 @@ pub enum VMMessage<'a> {
     },
 }
 
-#[derive(Debug)]
+impl VMMessage {
+    fn default() -> VMMessage {
+        VMMessage::Invocation {
+            message: vec![],
+            entry_point: InstantiatedEntryPoint::Execute,
+            sender_address: String::from(""),
+            contract_address: String::from(""),
+            code_id: 0,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum InstantiatedEntryPoint {
     Execute,
     Query,
@@ -43,7 +59,7 @@ pub enum InstantiatedEntryPoint {
 
 
 type Counter = i32;
-pub type Block<'a> = Vec<VMMessage<'a>>;
+pub type Block = Vec<VMMessage>;
 
 /// mapping (code_id, nth_instantiation) => address
 pub type AddressMapper = dyn Fn(u128, u128) -> String;
@@ -85,13 +101,29 @@ pub struct DepsMut<'a, C: CustomQuery = Empty> {
 }
 
 
-/// Used before apllying the algorithm that identifies the keys to partition.
-/// This struct is used only to store temporarily the RWS and the profile completeness gotten
-/// from using the message inputs
-#[derive(Debug, PartialEq)]
-struct RWSContext {
-    rws: TxRWS,
-    address: String, 
+/// Used to keep a connection between a RWS and a message that originated that RWS.
+/// This is first used when fetching the list of RWS given a block of messages, and then is
+/// passed to the execution.
+#[derive(Debug)]
+pub struct RWSContext {
+    pub rws: TxRWS,
+    pub address: String, 
+    pub tx_message: Option<VMMessage>,
+    pub tx_block_id: u16,
+}
+
+
+impl PartialEq for RWSContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.rws == other.rws && 
+        self.address == other.address &&
+        match (&self.tx_message, &other.tx_message) {
+            (Some(a), Some(b)) => a == b,
+            (Some(_), None) => false,
+            (None, Some(_)) => false,
+            (None, None) => true,
+        }
+    }
 }
 
 impl<A, S, Q> VMManager<A, S, Q> 
@@ -120,7 +152,7 @@ where
     /// and executes the block.
     /// Finally sums all partitions.
     pub fn handle_block(&mut self, block: Block) -> std::io::Result<Vec<String>> {
-        let rws = self.get_rws(&block);
+        let rws: Vec<RWSContext> = self.get_rws(block);
         let partitioned_keys = self.partition_storage(&rws);
         // save all partitioned items
         for sc in partitioned_keys.clone() {
@@ -130,7 +162,7 @@ where
             }
             self.partitioned_items_per_sc.entry(sc.address).or_insert(Arc::new(set));
         }
-        let resps = self.execute_block(block, rws).unwrap();
+        let resps = self.execute_block(rws).unwrap();
         self.sum_partitions(partitioned_keys);
 
         Ok(resps)
@@ -155,10 +187,12 @@ where
     /// Fetches the SE profile, parses it & gets the final RWS in form of keys as bytes
     /// It returns a vec where each item contains the contract address as well as all the keys
     /// it will touch
-    fn get_rws(&self, block: &Block) -> Vec<RWSContext> {
-        let mut rws = vec![];
-        for msg in block {
-            rws.push(match msg {
+    /// The return vector places all COMPLETE & INDEPENDENT txs first, and only after all the INCOMPLETE or DEPENDENT txs
+    fn get_rws(&self, block: Block) -> Vec<RWSContext> {
+        let mut rws_complete_and_independent = vec![];
+        let mut rws_incomplete_or_dependent = vec![];
+        for msg in block.into_iter() {
+            let rws = match msg {
                 VMMessage::Instantiation { 
                     message: _, 
                     contract_code_id: _,
@@ -166,38 +200,61 @@ where
                 } => RWSContext {
                         // rws goes empty - there are no conflicts within instantiates for the same contract storage since instantiates
                         // generate a brand new storage
-                        rws: TxRWS { storage_dependency: TransactionDependency::INDEPENDENT, profile_status: SEStatus::Complete, rws: vec![]},
-                        address: String::from("")
+                        rws: TxRWS { storage_dependency: StorageDependency::Independent, profile_status: SEStatus::Complete, rws: vec![]},
+                        address: String::from(""),
+                        tx_message: Some(msg),
+                        tx_block_id: 0,
                  },
 
                 VMMessage::Invocation { 
-                    message, 
-                    entry_point,
+                    ref message, // ref is used not to move this field. Else, we would not be able to move it into the Some(msg) below
+                    ref entry_point,
                     sender_address: _, 
-                    contract_address, 
-                    code_id
+                    ref contract_address, 
+                    ref code_id
                 } => {
                     let profile = self.state_manager.read().unwrap().get_profile(*code_id);
-                    match &self.state_manager.read().unwrap().get_instance_data(contract_address) {
+                    match &self.state_manager.read().unwrap().get_instance_data(&contract_address) {
                         Some(sc_instance) => {
                             // Build mock depsMut
                             let storage = Arc::clone(&sc_instance.state.storage);
-                            VMManager::<A, S, Q>::get_rws_for_invocation(entry_point, profile, message, contract_address, storage)
+                            let mut context = VMManager::<A, S, Q>::get_rws_for_invocation(
+                                                        &entry_point, profile, message.as_slice(), &contract_address, storage);
+                            context.tx_message = Some(msg);
+                            context
                         }
                         // If invocation on a contract that wasn't yet instantiated
                         None => {
                             // creates empty storage for such cases
-                            VMManager::<A, S, Q>::get_rws_for_invocation(entry_point, profile, message, contract_address, Arc::new(S::new(0)))
+                            let mut context = VMManager::<A, S, Q>::get_rws_for_invocation(&entry_point, profile, message.as_slice(), 
+                                &contract_address, Arc::new(S::new(0)));
+                            context.tx_message = Some(msg);
+                            context
                         }
+
                     }
                 }
-            });
+            };
+
+            if (rws.rws.profile_status == SEStatus::Complete) && (rws.rws.storage_dependency == StorageDependency::Independent) {
+                rws_complete_and_independent.push(rws);
+            }
+            else {
+                rws_incomplete_or_dependent.push(rws);
+            }
         };
-        rws
+        // append incomplete || dependent RWSs at the end
+        rws_complete_and_independent.append(&mut rws_incomplete_or_dependent);
+        // set tx id as the index in the block
+        for (idx, el) in rws_complete_and_independent.iter_mut().enumerate() {
+            el.tx_block_id = idx as u16;
+        }
+
+        rws_complete_and_independent
     }
 
-    fn get_rws_for_invocation(entry_point: &InstantiatedEntryPoint, profile: Arc<SCProfile>, message: &[u8], 
-        contract_address: &String, storage: Arc<S>) -> RWSContext 
+    fn get_rws_for_invocation(entry_point: &InstantiatedEntryPoint, profile: Arc<SCProfile>, message: &[u8],
+        contract_address: &String, storage: Arc<S>) -> RWSContext
     {
         let querier = cosmwasm_std::testing::MockQuerier::default();
         let mut_deps = DepsMut { 
@@ -206,14 +263,19 @@ where
             querier: cosmwasm_std::QuerierWrapper::new( &querier)
         };
         match entry_point {
-            InstantiatedEntryPoint::Execute => RWSContext {
-                rws: profile.get_rws_execute(&mut_deps, &mock_env(), &mock_info("", &[]), message),
-                address: contract_address.clone()
-            },
+            InstantiatedEntryPoint::Execute => 
+                RWSContext {
+                    rws: profile.get_rws_execute(&mut_deps, &mock_env(), &mock_info("", &[]), message),
+                    address: contract_address.clone(),
+                    tx_message: None, // will be set by calling function
+                    tx_block_id: 0,   // will be set by calling function
+                },
             InstantiatedEntryPoint::Query   => {
                 RWSContext {
                     rws: profile.get_rws_query(&mut_deps, &mock_env(), message),
                     address: contract_address.clone(),
+                    tx_message: None, // will be set by calling function
+                    tx_block_id: 0,   // will be set by calling function
                 }
             },
             InstantiatedEntryPoint::Reply => todo!(),
@@ -260,7 +322,7 @@ where
                         let contract_partial_map = partial_read_map.entry(address.clone()).or_insert(HashMap::new());
                         
                         match commutativity {
-                            WriteType::NonCommutative => {
+                            Commutativity::NonCommutative => {
                                 // update the counters of current SC
                                 contract_partial_map.entry(key_bytes.clone())
                                     .and_modify(|c| *c -= partial_full_proportion)
@@ -292,11 +354,11 @@ where
 
                         // TODO is there a more efficient way instead of using key_bytes.clone() ?
                         match commutativity {
-                            WriteType::Commutative    => contract_partial_map.entry(key_bytes.clone())
+                            Commutativity::Commutative    => contract_partial_map.entry(key_bytes.clone())
                                 .and_modify(|c| *c += 1)
                                 .or_insert(1),
 
-                            WriteType::NonCommutative => contract_partial_map.entry(key_bytes.clone())
+                            Commutativity::NonCommutative => contract_partial_map.entry(key_bytes.clone())
                                 .and_modify(|c| *c -= partial_full_proportion)
                                 .or_insert(-partial_full_proportion)
                         };
@@ -320,37 +382,38 @@ where
 
     }
 
-    fn execute_block(&mut self, block: Block, rws: Vec<RWSContext>) -> std::io::Result<Vec<String>> {
+    fn execute_block(&mut self, rws: Vec<RWSContext>) -> std::io::Result<Vec<String>> {
         let mut resps = vec![];
-        for (msg, rws) in block.into_iter().zip(rws) {
-            let rws = rws.rws.rws;
-            resps.push(match msg {
+        for rws_context in rws {
+            let rws = rws_context.rws.rws;
+            resps.push(match rws_context.tx_message {
                 // TODO - check efficiency of cloning rws. Maybe we can pass just references (need to specify lifetimes)
-                VMMessage::Instantiation { 
+                Some(VMMessage::Instantiation { 
                     message, 
                     contract_code_id,
                     sender_address
-                } => self.compile_instantiate_vm(contract_code_id, message, sender_address, rws).unwrap(),
+                }) => self.compile_instantiate_vm(contract_code_id, message.as_slice(), sender_address, rws).unwrap(),
 
-                VMMessage::Invocation {
+                Some(VMMessage::Invocation {
                     message, 
                     entry_point,
                     sender_address, 
                     contract_address, 
                     code_id
-                } => {
+                }) => {
                         let mut partitioned_items = &Arc::new(HashSet::new()); 
                         if let Some(part) = self.partitioned_items_per_sc.get(&contract_address) {
                             partitioned_items = part;
                         }
                         match entry_point {
-                            InstantiatedEntryPoint::Execute => self.instantiate_vm(code_id, &contract_address, message, sender_address, 
+                            InstantiatedEntryPoint::Execute => self.instantiate_vm(code_id, &contract_address, message.as_slice(), sender_address, 
                                 rws, Arc::clone(partitioned_items), VMCall::Execute ).unwrap(),
-                            InstantiatedEntryPoint::Query   => self.instantiate_vm(code_id, &contract_address, message, sender_address, 
+                            InstantiatedEntryPoint::Query   => self.instantiate_vm(code_id, &contract_address, message.as_slice(), sender_address, 
                                 rws, Arc::clone(partitioned_items), VMCall::Query   ).unwrap(),
                             InstantiatedEntryPoint::Reply => String::from(""),
                     } 
-                }
+                },
+                None => unreachable!("RWSContext doesn't have a message set during block execution!"), // Should never happen
             });
         }
         Ok(resps)
@@ -455,7 +518,7 @@ mod tests {
 
     use crate::{
         backend::ConcurrentBackend, call_instantiate, internals::instance_from_module, 
-        symb_exec::{Key, ReadWrite, TransactionDependency, TxRWS, WriteType}, 
+        symb_exec::{Key, ReadWrite, StorageDependency, TxRWS, Commutativity}, 
         testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper}, 
         vm_manager::vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}, 
         wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
@@ -642,7 +705,7 @@ mod tests {
         let msgs = vec![
             VMMessage::Instantiation {
                 contract_code_id: 0,
-                message: br#"{}"#,
+                message: br#"{}"#.to_vec(),
                 sender_address: String::from("a"),
             },
             VMMessage::Invocation {
@@ -650,7 +713,7 @@ mod tests {
                 contract_address: "a".to_owned(),
                 message: br#"{
                     "GetBalance": {}
-                }"#,
+                }"#.to_vec(),
                 code_id: 0,
                 sender_address: String::from("a"),
             },
@@ -659,7 +722,7 @@ mod tests {
                 contract_address: "a".to_owned(),
                 message: br#"{
                     "AddOne": {}
-                }"#,
+                }"#.to_vec(),
                 code_id: 0,
                 sender_address: String::from("a"),
             },
@@ -668,7 +731,48 @@ mod tests {
                 contract_address: "a".to_owned(),
                 message: br#"{
                     "GetBalance": {}
-                }"#,
+                }"#.to_vec(),
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Instantiation {
+                contract_code_id: 0,
+                message: br#"{}"#.to_vec(),
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Execute,
+                contract_address: "b".to_owned(),
+                message: br#"{
+                    "AddOne": {}
+                }"#.to_vec(),
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Execute,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "AddOne": {}
+                }"#.to_vec(),
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Query,
+                contract_address: "a".to_owned(),
+                message: br#"{
+                    "GetBalance": {}
+                }"#.to_vec(),
+                code_id: 0,
+                sender_address: String::from("a"),
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Query,
+                contract_address: "b".to_owned(),
+                message: br#"{
+                    "GetBalance": {}
+                }"#.to_vec(),
                 code_id: 0,
                 sender_address: String::from("a"),
             },
@@ -679,48 +783,7 @@ mod tests {
                     "AddUser": {
                         "admin": "Balelas"
                     }
-                }"#,
-                code_id: 0,
-                sender_address: String::from("a"),
-            },
-            VMMessage::Instantiation {
-                contract_code_id: 0,
-                message: br#"{}"#,
-                sender_address: String::from("a"),
-            },
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "b".to_owned(),
-                message: br#"{
-                    "AddOne": {}
-                }"#,
-                code_id: 0,
-                sender_address: String::from("a"),
-            },
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "a".to_owned(),
-                message: br#"{
-                    "AddOne": {}
-                }"#,
-                code_id: 0,
-                sender_address: String::from("a"),
-            },
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "a".to_owned(),
-                message: br#"{
-                    "GetBalance": {}
-                }"#,
-                code_id: 0,
-                sender_address: String::from("a"),
-            },
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "b".to_owned(),
-                message: br#"{
-                    "GetBalance": {}
-                }"#,
+                }"#.to_vec(),
                 code_id: 0,
                 sender_address: String::from("a"),
             },
@@ -735,9 +798,9 @@ mod tests {
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[4]);
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[5]);
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[6]);
-        assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[7]);
-        assert_eq!("{\"balance\":1002}", resps[8]);
-        assert_eq!("{\"balance\":1001}", resps[9]);
+        assert_eq!("{\"balance\":1002}", resps[7]);
+        assert_eq!("{\"balance\":1001}", resps[8]);
+        assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resps[9]);
 
         vm_manager.state_manager.read().unwrap().cleanup();
 
@@ -752,7 +815,7 @@ mod tests {
         let msgs = vec![
             VMMessage::Instantiation {
                 contract_code_id: 0,
-                message: br#"{}"#,
+                message: br#"{}"#.to_vec(),
                 sender_address: String::from(""),
             },
         ];
@@ -761,39 +824,42 @@ mod tests {
         vm_manager.handle_block(msgs).unwrap();
 
         // only after having storage created
+        let vm_message = VMMessage::Invocation {
+            entry_point: InstantiatedEntryPoint::Execute,
+            contract_address: "a".to_owned(),
+            message: br#"{
+                "AddOne": {}
+            }"#.to_vec(),
+            code_id: 0,
+            sender_address: String::from(""),
+        };
         let msgs = vec![
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "a".to_owned(),
-                message: br#"{
-                    "AddOne": {}
-                }"#,
-                code_id: 0,
-                sender_address: String::from(""),
-            },
+            vm_message.clone()
         ];
 
-        let rws = vm_manager.get_rws(&msgs);
+        let rws = vm_manager.get_rws(msgs);
         assert_eq!(
             rws,
             vec![RWSContext {
                 address: "a".to_owned(),
                 rws: TxRWS {
-                    storage_dependency: TransactionDependency::INDEPENDENT,
+                    storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws: vec![
                         ReadWrite::Read {
-                            storage_dependency: TransactionDependency::INDEPENDENT,
+                            storage_dependency: StorageDependency::Independent,
                             key: Key::Bytes(vec![0, 4, 98, 97, 110, 107, 65, 68, 77, 73, 78]),
-                            commutativity: WriteType::Commutative,
+                            commutativity: Commutativity::Commutative,
                         },
                         ReadWrite::Write {
-                            storage_dependency: TransactionDependency::INDEPENDENT,
+                            storage_dependency: StorageDependency::Independent,
                             key: Key::Bytes(vec![0, 4, 98, 97, 110, 107, 65, 68, 77, 73, 78]),
-                            commutativity: WriteType::Commutative
+                            commutativity: Commutativity::Commutative
                         },
                     ]
-                }
+                },
+                tx_message: Some(vm_message),
+                tx_block_id: 0,
             }]
         );
         
@@ -830,81 +896,89 @@ mod tests {
             RWSContext {
                 address: "a".to_owned(),
                 rws: TxRWS { 
-                    storage_dependency: TransactionDependency::INDEPENDENT,
+                    storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete, 
                     rws: vec![
                         // R(A) from write below
-                        ReadWrite::Read { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_a.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Read { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_a.clone()), commutativity: Commutativity::Commutative },
                         // R(B) from write below
-                        ReadWrite::Read { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_b.clone()), commutativity: WriteType::NonCommutative },
+                        ReadWrite::Read { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_b.clone()), commutativity: Commutativity::NonCommutative },
                         // W(A): R(A) + R(B) + 1
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_a.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_a.clone()), commutativity: Commutativity::Commutative },
 
                         // W(B): R(B) + 3
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_b.clone()), commutativity: Commutativity::Commutative },
                         // W(C): R(C) - 2
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_c.clone()), commutativity: WriteType::Commutative }
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_c.clone()), commutativity: Commutativity::Commutative }
                     ] 
-                }
+                },
+                tx_message: Some(VMMessage::default()),
+                tx_block_id: 0,
             },
             // Tx2
             RWSContext {
                 address: "a".to_owned(),
                 rws: TxRWS { 
-                    storage_dependency: TransactionDependency::INDEPENDENT,
+                    storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete, 
                     rws: vec![
                         // R(D) from write below
-                        ReadWrite::Read { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_d.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Read { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_d.clone()), commutativity: Commutativity::Commutative },
                         // W(D): R(D) + 3
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_d.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_d.clone()), commutativity: Commutativity::Commutative },
 
                         // R(A) from write below, since is non commutative
-                        ReadWrite::Read { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_a.clone()), commutativity: WriteType::NonCommutative },
+                        ReadWrite::Read { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_a.clone()), commutativity: Commutativity::NonCommutative },
                         // W(A): R(A) * 2
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_a.clone()), commutativity: WriteType::NonCommutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_a.clone()), commutativity: Commutativity::NonCommutative },
                         
                         // R(A) from write below, since is non commutative
-                        ReadWrite::Read { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_a.clone()), commutativity: WriteType::NonCommutative },
+                        ReadWrite::Read { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_a.clone()), commutativity: Commutativity::NonCommutative },
                         // R(B) from write below, is commutative
-                        ReadWrite::Read { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Read { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_b.clone()), commutativity: Commutativity::Commutative },
                         // W(B): R(B) + 1 + R(A)
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_b.clone()), commutativity: Commutativity::Commutative },
                     ] 
-                }
+                },
+                tx_message: Some(VMMessage::default()),
+                tx_block_id: 0,
             },
             // Tx3
             RWSContext {
                 address: "a".to_owned(),
                 rws: TxRWS { 
-                    storage_dependency: TransactionDependency::INDEPENDENT,
+                    storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete, 
                     rws: vec![
                         // W(A): R(A) + 1
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_a.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_a.clone()), commutativity: Commutativity::Commutative },
                         // W(B): R(B) + 1
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_b.clone()), commutativity: Commutativity::Commutative },
                     ] 
-                }
+                },
+                tx_message: Some(VMMessage::default()),
+                tx_block_id: 0,
             },
             // Tx4
             RWSContext {
                 address: "a".to_owned(),
                 rws: TxRWS { 
-                    storage_dependency: TransactionDependency::INDEPENDENT,
+                    storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete, 
                     rws: vec![
                         // R(A) from above write
-                        ReadWrite::Read { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_a.clone()), commutativity: WriteType::NonCommutative },
+                        ReadWrite::Read { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_a.clone()), commutativity: Commutativity::NonCommutative },
                         // W(C): R(A) + 2
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_c.clone()), commutativity: WriteType::NonCommutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_c.clone()), commutativity: Commutativity::NonCommutative },
 
                         // R(B) from write below
-                        ReadWrite::Read { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Read { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_b.clone()), commutativity: Commutativity::Commutative },
                         // W(B): R(B) + 3
-                        ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key_b.clone()), commutativity: WriteType::Commutative },
+                        ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key_b.clone()), commutativity: Commutativity::Commutative },
                     ] 
-                }
+                },
+                tx_message: Some(VMMessage::default()),
+                tx_block_id: 0,
             },
         ], 3);
 

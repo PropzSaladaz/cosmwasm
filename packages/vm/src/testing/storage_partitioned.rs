@@ -15,7 +15,7 @@ use num::pow::Pow;
 
 #[cfg(feature = "iterator")]
 use crate::BackendError;
-use crate::{symb_exec::{ReadWrite, WriteType}, BackendResult, GasInfo};
+use crate::{symb_exec::{ReadWrite, Commutativity}, BackendResult, GasInfo};
 
 #[cfg(feature = "iterator")]
 const GAS_COST_LAST_ITERATION: u64 = 37;

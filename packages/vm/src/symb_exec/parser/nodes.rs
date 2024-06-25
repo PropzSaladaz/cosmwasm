@@ -74,36 +74,36 @@ pub enum Expr {
 
     Result {
         expr: Box<Expr>,
-        dependency: TransactionDependency,
+        dependency: StorageDependency,
     },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
-pub enum TransactionDependency {
-    DEPENDENT,
-    INDEPENDENT
+pub enum StorageDependency {
+    Dependent,
+    Independent
 }
 
 use std::ops::BitOr;
 
-impl BitOr for TransactionDependency {
+impl BitOr for StorageDependency {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
-            (TransactionDependency::DEPENDENT, _) | (_, TransactionDependency::DEPENDENT) => TransactionDependency::DEPENDENT,
-            (TransactionDependency::INDEPENDENT, TransactionDependency::INDEPENDENT) => TransactionDependency::INDEPENDENT,
+            (StorageDependency::Dependent, _) | (_, StorageDependency::Dependent) => StorageDependency::Dependent,
+            (StorageDependency::Independent, StorageDependency::Independent) => StorageDependency::Independent,
         }
     }
 }
 
 /// Represents the result of parsing an expression. If an expression in a condition 
-/// depends on a read from store, then that expression is marked as DEPENDENT as it
+/// depends on a read from store, then that expression is marked as Dependent as it
 /// depends on state, meaning the RWS may change during execution.
 #[derive(Debug, Clone, Serialize)]
 pub struct ExprRes {
     pub expression: Expr, 
-    pub dependency: TransactionDependency,
+    pub dependency: StorageDependency,
 }
 
 impl Expr {
@@ -192,7 +192,7 @@ pub enum RelOp {
 #[derive(Debug, PartialEq, Serialize)]
 pub enum PathCondition {
     Result {
-        storage_dependency: TransactionDependency,
+        storage_dependency: StorageDependency,
         satisfied: bool,
     },
     RelBinOp {
@@ -216,7 +216,7 @@ pub enum Key {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize)]
-pub enum WriteType {
+pub enum Commutativity {
     Commutative,
     NonCommutative
 }
@@ -225,9 +225,9 @@ pub enum WriteType {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum ReadWrite {
     Write {
-        storage_dependency: TransactionDependency,
+        storage_dependency: StorageDependency,
         key: Key,
-        commutativity: WriteType,
+        commutativity: Commutativity,
     },
 
 
@@ -241,18 +241,18 @@ pub enum ReadWrite {
     /// ignore commutative reads, since it will already consider the respective
     /// commutative write.
     Read {
-        storage_dependency: TransactionDependency,
+        storage_dependency: StorageDependency,
         key: Key,
-        commutativity: WriteType,
+        commutativity: Commutativity,
     },
 }
 
 impl Default for ReadWrite {
     fn default() -> ReadWrite {
         Self::Read {
-            storage_dependency: TransactionDependency::INDEPENDENT,
+            storage_dependency: StorageDependency::Independent,
             key: Key::Bytes(vec![0]),
-            commutativity: WriteType::NonCommutative
+            commutativity: Commutativity::NonCommutative
         }
     }
 }
@@ -270,7 +270,7 @@ pub type CondNodeRef = Rc<RefCell<Box<PathConditionNode>>>;
 pub enum PathConditionNode {
     /// Represents a full node associated to a condition, and both child branches.
     ConditionNode {
-        storage_dependency: TransactionDependency,
+        storage_dependency: StorageDependency,
         /// Represents the boolean condition
         condition: Option<PathCondition>,
         
@@ -281,7 +281,7 @@ pub enum PathConditionNode {
     // as the write (and that appear as a dependency for that write)
     /// Represents the RWS under a specific child branch (positive / negative)
     RWSNode {
-        storage_dependency: TransactionDependency,
+        storage_dependency: StorageDependency,
         rws: Vec<ReadWrite>,
     },
     None,

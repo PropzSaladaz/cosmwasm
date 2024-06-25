@@ -275,7 +275,7 @@ mod tests {
 
     use crate::symb_exec::testing::mock::*;
 
-    use super::super::super::parser::{nodes::*, nodes::TransactionDependency::*};
+    use super::super::super::parser::{nodes::*, nodes::StorageDependency::*};
 
     use super::*;
 
@@ -470,7 +470,7 @@ mod tests {
         let mut rws = vec![
             // Get(1u8 @ msg.admin)
             ReadWrite::Read{
-                storage_dependency: INDEPENDENT,
+                storage_dependency: Independent,
                 key: Key::Expression { 
                     base: key_raw.to_vec(), 
                     expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
@@ -478,11 +478,11 @@ mod tests {
                         "admin".to_owned()
                     ])))
                 },
-                commutativity: WriteType::Commutative,
+                commutativity: Commutativity::Commutative,
             },
             // Set(1u8 @ msg.admin): Inc
             ReadWrite::Write { 
-                storage_dependency: INDEPENDENT,
+                storage_dependency: Independent,
                 key: Key::Expression { 
                     base: key_raw.to_vec(), 
                     expr: Box::new(Expr::Identifier(Identifier::AttrAccessor(vec![
@@ -490,7 +490,7 @@ mod tests {
                         "admin".to_owned()
                     ]))) 
                 }, 
-                commutativity: WriteType::Commutative 
+                commutativity: Commutativity::Commutative 
             }  
         ];
 
@@ -501,14 +501,14 @@ mod tests {
             expr,
             vec![
                 ReadWrite::Read {
-                    storage_dependency: INDEPENDENT,
+                    storage_dependency: Independent,
                     key: Key::Bytes(expected_key.clone()),
-                    commutativity: WriteType::Commutative,
+                    commutativity: Commutativity::Commutative,
                 },
                 ReadWrite::Write { 
-                    storage_dependency: INDEPENDENT,
+                    storage_dependency: Independent,
                     key: Key::Bytes(expected_key), 
-                    commutativity: WriteType::Commutative
+                    commutativity: Commutativity::Commutative
                 }
             ]
         )

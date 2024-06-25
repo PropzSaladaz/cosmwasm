@@ -4,7 +4,7 @@ use cosmwasm_std::Order;
 use cosmwasm_std::Record;
 
 use crate::symb_exec::Key;
-use crate::symb_exec::WriteType;
+use crate::symb_exec::Commutativity;
 use crate::GasInfo;
 
 use crate::{symb_exec::ReadWrite, BackendResult};
@@ -113,7 +113,7 @@ impl StorageWrapper for MockStorageWrapper {
                     // unreachable!("Trying to read an item from storage, but the corresponding operation was a write in the predicted RWS")
                 },
                 ReadWrite::Read { storage_dependency: _, key: key_read, commutativity } => match commutativity {
-                    WriteType::Commutative => {
+                    Commutativity::Commutative => {
                         match key_read {
                             Key::Bytes(k) => {
                                 if k.as_slice() == key {
@@ -126,7 +126,7 @@ impl StorageWrapper for MockStorageWrapper {
                             _ => unreachable!("Key should be in bytes")
                         }
                     }
-                    WriteType::NonCommutative => full_read()
+                    Commutativity::NonCommutative => full_read()
                 }
             },
             None => full_read()
@@ -145,12 +145,12 @@ impl StorageWrapper for MockStorageWrapper {
         let res = match self.rws.get(self.rws_idx) {
             Some(rws) => match rws {
                 ReadWrite::Write { storage_dependency: _, key: k, commutativity } => match commutativity {
-                    WriteType::Commutative    => {
+                    Commutativity::Commutative    => {
                         let commutative = true;
                         let is_partitioned = self.partitioned_items.contains(key);
                         PartitionedStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
                     }
-                    WriteType::NonCommutative => {
+                    Commutativity::NonCommutative => {
                         let commutative = false;
                         let is_partitioned = self.partitioned_items.contains(key);
                         PartitionedStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
@@ -209,7 +209,7 @@ impl<T: BaseStorage> BaseStorage for &T {
 
 #[cfg(test)]
 mod tests {
-    use crate::symb_exec::TransactionDependency;
+    use crate::symb_exec::StorageDependency;
 
     use super::*;
 
@@ -235,11 +235,11 @@ mod tests {
 
         // Predicted RWS by the contract
         let rws = vec![
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::Commutative },
-            ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::Commutative },
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::Commutative },
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::NonCommutative },
-            ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key2.to_vec()), commutativity: WriteType::NonCommutative }
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::Commutative },
+            ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::Commutative },
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::Commutative },
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::NonCommutative },
+            ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key2.to_vec()), commutativity: Commutativity::NonCommutative }
         ];
 
         // sender's first char will get mapped to 2nd partition -> 1 % 2 = 1 (recall partitions start at index 0)
@@ -299,20 +299,20 @@ mod tests {
 
         // Predicted RWS by the contract
         let rws1 = vec![
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::Commutative },
-            ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::Commutative },
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::Commutative },
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::NonCommutative },
-            ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key2.to_vec()), commutativity: WriteType::NonCommutative }
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::Commutative },
+            ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::Commutative },
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::Commutative },
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::NonCommutative },
+            ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key2.to_vec()), commutativity: Commutativity::NonCommutative }
         ];
 
         // Predicted RWS by the contract
         let rws2 = vec![
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::NonCommutative },
-            ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::NonCommutative },
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key.to_vec()), commutativity: WriteType::Commutative },
-            ReadWrite::Read  { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key2.to_vec()), commutativity: WriteType::Commutative },
-            ReadWrite::Write { storage_dependency: TransactionDependency::INDEPENDENT, key: Key::Bytes(key2.to_vec()), commutativity: WriteType::Commutative }
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::NonCommutative },
+            ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::NonCommutative },
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key.to_vec()), commutativity: Commutativity::Commutative },
+            ReadWrite::Read  { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key2.to_vec()), commutativity: Commutativity::Commutative },
+            ReadWrite::Write { storage_dependency: StorageDependency::Independent, key: Key::Bytes(key2.to_vec()), commutativity: Commutativity::Commutative }
         ];
 
         // sender's first char will get mapped to 2nd partition -> 1 % 2 = 1 (recall partitions start at index 0)

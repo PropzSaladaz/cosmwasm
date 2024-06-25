@@ -9,7 +9,7 @@ use super::{evaluator::eval::SEContext, parser::{
 
 #[derive(Debug, PartialEq)]
 pub struct TxRWS {
-    pub storage_dependency: TransactionDependency,
+    pub storage_dependency: StorageDependency,
     pub profile_status: SEStatus,
     pub rws: Vec<ReadWrite>
 }
@@ -90,10 +90,10 @@ impl SCProfile {
         }
     }
 
-    fn parse_tree(&self, path_cond: &Rc<RefCell<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> (TransactionDependency, Vec<ReadWrite>) {
+    fn parse_tree(&self, path_cond: &Rc<RefCell<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> (StorageDependency, Vec<ReadWrite>) {
         match path_cond.borrow_mut().parse_tree(storage, &context) {
             PathConditionNode::RWSNode{ storage_dependency, rws} => (storage_dependency, rws),
-            PathConditionNode::None => (TransactionDependency::INDEPENDENT, vec![]),
+            PathConditionNode::None => (StorageDependency::Independent, vec![]),
             other => unreachable!("Expecting RWSNode, got {:?}", other)
         }
     }

@@ -30,7 +30,7 @@ impl Eval for PathCondition {
                         other => unreachable!("Expected Expr::Result, got {:?}", other),
                     };
 
-                    // decide if is dependent or independent based on both branches
+                    // decide if is dependent or Independent based on both branches
                     let storage_dependency = lhs_dep | rhs_dep;
                     
                     let satisfied = Self::op(&lhs, rel_op, &rhs);
@@ -64,7 +64,7 @@ mod tests {
     use cosmwasm_std::Storage;
 
     use crate::symb_exec::evaluator::eval::SEContext;
-    use crate::symb_exec::parser::nodes::TransactionDependency::*;
+    use crate::symb_exec::parser::nodes::StorageDependency::*;
 
     use crate::symb_exec::{
         evaluator::{
@@ -92,7 +92,7 @@ mod tests {
         let storage = mock_storage(HashMap::new());
 
         let path_cond = PathCondition::Result { 
-            storage_dependency: INDEPENDENT, 
+            storage_dependency: Independent, 
             satisfied: true 
         };
         assert!(path_cond_result(path_cond, &storage, &ctx));
