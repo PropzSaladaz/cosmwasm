@@ -454,7 +454,7 @@ mod tests {
     use crate::conversion::ref_to_u32;
     use crate::errors::VmError;
     use crate::size::Size;
-    use crate::testing::{MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper};
+    use crate::testing::{MockApi, MockQuerier, MockConcurrentStorage, MockStorageWrapper};
     use crate::wasm_backend::{compile, make_compiling_engine};
     use cosmwasm_std::{
         coins, from_json, to_json_vec, AllBalanceResponse, BankQuery, Empty, QueryRequest,

@@ -1,7 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::{Arc, RwLock}};
 
 use cosmwasm_std::{Env, MessageInfo, Storage};
-use crate::{testing::MockStoragePartitioned, DepsMut};
+use crate::{testing::MockConcurrentStorage, DepsMut};
 
 use super::{evaluator::eval::SEContext, parser::{
     nodes::*, SCProfile
@@ -72,7 +72,7 @@ impl SCProfile {
                     CosmwasmInputs::Instantiate { deps: _, env: _, info: _ } => 
                     {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
-                        let (storage_dependency, rws) = self.parse_tree(path_cond, &MockStoragePartitioned::default(), &context);
+                        let (storage_dependency, rws) = self.parse_tree(path_cond, &MockConcurrentStorage::default(), &context);
                         // TODO we are sending empty storage for instatiates -> Instantiates should not have yet a storage (the tx wasn't executed yet)
                         // thus we send a mock storage. Need to think better about this
                         TxRWS {
@@ -90,8 +90,8 @@ impl SCProfile {
         }
     }
 
-    fn parse_tree(&self, path_cond: &Rc<RefCell<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> (StorageDependency, Vec<ReadWrite>) {
-        match path_cond.borrow_mut().parse_tree(storage, &context) {
+    fn parse_tree(&self, path_cond: &Arc<RwLock<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> (StorageDependency, Vec<ReadWrite>) {
+        match path_cond.write().unwrap().parse_tree(storage, &context) {
             PathConditionNode::RWSNode{ storage_dependency, rws} => (storage_dependency, rws),
             PathConditionNode::None => (StorageDependency::Independent, vec![]),
             other => unreachable!("Expecting RWSNode, got {:?}", other)
@@ -103,7 +103,7 @@ impl SCProfile {
 #[cfg(test)]
 mod tests {
 
-    use crate::{symb_exec::se_engine::SEStatus, testing::{mock_env, mock_info, MockStoragePartitioned}, DepsMut, SCProfile, SCProfileParser};
+    use crate::{symb_exec::se_engine::SEStatus, testing::{mock_env, mock_info, MockConcurrentStorage}, DepsMut, SCProfile, SCProfileParser};
 
 
     fn build_contract() -> SCProfile {
@@ -168,7 +168,7 @@ _msg: ExecuteMsg
 
         let querier = cosmwasm_std::testing::MockQuerier::default();
         let mut_deps = DepsMut { 
-            storage: &mut MockStoragePartitioned::default(),
+            storage: &mut MockConcurrentStorage::default(),
             api: &cosmwasm_std::testing::MockApi::default(), 
             querier: cosmwasm_std::QuerierWrapper::new( &querier)
         };

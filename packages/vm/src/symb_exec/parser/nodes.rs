@@ -1,10 +1,11 @@
+use std::sync::{Arc, RwLock};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use std::ops::Not;
 use cosmwasm_std::{Env, MessageInfo};
 use num::traits::ToBytes;
 use serde::Serialize;
 
-use crate::DepsMut;
+use crate::{DepsMut, NodeRef, Operation};
 
 pub type Float = f64;
 pub type Integer = i64;
@@ -222,12 +223,14 @@ pub enum Commutativity {
 }
 
 /// Represents either a read or write to be stored as a RWS
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone)]
 pub enum ReadWrite {
     Write {
         storage_dependency: StorageDependency,
         key: Key,
         commutativity: Commutativity,
+        // This will start off as None, and will be set when building the concurrent schedule
+        operation_node: Option<NodeRef<Operation>>,
     },
 
 
@@ -241,10 +244,29 @@ pub enum ReadWrite {
     /// ignore commutative reads, since it will already consider the respective
     /// commutative write.
     Read {
+        // TODO - think - aren't all reads storage dependent? xD
         storage_dependency: StorageDependency,
         key: Key,
         commutativity: Commutativity,
+        // This will start off as None, and will be set when building the concurrent schedule
+        operation_node: Option<NodeRef<Operation>>,
     },
+}
+
+impl PartialEq for ReadWrite {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ReadWrite::Read  { storage_dependency: storage_dependency_a, key: key_a, commutativity: commutativity_a, operation_node: _ }, 
+             ReadWrite::Read  { storage_dependency: storage_dependency_b, key: key_b, commutativity: commutativity_b, operation_node: _ }) |
+            (ReadWrite::Write { storage_dependency: storage_dependency_a, key: key_a, commutativity: commutativity_a, operation_node: _ }, 
+             ReadWrite::Write { storage_dependency: storage_dependency_b, key: key_b, commutativity: commutativity_b, operation_node: _ }) =>{
+                storage_dependency_a == storage_dependency_b &&
+                key_a == key_b &&
+                commutativity_a == commutativity_b
+            },
+            _ => false
+        }
+    }
 }
 
 impl Default for ReadWrite {
@@ -252,21 +274,22 @@ impl Default for ReadWrite {
         Self::Read {
             storage_dependency: StorageDependency::Independent,
             key: Key::Bytes(vec![0]),
-            commutativity: Commutativity::NonCommutative
+            commutativity: Commutativity::NonCommutative,
+            operation_node: None,
         }
     }
 }
 
-// Rc for shared access to reference -> 
-// RefCell for mutating the inner data -> 
-// Box needed since it's recursive
-pub type CondNodeRef = Rc<RefCell<Box<PathConditionNode>>>;
+// TODO - OPTIMISATION-  should use single-threaded primitives for building, and then build
+// a immutable reference to avoid overhead of RwLock, since after building this, it will
+// never change
+pub type CondNodeRef = Arc<RwLock<Box<PathConditionNode>>>;
 /// Represents a node in the path condition tree.
 /// 
 /// Each node has 1 condition and at least 1 positive and 1 negative branch.
 /// 
 /// If the node has information about the RWS, then it can have >1 child branches (positive/negative)
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum PathConditionNode {
     /// Represents a full node associated to a condition, and both child branches.
     ConditionNode {
@@ -287,6 +310,44 @@ pub enum PathConditionNode {
     None,
 }
 
+impl PartialEq for PathConditionNode {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (PathConditionNode::ConditionNode  { 
+                storage_dependency: storage_dependency_a, 
+                condition: condition_a, 
+                pos_branch: pos_branch_a, 
+                neg_branch: neg_branch_a }, 
+             PathConditionNode::ConditionNode  { 
+                storage_dependency: storage_dependency_b, 
+                condition: condition_b, 
+                pos_branch: pos_branch_b, 
+                neg_branch: neg_branch_b}) => 
+            {
+                storage_dependency_a == storage_dependency_b &&
+                condition_a == condition_b &&
+                match (pos_branch_a, pos_branch_b) {
+                    (Some(a), Some(b)) => *a.read().unwrap() == *b.read().unwrap(),
+                    (None, None) => true,
+                    _ => false
+                } &&
+                match (neg_branch_a, neg_branch_b) {
+                    (Some(a), Some(b)) => *a.read().unwrap() == *b.read().unwrap(),
+                    (None, None) => true,
+                    _ => false
+                }
+            },
+            (PathConditionNode::RWSNode { storage_dependency: storage_dependency_a, rws: rws_a }, 
+             PathConditionNode::RWSNode { storage_dependency: storage_dependency_b, rws: rws_b }) => {
+                storage_dependency_a == storage_dependency_b && rws_a == rws_b
+            }
+
+            (PathConditionNode::None, PathConditionNode::None) => true,
+            _ => false,
+        }
+    }
+}
+
 
 pub type ArgTypes = HashMap<String, InputType>;
 pub type CustomArgTypes = HashMap<String, HashMap<String, Type>>;
@@ -294,7 +355,7 @@ pub type CustomArgTypes = HashMap<String, HashMap<String, Type>>;
 /// Represents all info related to each entry point:
 /// 
 /// Inputs, type_defs, and Path conditions (RWS)
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct EntryPointProfile {
     /// Maps all input variable names to their types.
     /// 
@@ -318,6 +379,18 @@ pub struct EntryPointProfile {
 
     /// Root condition node in the tree
     pub root_path_cond: Option<CondNodeRef>,
+}
+
+impl PartialEq for EntryPointProfile {
+    fn eq(&self, other: &Self) -> bool {
+        self.inputs == other.inputs &&
+        self.type_defs == other.type_defs &&
+        match (&self.root_path_cond, &other.root_path_cond) {
+            (Some(a), Some(b)) => *a.read().unwrap() == *b.read().unwrap(),
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
 
 impl EntryPointProfile {
@@ -362,7 +435,7 @@ impl EntryPointProfile {
         });
     }
 
-    pub fn set_root_path_cond(&mut self, root_path_cond: Rc<RefCell<Box<PathConditionNode>>>) {
+    pub fn set_root_path_cond(&mut self, root_path_cond: Arc<RwLock<Box<PathConditionNode>>>) {
         self.root_path_cond = Some(root_path_cond);
     }
 

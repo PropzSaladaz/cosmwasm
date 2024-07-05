@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use crate::{testing::PartitionedStorage, vm_manager::{SCManager, VMManager, VMMessage}, BackendApi, Querier, Storage};
+use crate::{testing::ConcurrentStorage, vm_manager::{SCManager, VMManager, VMMessage}, BackendApi, Querier, Storage};
 
 const BLOCK_SIZE: usize = 1;
 
@@ -13,9 +13,9 @@ pub enum Message<'a> {
 
 pub struct MessageHandler<A, S, Q> 
 where
-    A: BackendApi + 'static,
-    S: PartitionedStorage + 'static,
-    Q: Querier + 'static,
+    A: BackendApi + 'static + Send + Sync,
+    S: ConcurrentStorage + 'static + Send + Sync,
+    Q: Querier + 'static + Send + Sync,
 {
     vm_manager: VMManager<A, S, Q>,
     sc_manager: Arc<RwLock<SCManager<A, S, Q>>>,
@@ -23,9 +23,9 @@ where
 
 impl<A, S, Q> MessageHandler<A, S, Q> 
 where
-    A: BackendApi, 
-    S: PartitionedStorage, 
-    Q: Querier
+    A: BackendApi + Send + Sync, 
+    S: ConcurrentStorage + Send + Sync, 
+    Q: Querier + Send + Sync
 {
 
     pub fn new(sc_manager: Arc<RwLock<SCManager<A, S, Q>>>, vm_manager: VMManager<A, S, Q> )-> Self {

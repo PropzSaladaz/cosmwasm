@@ -1,16 +1,15 @@
 // Run with
 // cargo run --features dhat-heap --example memory --release
 
-use std::collections::HashSet;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::SystemTime;
 use tempfile::TempDir;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use cosmwasm_std::{coins, Checksum, Empty};
-use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned, MockStorageWrapper};
+use cosmwasm_vm::testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper};
 use cosmwasm_vm::{
-    call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, ConcurrentBackend, InstanceOptions, Size
+    call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, ConcurrentBackend, ConcurrentSchedule, InstanceOptions, Size
 };
 
 #[cfg(feature = "dhat-heap")]
@@ -145,10 +144,10 @@ fn app() {
             }
 
             for idx in 0..contracts.len() {
-                let partitioned_storage = MockStoragePartitioned::default();
+                let partitioned_storage = MockConcurrentStorage::default();
                 let backend = Arc::new(mock_persistent_backend(&[], Arc::new(partitioned_storage)));
-                let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
-                    backend, String::from(""), vec![], Arc::new(HashSet::new()));
+                let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0,
+                    Arc::new(ConcurrentSchedule::new()), backend, String::from(""), vec![]);
                 let mut instance = cache
                     .get_instance(&checksums[idx], concurrent_backend, DEFAULT_INSTANCE_OPTIONS)
                     .unwrap();

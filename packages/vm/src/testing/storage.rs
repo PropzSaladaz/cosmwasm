@@ -12,6 +12,8 @@ use cosmwasm_std::{Order, Record};
 use crate::BackendError;
 use crate::{BackendResult, GasInfo, Storage};
 
+use super::ConcurrentStorage;
+
 #[cfg(feature = "iterator")]
 const GAS_COST_LAST_ITERATION: u64 = 37;
 
@@ -167,14 +169,6 @@ impl Storage for MockStorage {
         self.data.remove(key);
         let gas_info = GasInfo::with_externally_used(key.len() as u64);
         (Ok(()), gas_info)
-    }
-    
-    fn partition_items(&mut self, items: Vec<Vec<u8>>) {
-        todo!()
-    }
-    
-    fn sum_partitioned_items(&mut self, items: Vec<Vec<u8>>) {
-        todo!()
     }
 }
 

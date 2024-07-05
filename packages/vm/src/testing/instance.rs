@@ -14,7 +14,7 @@ use crate::{BackendApi, Querier};
 
 use super::mock::{MockApi, MOCK_CONTRACT_ADDR};
 use super::querier::MockQuerier;
-use super::{MockStoragePartitioned, MockStorageWrapper, StorageWrapper};
+use super::{MockConcurrentStorage, MockStorageWrapper, StorageWrapper};
 
 /// This gas limit is used in integration tests and should be high enough to allow a reasonable
 /// number of contract executions and queries on one instance. For this reason it is significatly

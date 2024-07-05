@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::{Arc, RwLock}};
 
 use cosmwasm_vm::{
-    testing::{mock_persistent_backend, MockApi, MockQuerier, MockStoragePartitioned}, 
+    testing::{mock_persistent_backend, MockApi, MockQuerier, MockConcurrentStorage}, 
     InstantiatedEntryPoint, Message, MessageHandler, SCManager, VMManager, VMMessage};
 
 fn run_persistent_vm() {
@@ -9,7 +9,7 @@ fn run_persistent_vm() {
     // Read test smart contract code
     let code = include_bytes!("../../custom_contracts/empty-contract/target/wasm32-unknown-unknown/release/contract.wasm");
 
-    let sc_manager: SCManager<MockApi, MockStoragePartitioned, MockQuerier> = SCManager::new();
+    let sc_manager: SCManager<MockApi, MockConcurrentStorage, MockQuerier> = SCManager::new();
 
     // create mapping (code_id, instantiation) -> address
     let mut mapping: HashMap<u128, HashMap<u128, String>> = HashMap::from([
@@ -34,9 +34,8 @@ fn run_persistent_vm() {
 
     let vm_manager = VMManager::new(
         Arc::clone(&sc_manager),
-        Box::new(address_mapper),
-        2,
-        Box::new(backend_builder));
+        Arc::new(address_mapper),
+        Arc::new(backend_builder));
     // handle messages
     let mut message_handler = MessageHandler::new(
         sc_manager, 
@@ -51,7 +50,6 @@ fn run_persistent_vm() {
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#.to_vec(),
-                sender_address: String::from(""),
             }
         ),
         Message::Invocation(
@@ -62,7 +60,6 @@ fn run_persistent_vm() {
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
-                sender_address: String::from("")
             }
         ),
     ]);

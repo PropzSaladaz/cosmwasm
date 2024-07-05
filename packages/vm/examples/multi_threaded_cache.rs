@@ -4,9 +4,9 @@ use std::thread;
 use tempfile::TempDir;
 
 use cosmwasm_std::{coins, Empty};
-use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockStorage, MockStoragePartitioned, MockStorageWrapper};
+use cosmwasm_vm::testing::{mock_backend, mock_env, mock_info, mock_persistent_backend, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper};
 use cosmwasm_vm::{
-    call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, ConcurrentBackend, InstanceOptions, Size
+    call_execute, call_instantiate, capabilities_from_csv, Cache, CacheOptions, ConcurrentBackend, ConcurrentSchedule, InstanceOptions, Size
 };
 
 // Instance
@@ -50,10 +50,10 @@ pub fn main() {
         let cache = Arc::clone(&cache);
 
         threads.push(thread::spawn(move || {
-            let partitioned_storage = MockStoragePartitioned::default();
+            let partitioned_storage = MockConcurrentStorage::default();
             let backend = Arc::new(mock_persistent_backend(&[], Arc::new(partitioned_storage)));
-            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
-                backend, String::from(""), vec![], Arc::new(HashSet::new()));
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0,
+                Arc::new(ConcurrentSchedule::new()), backend, String::from(""), vec![]);
             let mut instance = cache
                 .get_instance(&checksum, concurrent_backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();

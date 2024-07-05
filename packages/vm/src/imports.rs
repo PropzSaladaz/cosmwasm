@@ -613,7 +613,7 @@ mod tests {
 
     use crate::backend::{BackendError, Storage};
     use crate::size::Size;
-    use crate::testing::{MockApi, MockQuerier, MockStoragePartitioned, MockStorageWrapper};
+    use crate::testing::{MockApi, MockQuerier, MockConcurrentStorage, MockStorageWrapper};
     use crate::wasm_backend::{compile, make_compiling_engine};
 
     static CONTRACT: &[u8] = include_bytes!("../testdata/hackatom.wasm");

@@ -232,20 +232,24 @@ impl ReadWrite {
             Self::Read {
                 storage_dependency,
                 key,
-                commutativity
+                commutativity,
+                operation_node: _
             } => Self::Read {
                 storage_dependency: *storage_dependency,
                 key: key.eval(storage, variable_context),
-                commutativity: *commutativity
+                commutativity: *commutativity,
+                operation_node: None, // at this phase all RWS have None for this field
             },
             Self::Write { 
                 storage_dependency,
                 key, 
-                commutativity 
+                commutativity ,
+                operation_node: _,
             } => Self::Write {
                 storage_dependency: *storage_dependency, 
                 key: key.eval(storage, variable_context), 
-                commutativity: *commutativity
+                commutativity: *commutativity,
+                operation_node: None,
             }
         }
     }
@@ -479,6 +483,7 @@ mod tests {
                     ])))
                 },
                 commutativity: Commutativity::Commutative,
+                operation_node: None,
             },
             // Set(1u8 @ msg.admin): Inc
             ReadWrite::Write { 
@@ -490,7 +495,8 @@ mod tests {
                         "admin".to_owned()
                     ]))) 
                 }, 
-                commutativity: Commutativity::Commutative 
+                commutativity: Commutativity::Commutative,
+                operation_node: None,
             }  
         ];
 
@@ -504,11 +510,13 @@ mod tests {
                     storage_dependency: Independent,
                     key: Key::Bytes(expected_key.clone()),
                     commutativity: Commutativity::Commutative,
+                    operation_node: None,
                 },
                 ReadWrite::Write { 
                     storage_dependency: Independent,
                     key: Key::Bytes(expected_key), 
-                    commutativity: Commutativity::Commutative
+                    commutativity: Commutativity::Commutative,
+                    operation_node: None,
                 }
             ]
         )

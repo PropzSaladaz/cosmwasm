@@ -483,7 +483,7 @@ mod tests {
     use crate::testing::{
         mock_concurrent_backend, mock_env, mock_info, mock_instance, mock_instance_options, 
         mock_instance_with_balances, mock_instance_with_failing_api, mock_instance_with_gas_limit, 
-        mock_instance_with_options, MockInstanceOptions, MockStoragePartitioned,
+        mock_instance_with_options, MockInstanceOptions, MockConcurrentStorage,
     };
     use cosmwasm_std::{
         coin, coins, from_json, AllBalanceResponse, BalanceResponse, BankQuery, Empty, QueryRequest,
@@ -498,7 +498,7 @@ mod tests {
 
     #[test]
     fn from_code_works() {
-        let partitioned_storage = MockStoragePartitioned::default();
+        let partitioned_storage = MockConcurrentStorage::default();
         let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let (instance_options, memory_limit) = mock_instance_options();
         let _instance =
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn required_capabilities_works() {
-        let partitioned_storage = MockStoragePartitioned::default();
+        let partitioned_storage = MockConcurrentStorage::default();
         let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let (instance_options, memory_limit) = mock_instance_options();
         let instance =
@@ -571,7 +571,7 @@ mod tests {
         )
         .unwrap();
 
-        let partitioned_storage = MockStoragePartitioned::default();
+        let partitioned_storage = MockConcurrentStorage::default();
         let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let (instance_options, memory_limit) = mock_instance_options();
         let instance = Instance::from_code(&wasm, backend, instance_options, memory_limit).unwrap();
@@ -595,7 +595,7 @@ mod tests {
         )
         .unwrap();
 
-        let partitioned_storage = MockStoragePartitioned::default();
+        let partitioned_storage = MockConcurrentStorage::default();
         let backend = mock_concurrent_backend(&[], Arc::new(partitioned_storage));
         let engine = make_compiling_engine(memory_limit);
         let module = compile(&engine, &wasm).unwrap();

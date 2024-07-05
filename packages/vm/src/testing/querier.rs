@@ -47,14 +47,14 @@ impl<C: CustomQuery + DeserializeOwned> MockQuerier<C> {
 
     pub fn update_wasm<WH: 'static>(&mut self, handler: WH)
     where
-        WH: Fn(&cosmwasm_std::WasmQuery) -> cosmwasm_std::QuerierResult,
+        WH: Fn(&cosmwasm_std::WasmQuery) -> cosmwasm_std::QuerierResult + Send + Sync,
     {
         self.querier.update_wasm(handler)
     }
 
     pub fn with_custom_handler<CH: 'static>(mut self, handler: CH) -> Self
     where
-        CH: Fn(&C) -> MockQuerierCustomHandlerResult,
+        CH: Fn(&C) -> MockQuerierCustomHandlerResult + Send + Sync,
     {
         self.querier = self.querier.with_custom_handler(handler);
         self

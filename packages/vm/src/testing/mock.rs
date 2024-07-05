@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use super::querier::MockQuerier;
 use super::storage::MockStorage;
-use super::{MockStoragePartitioned, MockStorageWrapper, StorageWrapper};
+use super::{MockConcurrentStorage, MockStorageWrapper, StorageWrapper};
 use crate::backend::{unwrap_or_return_with_gas, ConcurrentBackend};
 use crate::vm_manager::PersistentBackend;
 use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, Storage};
@@ -33,7 +33,7 @@ pub fn mock_backend(contract_balance: &[Coin]) -> Backend<MockApi, MockStorage, 
 
 
 
-pub fn mock_persistent_backend(contract_balance: &[Coin], storage: Arc<MockStoragePartitioned>) -> PersistentBackend<MockApi, MockStoragePartitioned, MockQuerier> {
+pub fn mock_persistent_backend(contract_balance: &[Coin], storage: Arc<MockConcurrentStorage>) -> PersistentBackend<MockApi, MockConcurrentStorage, MockQuerier> {
     PersistentBackend {
         api: Arc::new(MockApi::default()),
         storage: storage,
@@ -41,7 +41,7 @@ pub fn mock_persistent_backend(contract_balance: &[Coin], storage: Arc<MockStora
     }
 }
 
-pub fn mock_concurrent_backend(contract_balance: &[Coin], storage: Arc<MockStoragePartitioned>) -> ConcurrentBackend<MockApi, MockStorageWrapper, MockQuerier> {
+pub fn mock_concurrent_backend(contract_balance: &[Coin], storage: Arc<MockConcurrentStorage>) -> ConcurrentBackend<MockApi, MockStorageWrapper, MockQuerier> {
     ConcurrentBackend {
         api: MockApi::default(),
         storage: MockStorageWrapper::default(storage),

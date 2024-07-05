@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::RwLock;
 use std::{fmt::Debug, sync::Arc};
 use std::ops::AddAssign;
@@ -6,8 +7,9 @@ use std::string::FromUtf8Error;
 use thiserror::Error;
 
 use crate::symb_exec::ReadWrite;
-use crate::testing::{MockStorageWrapper, PartitionedStorage, StorageWrapper};
+use crate::testing::{ConcurrentStorage, MockStorageWrapper, StorageWrapper};
 use crate::vm_manager::PersistentBackend;
+use crate::ConcurrentSchedule;
 
 use cosmwasm_std::{Binary, ContractResult, SystemResult};
 #[cfg(feature = "iterator")]
@@ -109,20 +111,21 @@ where
     Q: Querier
 {
     pub fn new<S2>(
+        tx_block_id: u16,
+        concurrent_schedule: Arc<ConcurrentSchedule>,
         backend: Arc<PersistentBackend<A, S2, Q>>, 
-        sender_addres: String, 
+        sc_address: String,
         rws: Vec<ReadWrite>, 
-        partitioned_items: Arc<HashSet<Vec<u8>>>
     ) -> ConcurrentBackend<A, MockStorageWrapper, Q>
     where
-        S2: PartitionedStorage + 'static, 
+        S2: ConcurrentStorage + 'static, 
     {
         // TODO -  maybe we can use Rc instead of Arc - has less overhead, and there will only be  1 COncurrentBackend per thread
         let api = (*backend.api).clone();
         let storage = Arc::clone(&backend.storage);
         let querier = Arc::clone(&backend.querier);
 
-        let storage_wrapper: MockStorageWrapper = MockStorageWrapper::new(storage, sender_addres, rws, partitioned_items);
+        let storage_wrapper: MockStorageWrapper = MockStorageWrapper::new(tx_block_id, storage, concurrent_schedule, sc_address, rws);
         
         ConcurrentBackend {
             api: api,
@@ -133,14 +136,7 @@ where
 }
 
 /// Access to the VM's backend storage, i.e. the chain
-pub trait Storage {
-
-    /// Partition items identified by the passed keys into N partitions.
-    /// N is defined as a constant.
-    fn partition_items(&mut self, items: Vec<Vec<u8>>);
-
-    /// Convert the specified partitioned items into single items.
-    fn sum_partitioned_items(&mut self, items: Vec<Vec<u8>>);
+pub trait Storage: fmt::Debug {
 
     /// Returns Err on error.
     /// Returns Ok(None) when key does not exist.
