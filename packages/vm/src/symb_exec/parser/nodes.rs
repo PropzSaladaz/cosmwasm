@@ -253,6 +253,26 @@ pub enum ReadWrite {
     },
 }
 
+impl ReadWrite {
+    pub fn write() -> Self {
+        Self::Write {
+            storage_dependency: StorageDependency::Independent,
+            key: Key::Bytes(vec![]),
+            commutativity: Commutativity::Commutative,
+            operation_node: None,
+        }
+    }
+
+    pub fn read() -> Self {
+        Self::Read {
+            storage_dependency: StorageDependency::Independent,
+            key: Key::Bytes(vec![]),
+            commutativity: Commutativity::Commutative,
+            operation_node: None,
+        }
+    }
+}
+
 impl PartialEq for ReadWrite {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {

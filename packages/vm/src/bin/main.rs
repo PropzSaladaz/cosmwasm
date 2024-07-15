@@ -35,7 +35,8 @@ fn run_persistent_vm() {
     let vm_manager = VMManager::new(
         Arc::clone(&sc_manager),
         Arc::new(address_mapper),
-        Arc::new(backend_builder));
+        Arc::new(backend_builder),
+    8);
     // handle messages
     let mut message_handler = MessageHandler::new(
         sc_manager, 

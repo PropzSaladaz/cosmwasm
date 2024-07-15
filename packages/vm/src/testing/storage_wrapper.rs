@@ -6,7 +6,7 @@ use cosmwasm_std::Record;
 
 use crate::symb_exec::Key;
 use crate::symb_exec::Commutativity;
-use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, Operation, Storage};
+use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, Operation, Storage, TxId};
 
 use crate::{symb_exec::ReadWrite, BackendResult};
 
@@ -26,7 +26,7 @@ pub struct MockStorageWrapper {
     storage: Arc<dyn ConcurrentStorage>,
 
     schedule: Arc<ConcurrentSchedule>,
-    tx_block_id: u16,
+    tx_block_id: TxId,
 
     sc_address: String,
     rws: Vec<ReadWrite>,
@@ -51,7 +51,7 @@ impl Default for MockStorageWrapper {
 /// alter the current object to be updated to know which Read/Write it is currently
 /// on, following the RWS sequence from the profile.
 pub trait StorageWrapper: BaseStorage {
-    fn new(tx_block_id: u16, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, 
+    fn new(tx_block_id: TxId, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, 
         sc_address: String, rws: Vec<ReadWrite>) -> Self;
 
     /// Reads a key, and checks if it matches the expected operation type (read)
@@ -109,13 +109,16 @@ impl StorageWrapper for MockStorageWrapper {
             if let Some(dependency) = &operation_node.as_ref().unwrap().read().unwrap().dependency {
                 let gas_info = GasInfo::with_externally_used(key.len() as u64);
                 let value = dependency.read().unwrap().value.wait_for_value();
+                // println!("Reading: Key - {:#?} - depends on a previous write. Value -  {:#?}", key, value);
                 (Ok(Some(value)), gas_info)
             }
 
             // operation has no depndency -> read the value from storage
             else {
                 // gas computation is done inside storage itself
-                ConcurrentStorage::get(&*self.storage, key)
+                let res = ConcurrentStorage::get(&*self.storage, key);
+                // println!("Reading: Key - {:#?} - Value -  {:#?}. Has no dependency - read from storage", key, res);
+                res
             }
         };
 
@@ -123,6 +126,7 @@ impl StorageWrapper for MockStorageWrapper {
             // We have a next predicted RWS operation
             Some(rws) => {
                 self.rws_idx += 1;
+                // println!("Tracked read");
 
                 match rws {
                     ReadWrite::Write { .. } => {
@@ -142,10 +146,11 @@ impl StorageWrapper for MockStorageWrapper {
             },
             // operation not tracked by RWS
             None => {
+                // println!("Untracked read");
                 // mark new operations as non-commutative by default
                 let concurrent_op = DependencyNode::new_ref(OpType::Read, self.tx_block_id, Commutativity::NonCommutative);
                 // this will modify the dependencies of the node after being inserted
-                self.schedule.insert_untracked_operation(&self.sc_address, &key.to_vec(), self.tx_block_id, Arc::clone(&concurrent_op));
+                self.schedule.insert_untracked_operation(&self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
                 read(&Some(concurrent_op), key)
             }
         };
@@ -162,14 +167,14 @@ impl StorageWrapper for MockStorageWrapper {
         let res = match self.rws.get(self.rws_idx) {
             Some(rws) => {
                 self.rws_idx += 1;
+                // println!("Tracked Write");
 
                 match rws {
                     ReadWrite::Write { storage_dependency: _, key: k, commutativity, operation_node } => {
 
                         // write to the operation node
-                        let mut node = operation_node.as_ref().unwrap().write().unwrap();
-                        (*node).value.value = Some(value.to_vec());
-                        (*node).value.signal.notify_all(); 
+                        ConcurrentSchedule::set_value(operation_node.as_ref().unwrap(), value);
+                        // println!("Value set on write for SC: {:#?}, key: {:#?}", self.sc_address, key);
 
                         GasInfo::with_externally_used((key.len() + value.len()) as u64)
 
@@ -193,15 +198,15 @@ impl StorageWrapper for MockStorageWrapper {
             },
 
             None => {
+                // println!("Untracked Write. Key: {:#?}", key);
                 // mark new operations as non-commutative by default
                 let concurrent_op = DependencyNode::new_ref(OpType::Write, self.tx_block_id, Commutativity::NonCommutative);
                 // this will modify the dependencies of the node after being inserted
-                self.schedule.insert_untracked_operation(&self.sc_address, &key.to_vec(), self.tx_block_id, Arc::clone(&concurrent_op));
+                self.schedule.insert_untracked_operation(&self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
 
                 // write to the operation node
-                let mut node = concurrent_op.write().unwrap();
-                (*node).value.value = Some(value.to_vec());
-                (*node).value.signal.notify_all(); 
+                ConcurrentSchedule::set_value(&concurrent_op, value);
+                // println!("Value set on write for SC: {:#?}, key: {:#?}", self.sc_address, key);
 
                 GasInfo::with_externally_used((key.len() + value.len()) as u64)
             }
@@ -209,7 +214,7 @@ impl StorageWrapper for MockStorageWrapper {
         (Ok(()), res)
     }
     
-    fn new(tx_block_id: u16, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, sc_address: String, rws: Vec<ReadWrite>) -> Self
+    fn new(tx_block_id: TxId, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, sc_address: String, rws: Vec<ReadWrite>) -> Self
         {
         Self {
             tx_block_id,
@@ -224,14 +229,15 @@ impl StorageWrapper for MockStorageWrapper {
 
 #[cfg(test)]
 mod tests {
-    use crate::{symb_exec::{StorageDependency, TxRWS}, RWSContext, SEStatus, VMMessage};
+    use crate::{symb_exec::{StorageDependency, TxRWS}, testing::mock_tx_operation, RWSContext, SEStatus, VMMessage};
 
     use super::*;
 
-    // Tests if StorageWrapper is reading from underlying storage as there is no operation
-    // it depends on
     #[test]
     fn perfect_rws_get_with_no_dependencies() {
+        // Tests if StorageWrapper is reading from underlying storage as there is no operation
+        // it depends on
+
         let key = vec![1u8];
         let val = vec![13u8];
         let rws = vec![
@@ -284,10 +290,11 @@ mod tests {
     }
 
 
-    // Tests if StorageWrapper is reading from the value written by the previous
-    // write operation it depends on
     #[test]
     fn perfect_rws_get_with_dependencies() {
+        // Tests if StorageWrapper is reading from the value written by the previous
+        // write operation it depends on
+
         let key = vec![1u8];
         let val = vec![13u8];
         let val_after = vec![5u8];
@@ -342,7 +349,7 @@ mod tests {
         let schedule_ref = Arc::new(concurrent_schedule);
 
         // ** simulate Tx_0 executing - WRITE ** //
-        // We can only fetch the RWS after building the schedule, since this build alters the RWS by setting
+        // We can only clone the RWS after building the schedule, since this build alters the RWS by setting
         // the operation_node field
         let rws_tx_0 = block.get(tx_idx_0 as usize).unwrap().rws.rws.clone();
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx_0, Arc::clone(&storage), 
@@ -369,10 +376,11 @@ mod tests {
     }
 
 
-    // Tests if StorageWrapper is reading from underlying storage as this is an untracked
-    // read operation that has no dependencies
     #[test]
     fn untracked_rws_get_with_no_dependencies() {
+        // Tests if StorageWrapper is reading from underlying storage as this is an untracked
+        // read operation that has no dependencies
+
         let key = vec![1u8];
         let val = vec![13u8];
         // rws of tx with idx 0
@@ -383,7 +391,9 @@ mod tests {
         storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
-        concurrent_schedule.build_from_rws(&mut vec![]); // empty schedule
+        concurrent_schedule.build_from_rws(&mut vec![
+            mock_tx_operation(&String::from("a"), &vec![5u8], tx_idx, ReadWrite::write(), Commutativity::NonCommutative)
+        ]);
 
         // storagewrapper will not have any RWS sequence
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx, storage, 
@@ -402,10 +412,11 @@ mod tests {
     }
 
 
-    // Tests if StorageWrapper is reading from previous untracked Write upon having the following sequence of
-    // operations: [W] <- [R]
     #[test]
     fn untracked_rws_get_with_dependencies_from_same_tx() {
+        // Tests if StorageWrapper is reading from previous untracked Write upon having the following sequence of
+        // operations: [W] <- [R]
+
         let key = vec![1u8];
         let val = vec![13u8];
         let val_after = vec![5u8];
@@ -417,7 +428,9 @@ mod tests {
         storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
-        concurrent_schedule.build_from_rws(&mut vec![]); // empty schedule
+        concurrent_schedule.build_from_rws(&mut vec![
+            mock_tx_operation(&String::from("a"), &vec![5u8], tx_idx, ReadWrite::write(), Commutativity::NonCommutative)
+        ]);
 
         // storagewrapper will not have any RWS sequence
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx, storage, 

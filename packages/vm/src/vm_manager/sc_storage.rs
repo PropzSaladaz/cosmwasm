@@ -115,7 +115,7 @@ where
 }
 
 #[derive(Debug)]
-struct SCInstance<A, S, Q> 
+pub struct SCInstance<A, S, Q> // TEST - should be private 
 where
     A: BackendApi, 
     S: ConcurrentStorage, 
@@ -123,7 +123,8 @@ where
 {
     sc_code_id: u128,
     compiled_code: Arc<Module>,
-    state: Arc<PersistentBackend<A, S, Q>>
+    // TEST
+    pub state: Arc<PersistentBackend<A, S, Q>>
 }
 
 impl<A, S, Q> SCInstance<A, S, Q> 
@@ -177,6 +178,7 @@ type SCStorage<A, S, Q> = DashMap<String, Arc<SCInstance<A, S, Q>>>;
 /// This includes both static state - SC code & profile, as well as
 /// "dynamic state" - SC state per each instantiation of a contract & its 
 /// corresponding compiled wasm module. 
+#[derive(Debug)]
 pub struct SCManager<A, S, Q> 
 where
     A: BackendApi + 'static,
@@ -184,7 +186,7 @@ where
     Q: Querier + 'static
 {
     static_data: Arc<RwLock<SCStaticData>>,
-    sc_storage: SCStorage<A, S, Q>,
+    pub sc_storage: SCStorage<A, S, Q>,
 }
 
 impl<A, S, Q> SCManager<A, S, Q> 

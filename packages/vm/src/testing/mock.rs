@@ -11,8 +11,9 @@ use super::querier::MockQuerier;
 use super::storage::MockStorage;
 use super::{MockConcurrentStorage, MockStorageWrapper, StorageWrapper};
 use crate::backend::{unwrap_or_return_with_gas, ConcurrentBackend};
+use crate::symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS};
 use crate::vm_manager::PersistentBackend;
-use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, Storage};
+use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, InstantiatedEntryPoint, RWSContext, SEStatus, Storage, TxId, VMMessage};
 
 pub const MOCK_CONTRACT_ADDR: &str = "cosmwasmcontract"; // TODO: use correct address
 const GAS_COST_HUMANIZE: u64 = 44; // TODO: these seem very low
@@ -49,6 +50,40 @@ pub fn mock_concurrent_backend(contract_balance: &[Coin], storage: Arc<MockConcu
     }
 }
 
+pub fn mock_tx_operation(sc_address: &String, key: &Vec<u8>, tx_id: TxId, 
+    op_type: ReadWrite, commutativity: Commutativity) -> RWSContext {
+    RWSContext {
+        address: sc_address.clone(),
+        tx_message: Some(VMMessage::Invocation {
+            entry_point: InstantiatedEntryPoint::Execute,
+            contract_address: sc_address.clone(),
+            message: br#""#.to_vec(),
+            code_id: 0,
+        },),
+        tx_block_id: tx_id,
+        rws: TxRWS {
+            storage_dependency: StorageDependency::Independent,
+            profile_status: SEStatus::Complete,
+            rws: vec![
+                match op_type {
+                    ReadWrite::Write { .. } => ReadWrite::Write { 
+                        storage_dependency: StorageDependency::Independent, 
+                        key: Key::Bytes(key.clone()), 
+                        commutativity,
+                        operation_node: None,
+                    },
+                    ReadWrite::Read { .. } => ReadWrite::Read { 
+                        storage_dependency: StorageDependency::Dependent, 
+                        key: Key::Bytes(key.clone()), 
+                        commutativity,
+                        operation_node: None,
+                    },
+                }
+
+            ]
+        }
+    }
+}
 
 
 
@@ -67,10 +102,10 @@ pub fn mock_backend_with_balances<'a>(
 /// Zero-pads all human addresses to make them fit the canonical_length and
 /// trims off zeros for the reverse operation.
 /// This is not really smart, but allows us to see a difference (and consistent length for canonical adddresses).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct MockApi(MockApiImpl);
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum MockApiImpl {
     /// With this variant, all calls to the API fail with BackendError::Unknown
     /// containing the given message

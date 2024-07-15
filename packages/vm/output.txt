@@ -1,0 +1,2022 @@
+
+running 1 test
+test vm_manager::vm_manager::tests::sequential_persistent_calls ... FAILED
+
+successes:
+
+successes:
+
+failures:
+
+---- vm_manager::vm_manager::tests::sequential_persistent_calls stdout ----
+Instantiation count: 0
+Instantiation count: 1
+RWS: [
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Write {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: NonCommutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "a",
+        tx_message: Some(
+            Instantiation {
+                message: [
+                    123,
+                    125,
+                ],
+                contract_code_id: 0,
+            },
+        ),
+        tx_block_id: 0,
+    },
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Write {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: NonCommutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "b",
+        tx_message: Some(
+            Instantiation {
+                message: [
+                    123,
+                    125,
+                ],
+                contract_code_id: 0,
+            },
+        ),
+        tx_block_id: 1,
+    },
+]
+Schedule before execution: ConcurrentSchedule {
+    tx_states: [
+        NotExecuted,
+        NotExecuted,
+    ],
+    transactions: {
+        0,
+        1,
+    },
+    executed: 0,
+    total: 2,
+    deps: {
+        1: 0,
+        0: 0,
+    },
+    dependent_txs: {},
+    partial_ready_tx: {},
+    execution_queues: Signal {
+        lock: Mutex {
+            data: true,
+            poisoned: false,
+            ..
+        },
+        cvar: Condvar { .. },
+    },
+    ready_queue: Mutex {
+        data: [
+            0,
+            1,
+        ],
+        poisoned: false,
+        ..
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+        poisoned: false,
+        ..
+    },
+    schedule: Schedule {
+        schedule: {
+            "a": {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 0,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 0,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                },
+            },
+            "b": {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 1,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 1,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                },
+            },
+        },
+        last_non_commutative_write: {
+            "b": {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 1,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                            prev: None,
+                            next: None,
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    poisoned: false,
+                    ..
+                },
+            },
+            "a": {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 0,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                            prev: None,
+                            next: None,
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    poisoned: false,
+                    ..
+                },
+            },
+        },
+    },
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 0
+Value set on write for SC: "a", key: [
+    0,
+    4,
+    98,
+    97,
+    110,
+    107,
+    65,
+    68,
+    77,
+    73,
+    78,
+]
+ready queue after execution execution: Mutex {
+    data: [
+        1,
+    ],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 1
+Value set on write for SC: "b", key: [
+    0,
+    4,
+    98,
+    97,
+    110,
+    107,
+    65,
+    68,
+    77,
+    73,
+    78,
+]
+ready queue after execution execution: Mutex {
+    data: [],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread 0 finished executing
+Debug graph generated: graph_0.png
+RWS: [
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Read {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: NonCommutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "a",
+        tx_message: Some(
+            Invocation {
+                message: [
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    71,
+                    101,
+                    116,
+                    66,
+                    97,
+                    108,
+                    97,
+                    110,
+                    99,
+                    101,
+                    34,
+                    58,
+                    32,
+                    123,
+                    125,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                ],
+                entry_point: Query,
+                contract_address: "a",
+                code_id: 0,
+            },
+        ),
+        tx_block_id: 0,
+    },
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Read {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: Commutative,
+                    operation_node: None,
+                },
+                Write {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: Commutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "a",
+        tx_message: Some(
+            Invocation {
+                message: [
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    65,
+                    100,
+                    100,
+                    79,
+                    110,
+                    101,
+                    34,
+                    58,
+                    32,
+                    123,
+                    125,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                ],
+                entry_point: Execute,
+                contract_address: "a",
+                code_id: 0,
+            },
+        ),
+        tx_block_id: 1,
+    },
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Read {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: Commutative,
+                    operation_node: None,
+                },
+                Write {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: Commutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "b",
+        tx_message: Some(
+            Invocation {
+                message: [
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    65,
+                    100,
+                    100,
+                    79,
+                    110,
+                    101,
+                    34,
+                    58,
+                    32,
+                    123,
+                    125,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                ],
+                entry_point: Execute,
+                contract_address: "b",
+                code_id: 0,
+            },
+        ),
+        tx_block_id: 2,
+    },
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Read {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: NonCommutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "b",
+        tx_message: Some(
+            Invocation {
+                message: [
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    71,
+                    101,
+                    116,
+                    66,
+                    97,
+                    108,
+                    97,
+                    110,
+                    99,
+                    101,
+                    34,
+                    58,
+                    32,
+                    123,
+                    125,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                ],
+                entry_point: Query,
+                contract_address: "b",
+                code_id: 0,
+            },
+        ),
+        tx_block_id: 3,
+    },
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Read {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: NonCommutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "a",
+        tx_message: Some(
+            Invocation {
+                message: [
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    71,
+                    101,
+                    116,
+                    66,
+                    97,
+                    108,
+                    97,
+                    110,
+                    99,
+                    101,
+                    34,
+                    58,
+                    32,
+                    123,
+                    125,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                ],
+                entry_point: Query,
+                contract_address: "a",
+                code_id: 0,
+            },
+        ),
+        tx_block_id: 4,
+    },
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Read {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: Commutative,
+                    operation_node: None,
+                },
+                Write {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: Commutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "a",
+        tx_message: Some(
+            Invocation {
+                message: [
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    65,
+                    100,
+                    100,
+                    79,
+                    110,
+                    101,
+                    34,
+                    58,
+                    32,
+                    123,
+                    125,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                ],
+                entry_point: Execute,
+                contract_address: "a",
+                code_id: 0,
+            },
+        ),
+        tx_block_id: 5,
+    },
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Independent,
+            profile_status: Complete,
+            rws: [
+                Read {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            65,
+                            68,
+                            77,
+                            73,
+                            78,
+                        ],
+                    ),
+                    commutativity: NonCommutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "a",
+        tx_message: Some(
+            Invocation {
+                message: [
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    71,
+                    101,
+                    116,
+                    66,
+                    97,
+                    108,
+                    97,
+                    110,
+                    99,
+                    101,
+                    34,
+                    58,
+                    32,
+                    123,
+                    125,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                ],
+                entry_point: Query,
+                contract_address: "a",
+                code_id: 0,
+            },
+        ),
+        tx_block_id: 6,
+    },
+    RWSContext {
+        rws: TxRWS {
+            storage_dependency: Dependent,
+            profile_status: Complete,
+            rws: [
+                Read {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            66,
+                            97,
+                            108,
+                            101,
+                            108,
+                            97,
+                            115,
+                        ],
+                    ),
+                    commutativity: NonCommutative,
+                    operation_node: None,
+                },
+                Write {
+                    storage_dependency: Independent,
+                    key: Bytes(
+                        [
+                            0,
+                            4,
+                            98,
+                            97,
+                            110,
+                            107,
+                            66,
+                            97,
+                            108,
+                            101,
+                            108,
+                            97,
+                            115,
+                        ],
+                    ),
+                    commutativity: NonCommutative,
+                    operation_node: None,
+                },
+            ],
+        },
+        address: "a",
+        tx_message: Some(
+            Invocation {
+                message: [
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    65,
+                    100,
+                    100,
+                    85,
+                    115,
+                    101,
+                    114,
+                    34,
+                    58,
+                    32,
+                    123,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    34,
+                    97,
+                    100,
+                    109,
+                    105,
+                    110,
+                    34,
+                    58,
+                    32,
+                    34,
+                    66,
+                    97,
+                    108,
+                    101,
+                    108,
+                    97,
+                    115,
+                    34,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                    10,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    32,
+                    125,
+                ],
+                entry_point: Execute,
+                contract_address: "a",
+                code_id: 0,
+            },
+        ),
+        tx_block_id: 7,
+    },
+]
+Schedule before execution: ConcurrentSchedule {
+    tx_states: [
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+    ],
+    transactions: {
+        5,
+        6,
+        0,
+        3,
+        4,
+        1,
+        7,
+        2,
+    },
+    executed: 0,
+    total: 8,
+    deps: {
+        5: 1,
+        4: 1,
+        3: 1,
+        7: 0,
+        2: 0,
+        1: 0,
+        0: 0,
+        6: 1,
+    },
+    dependent_txs: {
+        5: {
+            6,
+        },
+        2: {
+            3,
+        },
+        1: {
+            4,
+            5,
+        },
+    },
+    partial_ready_tx: {
+        2: {
+            3,
+        },
+        5: {
+            6,
+        },
+        1: {
+            5,
+            4,
+        },
+    },
+    execution_queues: Signal {
+        lock: Mutex {
+            data: true,
+            poisoned: false,
+            ..
+        },
+        cvar: Condvar { .. },
+    },
+    ready_queue: Mutex {
+        data: [
+            0,
+            1,
+            2,
+            7,
+        ],
+        poisoned: false,
+        ..
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+        poisoned: false,
+        ..
+    },
+    schedule: Schedule {
+        schedule: {
+            "a": {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 0,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: None,
+                                next: Operation {
+                                    operation_type: Read,
+                                    commutativity: Commutative,
+                                    tx_block_id: 1,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 6,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: Operation {
+                                    operation_type: Write,
+                                    commutativity: Commutative,
+                                    tx_block_id: 5,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                next: None,
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                },
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    66,
+                    97,
+                    108,
+                    101,
+                    108,
+                    97,
+                    115,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 7,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: None,
+                                next: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 7,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 7,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 7,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                next: None,
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                },
+            },
+            "b": {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: Commutative,
+                                    tx_block_id: 2,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: None,
+                                next: Operation {
+                                    operation_type: Write,
+                                    commutativity: Commutative,
+                                    tx_block_id: 2,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 3,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                prev: Operation {
+                                    operation_type: Write,
+                                    commutativity: Commutative,
+                                    tx_block_id: 2,
+                                    value: None,
+                                    signal: Signal {
+                                        lock: Mutex {
+                                            data: false,
+                                            poisoned: false,
+                                            ..
+                                        },
+                                        cvar: Condvar { .. },
+                                    },
+                                },
+                                next: None,
+                            },
+                            poisoned: false,
+                            ..
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                },
+            },
+        },
+        last_non_commutative_write: {
+            "b": {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: Commutative,
+                                tx_block_id: 2,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: Commutative,
+                                tx_block_id: 2,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                            next: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 3,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    poisoned: false,
+                    ..
+                },
+            },
+            "a": {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: Commutative,
+                                tx_block_id: 5,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: Commutative,
+                                tx_block_id: 5,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                            next: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 6,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    poisoned: false,
+                    ..
+                },
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    66,
+                    97,
+                    108,
+                    101,
+                    108,
+                    97,
+                    115,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 7,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 7,
+                                value: None,
+                                signal: Signal {
+                                    lock: Mutex {
+                                        data: false,
+                                        poisoned: false,
+                                        ..
+                                    },
+                                    cvar: Condvar { .. },
+                                },
+                            },
+                            next: None,
+                        },
+                        poisoned: false,
+                        ..
+                    },
+                    poisoned: false,
+                    ..
+                },
+            },
+        },
+    },
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 0
+ready queue after execution execution: Mutex {
+    data: [
+        1,
+        2,
+        7,
+    ],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 1
+Value set on write for SC: "a", key: [
+    0,
+    4,
+    98,
+    97,
+    110,
+    107,
+    65,
+    68,
+    77,
+    73,
+    78,
+]
+ready queue after execution execution: Mutex {
+    data: [
+        2,
+        7,
+        4,
+        5,
+    ],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 2
+Value set on write for SC: "b", key: [
+    0,
+    4,
+    98,
+    97,
+    110,
+    107,
+    65,
+    68,
+    77,
+    73,
+    78,
+]
+ready queue after execution execution: Mutex {
+    data: [
+        7,
+        4,
+        5,
+        3,
+    ],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 7
+Value set on write for SC: "a", key: [
+    0,
+    4,
+    98,
+    97,
+    110,
+    107,
+    66,
+    97,
+    108,
+    101,
+    108,
+    97,
+    115,
+]
+ready queue after execution execution: Mutex {
+    data: [
+        4,
+        5,
+        3,
+    ],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 4
+ready queue after execution execution: Mutex {
+    data: [
+        5,
+        3,
+    ],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 5
+Value set on write for SC: "a", key: [
+    0,
+    4,
+    98,
+    97,
+    110,
+    107,
+    65,
+    68,
+    77,
+    73,
+    78,
+]
+ready queue after execution execution: Mutex {
+    data: [
+        3,
+        6,
+    ],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 3
+ready queue after execution execution: Mutex {
+    data: [
+        6,
+    ],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread: 0 executing message: 6
+ready queue after execution execution: Mutex {
+    data: [],
+    poisoned: false,
+    ..
+}
+Thread: 0 waiting for message to execute
+Thread 0 finished executing
+Debug graph generated: graph_0.png
+thread 'vm_manager::vm_manager::tests::sequential_persistent_calls' panicked at packages/vm/src/vm_manager/vm_manager.rs:816:13:
+assertion `left == right` failed
+  left: "Ok(Response { messages: [], attributes: [], events: [], data: None })"
+ right: "{\"balance\":1001}"
+stack backtrace:
+   0: rust_begin_unwind
+             at /rustc/07dca489ac2d933c78d3c5158e3f43beefeb02ce/library/std/src/panicking.rs:645:5
+   1: core::panicking::panic_fmt
+             at /rustc/07dca489ac2d933c78d3c5158e3f43beefeb02ce/library/core/src/panicking.rs:72:14
+   2: core::panicking::assert_failed_inner
+             at /rustc/07dca489ac2d933c78d3c5158e3f43beefeb02ce/library/core/src/panicking.rs:342:17
+   3: core::panicking::assert_failed
+             at /rustc/07dca489ac2d933c78d3c5158e3f43beefeb02ce/library/core/src/panicking.rs:297:5
+   4: cosmwasm_vm::vm_manager::vm_manager::tests::sequential_persistent_calls::{{closure}}
+             at ./src/vm_manager/vm_manager.rs:816:13
+   5: core::ops::function::FnOnce::call_once
+             at /rustc/07dca489ac2d933c78d3c5158e3f43beefeb02ce/library/core/src/ops/function.rs:250:5
+   6: serial_test::serial_code_lock::local_serial_core
+             at /home/sidnei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serial_test-3.1.0/src/serial_code_lock.rs:36:5
+   7: cosmwasm_vm::vm_manager::vm_manager::tests::sequential_persistent_calls
+             at ./src/vm_manager/vm_manager.rs:712:5
+   8: cosmwasm_vm::vm_manager::vm_manager::tests::sequential_persistent_calls::{{closure}}
+             at ./src/vm_manager/vm_manager.rs:713:37
+   9: core::ops::function::FnOnce::call_once
+             at /rustc/07dca489ac2d933c78d3c5158e3f43beefeb02ce/library/core/src/ops/function.rs:250:5
+  10: core::ops::function::FnOnce::call_once
+             at /rustc/07dca489ac2d933c78d3c5158e3f43beefeb02ce/library/core/src/ops/function.rs:250:5
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.
+
+
+failures:
+    vm_manager::vm_manager::tests::sequential_persistent_calls
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 364 filtered out; finished in 1.28s
+

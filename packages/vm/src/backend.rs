@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::symb_exec::ReadWrite;
 use crate::testing::{ConcurrentStorage, MockStorageWrapper, StorageWrapper};
 use crate::vm_manager::PersistentBackend;
-use crate::ConcurrentSchedule;
+use crate::{ConcurrentSchedule, TxId};
 
 use cosmwasm_std::{Binary, ContractResult, SystemResult};
 #[cfg(feature = "iterator")]
@@ -111,7 +111,7 @@ where
     Q: Querier
 {
     pub fn new<S2>(
-        tx_block_id: u16,
+        tx_block_id: TxId,
         concurrent_schedule: Arc<ConcurrentSchedule>,
         backend: Arc<PersistentBackend<A, S2, Q>>, 
         sc_address: String,

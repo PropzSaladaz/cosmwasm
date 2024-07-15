@@ -39,10 +39,6 @@ impl MockConcurrentStorage {
         Self::new()
     }
 
-    pub fn get_item(&self, item: &[u8]) -> Vec<u8> {
-        self.data.get(item).unwrap().value().to_owned()
-    }
-
     #[cfg(feature = "iterator")]
     pub fn all(&mut self, iterator_id: u32) -> BackendResult<Vec<Record>> {
         let mut out: Vec<Record> = Vec::new();
