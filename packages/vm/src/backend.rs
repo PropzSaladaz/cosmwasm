@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::symb_exec::ReadWrite;
 use crate::testing::{ConcurrentStorage, MockStorageWrapper, StorageWrapper};
 use crate::vm_manager::PersistentBackend;
-use crate::{ConcurrentSchedule, TxId};
+use crate::{ConcurrentSchedule, ScAddr, TxId};
 
 use cosmwasm_std::{Binary, ContractResult, SystemResult};
 #[cfg(feature = "iterator")]
@@ -114,7 +114,7 @@ where
         tx_block_id: TxId,
         concurrent_schedule: Arc<ConcurrentSchedule>,
         backend: Arc<PersistentBackend<A, S2, Q>>, 
-        sc_address: String,
+        sc_address: &ScAddr,
         rws: Vec<ReadWrite>, 
     ) -> ConcurrentBackend<A, MockStorageWrapper, Q>
     where
@@ -125,7 +125,7 @@ where
         let storage = Arc::clone(&backend.storage);
         let querier = Arc::clone(&backend.querier);
 
-        let storage_wrapper: MockStorageWrapper = MockStorageWrapper::new(tx_block_id, storage, concurrent_schedule, sc_address, rws);
+        let storage_wrapper: MockStorageWrapper = MockStorageWrapper::new(tx_block_id, storage, concurrent_schedule, *sc_address, rws);
         
         ConcurrentBackend {
             api: api,

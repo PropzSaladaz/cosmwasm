@@ -15,5 +15,5 @@ cosmwasm-check ./target/wasm32-unknown-unknown/release/contract.wasm
 
 Compile:
 ```
-cargo build --target wasm32-unknown-unknown
+cargo build --target wasm32-unknown-unknown --release
 ```

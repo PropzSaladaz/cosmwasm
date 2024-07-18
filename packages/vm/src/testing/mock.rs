@@ -13,7 +13,7 @@ use super::{MockConcurrentStorage, MockStorageWrapper, StorageWrapper};
 use crate::backend::{unwrap_or_return_with_gas, ConcurrentBackend};
 use crate::symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS};
 use crate::vm_manager::PersistentBackend;
-use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, InstantiatedEntryPoint, RWSContext, SEStatus, Storage, TxId, VMMessage};
+use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, InstantiatedEntryPoint, RWSContext, SEStatus, ScAddr, Storage, TxId, VMMessage};
 
 pub const MOCK_CONTRACT_ADDR: &str = "cosmwasmcontract"; // TODO: use correct address
 const GAS_COST_HUMANIZE: u64 = 44; // TODO: these seem very low
@@ -50,13 +50,13 @@ pub fn mock_concurrent_backend(contract_balance: &[Coin], storage: Arc<MockConcu
     }
 }
 
-pub fn mock_tx_operation(sc_address: &String, key: &Vec<u8>, tx_id: TxId, 
+pub fn mock_tx_operation(sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId, 
     op_type: ReadWrite, commutativity: Commutativity) -> RWSContext {
     RWSContext {
-        address: sc_address.clone(),
+        address: sc_address,
         tx_message: Some(VMMessage::Invocation {
             entry_point: InstantiatedEntryPoint::Execute,
-            contract_address: sc_address.clone(),
+            contract_address: sc_address,
             message: br#""#.to_vec(),
             code_id: 0,
         },),

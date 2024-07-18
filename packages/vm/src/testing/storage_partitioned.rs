@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[cfg(feature = "iterator")]
 use std::ops::{Bound, RangeBounds};
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
 
 #[cfg(feature = "iterator")]
 use cosmwasm_std::{Order, Record};
@@ -244,7 +244,7 @@ impl BaseStorage for MockConcurrentStorage {
         };
 
         { // hold lock for self.iterators
-            let mut iterators = self.iterators.lock().unwrap();
+            let mut iterators = self.iterators.lock();
             let last_id: u32 = iterators
                 .len()
                 .try_into()
@@ -263,7 +263,7 @@ impl BaseStorage for MockConcurrentStorage {
     #[cfg(feature = "iterator")]
     fn next(&self, iterator_id: u32) -> BackendResult<Option<Record>> {
 
-        let iterators = self.iterators.lock().unwrap();
+        let iterators = self.iterators.lock();
         let iterator = match iterators.get(&iterator_id) {
             Some(i) => i,
             None => {
@@ -274,7 +274,7 @@ impl BaseStorage for MockConcurrentStorage {
             }
         };
 
-        let mut iterator = iterator.lock().unwrap();
+        let mut iterator = iterator.lock();
 
         let (value, gas_info): (Option<Record>, GasInfo) =
             if iterator.data.len() > iterator.position {

@@ -2,7 +2,7 @@ use std::{sync::Arc};
 
 use graphviz_rust::{cmd::{CommandArg, Format}, exec_dot};
 
-use crate::{ConcurrentSchedule, DependencyNode, OpType, Operation, RWSContext, TxId};
+use crate::{ConcurrentSchedule, DependencyNode, OpType, Operation, RWSContext, ScAddr, TxId};
 
 use super::concurrent_schedule::{LinkedList, SCSchedule};
 
@@ -52,15 +52,15 @@ impl NodeColor {
 }
 
 
-pub struct DotSchedule {
+pub struct DotSchedule<'a> {
     pub key_color: NodeColor,
     pub key_width: i32,
 
     node_colors: Vec<NodeColor>,
-    rws: Arc<Vec<RWSContext>>,
+    rws: Option<&'a Vec<RWSContext>>,
 }
 
-impl DotSchedule {
+impl<'a> DotSchedule<'a> {
 
     pub fn new(key_color: NodeColor, key_width: i32) -> Self {
         use NodeColor::*;
@@ -72,12 +72,12 @@ impl DotSchedule {
                 BackgroundAzure, BackgroundIvory, BackgroundSeashell, BackgroundBeige, BackgroundLemonChiffon,
                 BackgroundMistyRose, BackgroundLavenderBlush, BackgroundOldLace
             ],
-            rws: Arc::new(vec![]),
+            rws: None,
         }
     }
 
-    pub fn parse(&mut self, schedule: &ConcurrentSchedule,  rws: Arc<Vec<RWSContext>>) -> String {
-        self.rws = rws;
+    pub fn parse(&mut self, schedule: &ConcurrentSchedule,  rws: &'a Vec<RWSContext>) -> String {
+        self.rws = Some(rws);
         let mut file = String::new();
         file.push_str("digraph G {");
         file.push_str("\n    compound=true;");
@@ -97,7 +97,7 @@ impl DotSchedule {
 
         for schedule in schedule {
             let contract_prefix = format!("c{}", contract_id);
-            let contract_address = schedule.key();
+            let contract_address = *schedule.key();
 
             let contract_schedule = schedule.value();
             contracts.push_str(&self.generate_contract(contract_schedule, contract_id, contract_address, &contract_prefix));
@@ -108,10 +108,10 @@ impl DotSchedule {
         contracts
     }
 
-    fn generate_contract(&self, schedule: &SCSchedule, contract_id: i32, contract_address: &String, contract_prefix: &String) -> String {
+    fn generate_contract(&self, schedule: &SCSchedule, contract_id: i32, contract_address: ScAddr, contract_prefix: &String) -> String {
         let mut contract = String::new();
         contract.push_str(&format!("\n    subgraph cluster_contract_{} {{", contract_id));
-        contract.push_str(&format!("\n        label = \"{}\";", contract_address));
+        contract.push_str(&format!("\n        label = \"{:?}\";", contract_address));
         contract.push_str(&format!("\n        rankdir=TB;"));
         contract.push_str(&format!("\n        style=\"filled\";"));
         contract.push_str(&format!("\n        fillcolor=\"{}\";", NodeColor::LightGrey.as_str()));
@@ -261,7 +261,7 @@ impl DotSchedule {
         let mut completeness = None;
         let mut storage_dependency = None;
 
-        for rws in &*self.rws {
+        for rws in &*self.rws.unwrap() {
             if rws.tx_block_id == tx_id {
                 completeness = Some(rws.rws.profile_status);
                 storage_dependency = Some(rws.rws.storage_dependency);

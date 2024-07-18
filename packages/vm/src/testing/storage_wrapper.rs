@@ -6,12 +6,14 @@ use cosmwasm_std::Record;
 
 use crate::symb_exec::Key;
 use crate::symb_exec::Commutativity;
-use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, Operation, Storage, TxId};
+use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, Operation, ScAddr, Storage, TxId};
 
 use crate::{symb_exec::ReadWrite, BackendResult};
 
 use super::storage_partitioned::{BaseStorage, ConcurrentStorage};
 use super::{MockConcurrentStorage};
+
+static DEFAULT_CONTRACT: &ScAddr = br#"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"#;
 
 /// Serves as a wrapper around storage, created when executing a tx
 /// with some specific sender address.
@@ -28,7 +30,7 @@ pub struct MockStorageWrapper {
     schedule: Arc<ConcurrentSchedule>,
     tx_block_id: TxId,
 
-    sc_address: String,
+    sc_address: ScAddr,
     rws: Vec<ReadWrite>,
     rws_idx: usize,
 }
@@ -36,14 +38,14 @@ pub struct MockStorageWrapper {
 impl MockStorageWrapper {
     /// Used strictly fo rtesting pruposes
     pub fn default(storage: Arc<MockConcurrentStorage>) -> MockStorageWrapper {
-        StorageWrapper::new(0, storage, Arc::new(ConcurrentSchedule::new()), String::from(""), vec![])
+        StorageWrapper::new(0, storage, Arc::new(ConcurrentSchedule::new()), *DEFAULT_CONTRACT, vec![])
     }
 }
 
 impl Default for MockStorageWrapper {
     /// Used strictly fo rtesting pruposes
     fn default() -> MockStorageWrapper {
-        StorageWrapper::new(0,  Arc::new(MockConcurrentStorage::default()), Arc::new(ConcurrentSchedule::new()), String::from(""), vec![])
+        StorageWrapper::new(0,  Arc::new(MockConcurrentStorage::default()), Arc::new(ConcurrentSchedule::new()), *DEFAULT_CONTRACT, vec![])
     }
 }
 
@@ -52,7 +54,7 @@ impl Default for MockStorageWrapper {
 /// on, following the RWS sequence from the profile.
 pub trait StorageWrapper: BaseStorage {
     fn new(tx_block_id: TxId, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, 
-        sc_address: String, rws: Vec<ReadWrite>) -> Self;
+        sc_address: ScAddr, rws: Vec<ReadWrite>) -> Self;
 
     /// Reads a key, and checks if it matches the expected operation type (read)
     /// from the RWS profile at the current position.
@@ -105,19 +107,15 @@ impl StorageWrapper for MockStorageWrapper {
 
         let read = |operation_node: &Option<NodeRef<Operation>>, key: &[u8]| {
             // operation depends on another operation -> read value from the schedule
-
             if let Some(dependency) = &operation_node.as_ref().unwrap().read().unwrap().dependency {
                 let gas_info = GasInfo::with_externally_used(key.len() as u64);
                 let value = dependency.read().unwrap().value.wait_for_value();
-                // println!("Reading: Key - {:#?} - depends on a previous write. Value -  {:#?}", key, value);
                 (Ok(Some(value)), gas_info)
             }
 
-            // operation has no depndency -> read the value from storage
+            // operation has no dependency -> read the value from storage ONLY IF no previous instantiation
             else {
-                // gas computation is done inside storage itself
                 let res = ConcurrentStorage::get(&*self.storage, key);
-                // println!("Reading: Key - {:#?} - Value -  {:#?}. Has no dependency - read from storage", key, res);
                 res
             }
         };
@@ -150,7 +148,7 @@ impl StorageWrapper for MockStorageWrapper {
                 // mark new operations as non-commutative by default
                 let concurrent_op = DependencyNode::new_ref(OpType::Read, self.tx_block_id, Commutativity::NonCommutative);
                 // this will modify the dependencies of the node after being inserted
-                self.schedule.insert_untracked_operation(&self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
+                self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
                 read(&Some(concurrent_op), key)
             }
         };
@@ -161,8 +159,9 @@ impl StorageWrapper for MockStorageWrapper {
         ConcurrentStorage::get(&*self.storage, key)
     }
 
+    // Note that writes don't need to wait on any previous instantiation - this is because writes only write to an in-memory struct.
+    // Only at the end of all txs executing they are persisted. SO no access to the SC's storge is ever made on a write.
     fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()> {
-
         // match current Read/Write in the sequence of the RWS
         let res = match self.rws.get(self.rws_idx) {
             Some(rws) => {
@@ -202,7 +201,7 @@ impl StorageWrapper for MockStorageWrapper {
                 // mark new operations as non-commutative by default
                 let concurrent_op = DependencyNode::new_ref(OpType::Write, self.tx_block_id, Commutativity::NonCommutative);
                 // this will modify the dependencies of the node after being inserted
-                self.schedule.insert_untracked_operation(&self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
+                self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
 
                 // write to the operation node
                 ConcurrentSchedule::set_value(&concurrent_op, value);
@@ -214,8 +213,9 @@ impl StorageWrapper for MockStorageWrapper {
         (Ok(()), res)
     }
     
-    fn new(tx_block_id: TxId, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, sc_address: String, rws: Vec<ReadWrite>) -> Self
-        {
+    fn new<'b>(tx_block_id: TxId, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, sc_address: ScAddr, rws: Vec<ReadWrite>) 
+    -> MockStorageWrapper
+    {
         Self {
             tx_block_id,
             storage,
@@ -232,6 +232,8 @@ mod tests {
     use crate::{symb_exec::{StorageDependency, TxRWS}, testing::mock_tx_operation, RWSContext, SEStatus, VMMessage};
 
     use super::*;
+
+    const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     #[test]
     fn perfect_rws_get_with_no_dependencies() {
@@ -258,7 +260,7 @@ mod tests {
                     profile_status: SEStatus::Complete,
                     rws: rws,
                 },
-                address: String::from("a"),
+                address: SC_ADDR_A,
                 tx_message: None,
                 tx_block_id: 0
             }
@@ -276,7 +278,7 @@ mod tests {
         let rws_tx_0 = block.get(0).unwrap().rws.rws.clone();
         
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx, storage, 
-            Arc::new(concurrent_schedule), String::from("a"), rws_tx_0);
+            Arc::new(concurrent_schedule), SC_ADDR_A, rws_tx_0);
 
         let item = storage_wrapper.get(key.as_slice());
 
@@ -317,7 +319,7 @@ mod tests {
                             operation_node: None,
                     }],
                 },
-                address: String::from("a"),
+                address: SC_ADDR_A,
                 tx_message: None,
                 tx_block_id: tx_idx_0
             },
@@ -334,7 +336,7 @@ mod tests {
                             operation_node: None,
                     }],
                 },
-                address: String::from("a"),
+                address: SC_ADDR_A,
                 tx_message: None,
                 tx_block_id: tx_idx_1
             }
@@ -353,7 +355,7 @@ mod tests {
         // the operation_node field
         let rws_tx_0 = block.get(tx_idx_0 as usize).unwrap().rws.rws.clone();
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx_0, Arc::clone(&storage), 
-            Arc::clone(&schedule_ref), String::from("a"), rws_tx_0);
+            Arc::clone(&schedule_ref), SC_ADDR_A, rws_tx_0);
         storage_wrapper.set(key.as_slice(), val_after.as_slice()).0.unwrap();
 
         // rws_idx should advance
@@ -362,7 +364,7 @@ mod tests {
         // ** simulate Tx_1 executing - READ ** //
         let rws_tx_1 = block.get(tx_idx_1 as usize).unwrap().rws.rws.clone();
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx_1, Arc::clone(&storage), 
-            Arc::clone(&schedule_ref), String::from("a"), rws_tx_1);
+            Arc::clone(&schedule_ref), SC_ADDR_A, rws_tx_1);
         let item = storage_wrapper.get(key.as_slice());
 
 
@@ -392,12 +394,12 @@ mod tests {
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
         concurrent_schedule.build_from_rws(&mut vec![
-            mock_tx_operation(&String::from("a"), &vec![5u8], tx_idx, ReadWrite::write(), Commutativity::NonCommutative)
+            mock_tx_operation(SC_ADDR_A, &vec![5u8], tx_idx, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
 
         // storagewrapper will not have any RWS sequence
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx, storage, 
-            Arc::new(concurrent_schedule), String::from("a"), vec![]);
+            Arc::new(concurrent_schedule), SC_ADDR_A, vec![]);
 
         // untracked read
         let item = storage_wrapper.get(key.as_slice());
@@ -429,12 +431,12 @@ mod tests {
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
         concurrent_schedule.build_from_rws(&mut vec![
-            mock_tx_operation(&String::from("a"), &vec![5u8], tx_idx, ReadWrite::write(), Commutativity::NonCommutative)
+            mock_tx_operation(SC_ADDR_A, &vec![5u8], tx_idx, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
 
         // storagewrapper will not have any RWS sequence
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx, storage, 
-            Arc::new(concurrent_schedule), String::from("a"), vec![]);
+            Arc::new(concurrent_schedule), SC_ADDR_A, vec![]);
 
         // untracked write
         storage_wrapper.set(key.as_slice(), val_after.as_slice()).0.unwrap();

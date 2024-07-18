@@ -6,6 +6,8 @@ use wasmer::Module;
 use crate::{ 
     backend::ConcurrentBackend, symb_exec::{SEEngine, SEEngineParse}, testing::ConcurrentStorage, BackendApi, Querier, SCProfile, SCProfileParser, Storage};
 
+use super::concurrent_schedule::ScAddr;
+
 
 const SMART_CONTRACT_PATH: &'static str = "./wasm_contract_codes";
 
@@ -171,7 +173,7 @@ where
 /// Stores the SC's state, compiled module and code_id
 /// for each instantiated contract.
 //                 SC address -> SC instantiation
-type SCStorage<A, S, Q> = DashMap<String, Arc<SCInstance<A, S, Q>>>;
+type SCStorage<A, S, Q> = DashMap<ScAddr, Arc<SCInstance<A, S, Q>>>;
 
 /// Mocks interface for handling smart contracts.
 /// 
@@ -203,9 +205,9 @@ where
     }
 
     /// Saves the storage & compiled module that refers to some instantiated SC
-    pub fn save_instance(&self, address: String, code_id: u128,
+    pub fn save_instance(&self, address: ScAddr, code_id: u128,
         compiled_code: Arc<Module>, state: Arc<PersistentBackend<A, S, Q>>) {
-        self.sc_storage.insert(address.clone(), Arc::new(
+        self.sc_storage.insert(address, Arc::new(
             SCInstance::new(
                 code_id,
                 compiled_code, 
@@ -214,7 +216,7 @@ where
         self.static_data.write().unwrap().incr_instantiation(code_id);
     }
 
-    pub fn get_instance_data(&self, address: &String) -> Option<InstanceData<A, S, Q>> {
+    pub fn get_instance_data(&self, address: &ScAddr) -> Option<InstanceData<A, S, Q>> {
         match self.sc_storage.get(address) {
             Some(sc_instance) => Some(InstanceData {
                 compiled_code: Arc::clone(&sc_instance.compiled_code),
@@ -248,8 +250,8 @@ where
         self.static_data.write().unwrap().cleanup();
     }
 
-    pub fn get_contract_storage(&self, sc_address: &String) -> Arc<S> {
-        let sc_storage = self.sc_storage.get(sc_address).expect("Smart Contract should have been initialized");
+    pub fn get_contract_storage(&self, sc_address: ScAddr) -> Arc<S> {
+        let sc_storage = self.sc_storage.get(&sc_address).expect("Smart Contract should have been initialized");
         let storage = Arc::clone(&sc_storage.state.storage); // TODO we shouldn't have to clone. this should be done serially
         storage
     }
@@ -275,6 +277,7 @@ mod tests {
     const HIGH_GAS_LIMIT: u64 = 20_000_000_000_000; // ~20s, allows many calls on one instance
     const DEFAULT_MEMORY_LIMIT: Size = Size::mebi(64);
 
+    const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     #[test]
     #[serial]
@@ -286,7 +289,7 @@ mod tests {
         SCInstance::new(0, Arc::clone(&module), Arc::clone(&backend));
 
         let sc_manager = Arc::new(RwLock::new(SCManager::new()));
-        sc_manager.write().unwrap().save_instance(String::from("a"), 0, module, backend);
+        sc_manager.write().unwrap().save_instance(SC_ADDR_A, 0, module, backend);
 
         sc_manager.write().unwrap().cleanup();
     }
@@ -360,14 +363,14 @@ _msg: InstantiateMsg
 
         // save it to that SC code
         sc_manager.save_instance(
-            "a".to_owned(), 
+            SC_ADDR_A, 
             0, 
             Arc::new(module), 
             Arc::clone(&mock_backend)
         );
 
         // get instance data
-        let instance_data = sc_manager.get_instance_data(&"a".to_owned()).unwrap();
+        let instance_data = sc_manager.get_instance_data(&SC_ADDR_A).unwrap();
 
         // instantiate vm
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT, };
@@ -377,7 +380,7 @@ _msg: InstantiateMsg
         let rws = vec![];
         
         let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::new(ConcurrentSchedule::new()),
-            mock_backend, String::from(""), rws);
+            mock_backend, &SC_ADDR_A, rws);
 
         let mut instance = instance_from_module(
             store, 

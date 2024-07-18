@@ -1,6 +1,6 @@
 use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
 use cosmwasm_std::{
-    to_json_binary, Binary, Deps, DepsMut, Empty, Env, MessageInfo, Response, StdResult, StdError
+    to_json_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError
 };
 use crate::state::COINS;
 
@@ -57,7 +57,15 @@ mod execute {
     pub fn add(deps: DepsMut) -> StdResult<Response> {
         COINS.update(deps.storage, "ADMIN".to_owned(), |bank: Option<u64>| {
             match bank {
-                Some(value) => Ok(value + 1),
+                Some(value) => {
+                    let mut counter = 0;
+                    for i in 0..30000000 {
+                        if i % 2 == 0 { counter += i; }
+                        else { counter -= i; }
+                    };
+
+                    Ok(value + 1)
+                },
                 None => Err(StdError::generic_err("Value doesn't exist")),
             }
         })?;

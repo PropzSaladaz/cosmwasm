@@ -2,8 +2,6 @@ use std::sync::{Arc, RwLock};
 
 use crate::{testing::ConcurrentStorage, vm_manager::{SCManager, VMManager, VMMessage}, BackendApi, Querier, Storage};
 
-const BLOCK_SIZE: usize = 1;
-
 pub enum Message<'a> {
     Invocation(VMMessage),
     Deployment {
@@ -19,6 +17,7 @@ where
 {
     vm_manager: VMManager<A, S, Q>,
     sc_manager: Arc<RwLock<SCManager<A, S, Q>>>,
+    block_size: usize,
 }
 
 impl<A, S, Q> MessageHandler<A, S, Q> 
@@ -28,27 +27,27 @@ where
     Q: Querier + Send + Sync
 {
 
-    pub fn new(sc_manager: Arc<RwLock<SCManager<A, S, Q>>>, vm_manager: VMManager<A, S, Q> )-> Self {
+    pub fn new(sc_manager: Arc<RwLock<SCManager<A, S, Q>>>, vm_manager: VMManager<A, S, Q> , block_size: usize)-> Self {
         MessageHandler {
             vm_manager,
-            sc_manager
+            sc_manager,
+            block_size,
         }
     }
 
     pub fn handle_messages(&mut self, messages: Vec<Message>) {
         let mut invocations = vec![];
-        for message in messages {
+        let total_size = messages.len();
+        for (idx, message) in messages.into_iter().enumerate() {
             match message {
                 Message::Deployment { contract_code } => {
-                    println!("deployment");
                     self.sc_manager.write().unwrap().save_code(contract_code).unwrap();
                 },
                 Message::Invocation (vm_message) => {
-                    println!("invocation - 0");
                     invocations.push(vm_message);
-                    println!("invocation - 1");
-                    if invocations.len() == BLOCK_SIZE {
-                        println!("handling block");
+                    
+                    if (invocations.len() == self.block_size) || // can fill a block
+                        idx == total_size - 1 { // reaches last tx
                         self.vm_manager.handle_block(invocations).unwrap();
                         invocations = vec![];
                     }

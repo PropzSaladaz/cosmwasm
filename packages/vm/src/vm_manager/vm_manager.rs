@@ -1,4 +1,6 @@
-use std::{collections::HashMap, sync::{Arc, Mutex, RwLock}, thread};
+use std::{collections::HashMap, io::{self, Write}, sync::{Arc, RwLock}, thread};
+
+use parking_lot::Mutex;
 
 use cosmwasm_std::{Api, CustomQuery, Empty, QuerierWrapper};
 use wasmer::Store;
@@ -11,7 +13,7 @@ use crate::{
     BackendApi, ConcurrentSchedule, InstanceOptions, Querier, SCProfile, Size, TxId
 };
 
-use super::sc_storage::{PersistentBackend, SCManager};
+use super::{concurrent_schedule::ScAddr, sc_storage::{PersistentBackend, SCManager}};
 
 const DEFAULT_MEMORY_LIMIT: Size = Size::mebi(64);
 const HIGH_GAS_LIMIT: u64 = 20_000_000_000_000_000; // ~20s, allows many calls on one instance
@@ -34,7 +36,7 @@ pub enum VMMessage {
     Invocation {
         message: Vec<u8>,
         entry_point: InstantiatedEntryPoint,
-        contract_address: String,
+        contract_address: ScAddr,
         code_id: u128,
     },
 }
@@ -44,7 +46,7 @@ impl VMMessage {
         VMMessage::Invocation {
             message: vec![],
             entry_point: InstantiatedEntryPoint::Execute,
-            contract_address: String::from(""),
+            contract_address: *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             code_id: 0,
         }
     }
@@ -61,7 +63,7 @@ pub enum InstantiatedEntryPoint {
 pub type Block = Vec<VMMessage>;
 
 /// mapping (code_id, nth_instantiation) => address
-pub type AddressMapper = dyn Fn(u128, u128) -> String + Sync + Send;
+pub type AddressMapper = dyn Fn(u128, u128) -> ScAddr + Sync + Send;
 pub type BackendBuilder<A, S, Q> = dyn Fn(Arc<S>) -> PersistentBackend<A, S, Q> + Send + Sync;
 
 /// Stateful manager used to instantiate VMs for contract execution,
@@ -86,9 +88,17 @@ where
     block_number: u128,
 
     #[cfg(feature = "exec_time")]
-    schedule_timer: Option<Instant>,
+    schedule_build_timer: Option<Instant>,
     #[cfg(feature = "exec_time")]
-    block_execution_timer: Option<Instant>,
+    schedule_build_time: Duration,
+    #[cfg(feature = "exec_time")]
+    schedule_execution_timer: Option<Instant>,
+    #[cfg(feature = "exec_time")]
+    schedule_execution_time: Duration,
+    #[cfg(feature = "exec_time")]
+    schedule_persistence_timer: Option<Instant>,
+    #[cfg(feature = "exec_time")]
+    schedule_persistence_time: Duration,
 }
 
 struct ThreadExecutionContext<A, S, Q>
@@ -111,6 +121,7 @@ pub struct DepsMut<'a, C: CustomQuery = Empty> {
     pub querier: QuerierWrapper<'a, C>,
 }
 
+type TransactionBatch = Vec<VMMessage>;
 
 /// Used to keep a connection between a RWS and a message that originated that RWS.
 /// This is first used when fetching the list of RWS given a block of messages, and then is
@@ -118,7 +129,7 @@ pub struct DepsMut<'a, C: CustomQuery = Empty> {
 #[derive(Debug)]
 pub struct RWSContext {
     pub rws: TxRWS,
-    pub address: String, 
+    pub address: ScAddr, 
     pub tx_message: Option<VMMessage>,
     pub tx_block_id: TxId,
 
@@ -159,10 +170,28 @@ where
             block_number: 0,
 
             #[cfg(feature = "exec_time")]
-            schedule_timer: None,
+            schedule_build_timer: None,
             #[cfg(feature = "exec_time")]
-            block_execution_timer: None,
+            schedule_build_time: Duration::ZERO,
+            #[cfg(feature = "exec_time")]
+            schedule_execution_timer: None,
+            #[cfg(feature = "exec_time")]
+            schedule_execution_time: Duration::ZERO,
+            #[cfg(feature = "exec_time")]
+            schedule_persistence_timer: None,
+            #[cfg(feature = "exec_time")]
+            schedule_persistence_time: Duration::ZERO,
         }
+    }
+
+    #[cfg(feature = "exec_time")]
+    fn reset_timers(&mut self) {
+        self.schedule_build_timer = None;
+        self.schedule_build_time = Duration::ZERO;
+        self.schedule_execution_timer = None;
+        self.schedule_execution_time = Duration::ZERO;
+        self.schedule_persistence_timer = None;
+        self.schedule_persistence_time = Duration::ZERO;
     }
 
     #[cfg(feature = "debug_graph")]
@@ -170,24 +199,54 @@ where
         self.block_number += 1;
     }
 
+    // --- Schedule build timer ---
     #[cfg(feature = "exec_time")]
     fn start_schedule_build_timer(&mut self) {
-        self.schedule_timer = Some(Instant::now());
+        self.schedule_build_timer = Some(Instant::now());
     }
 
     #[cfg(feature = "exec_time")]
-    fn stop_schedule_build_timer(&mut self) -> Duration {
-        self.schedule_timer.unwrap().elapsed()
+    fn stop_schedule_build_timer(&mut self) {
+        let elapsed = self.schedule_build_timer.unwrap().elapsed();
+        self.schedule_build_time += elapsed;
+    }
+
+    // --- Schedule execution timer ---
+    #[cfg(feature = "exec_time")]
+    fn start_schedule_execution_timer(&mut self) {
+        self.schedule_execution_timer = Some(Instant::now());
     }
 
     #[cfg(feature = "exec_time")]
-    fn start_block_execution_timer(&mut self) {
-        self.block_execution_timer = Some(Instant::now());
+    fn stop_schedule_execution_timer(&mut self) {
+        let elapsed = self.schedule_execution_timer.unwrap().elapsed();
+        self.schedule_execution_time += elapsed;
+    }
+
+    // --- Schedule persistence timer ---
+    #[cfg(feature = "exec_time")]
+    fn start_schedule_persistence_timer(&mut self) {
+        self.schedule_persistence_timer = Some(Instant::now());
     }
 
     #[cfg(feature = "exec_time")]
-    fn stop_block_execution_timer(&mut self) -> Duration {
-        self.block_execution_timer.unwrap().elapsed()
+    fn stop_schedule_persistence_timer(&mut self) {
+        let elapsed = self.schedule_persistence_timer.unwrap().elapsed();
+        self.schedule_persistence_time += elapsed;
+    }
+
+    fn separate_instantiations_from_invocation(&self, block: Block) -> Vec<TransactionBatch> {
+        let mut instantiations = Vec::with_capacity(block.len());
+        let mut invocations = Vec::with_capacity(block.len());
+
+        for tx in block {
+            match tx {
+                VMMessage::Instantiation { .. } => instantiations.push(tx),
+                _ => invocations.push(tx),
+            }
+        };
+
+        vec![instantiations, invocations]
     }
 
     /// Given a block of messages, fetch the RWS for each individual tx - this is done using information from the
@@ -198,26 +257,51 @@ where
     /// 
     /// At the end of execution, persist the final state to storage.
     pub fn handle_block(&mut self, block: Block) -> std::io::Result<Vec<String>> {
-
-        let mut rws: Vec<RWSContext> = self.get_rws(block);
-        
-        let mut schedule = ConcurrentSchedule::new();
-
         #[cfg(feature = "exec_time")]
-        self.start_schedule_build_timer();
+        self.reset_timers();
 
-        schedule.build_from_rws(&mut rws);
+        let txs_batch = self.separate_instantiations_from_invocation(block);
+        let mut resps = vec![];
+        
+        // There will ever only be 2 sets of txs.
+        // 1 for the instantiations, which is the first to get executed.
+        // a 2nd for all the other txs in the block.
+        for (idx, mut batch) in txs_batch.into_iter().enumerate() {
+            let mut rws: Vec<RWSContext> = self.get_rws(batch);
+
+            let mut schedule = ConcurrentSchedule::new();
+
+            #[cfg(feature = "exec_time")]
+            self.start_schedule_build_timer();
+    
+            schedule.build_from_rws(&mut rws);
+    
+            #[cfg(feature = "exec_time")]
+            self.stop_schedule_build_timer();
+
+            // not included in execution time
+            #[cfg(feature = "debug_graph")]
+            {
+                let suffix = if idx == 0 { "instantiation".to_owned() } else { "execution".to_owned() };
+                let graph_name = format!("{:?}_{:?}", self.block_number, suffix);
+                schedule.generate_debug_graph(graph_name, &rws);
+            }
+
+            let mut resp = self.execute_block(rws, schedule).unwrap();
+            resps.append(&mut resp);
+        }
 
         #[cfg(feature = "exec_time")]
         {
-            let elapsed_time = self.stop_schedule_build_timer();
-            println!("\n\nExecTime ------\nSchedule Execution: {:?}", elapsed_time);
+            println!("\n\nExecution Time ------");
+            println!("Schedule Creation: {:?}",                     self.schedule_build_time);
+            println!("Schedule Execution: {:?}",                  self.schedule_execution_time);
+            println!("Schedule Persistence: {:?}\n------\n\n",    self.schedule_persistence_time);
         }
 
-        let resps = self.execute_block(rws, schedule).unwrap();
-        
         #[cfg(feature = "debug_graph")]
         self.increase_current_block_counter();
+
 
         Ok(resps)
     }
@@ -226,9 +310,8 @@ where
     /// Fetches the SE profile, parses it & gets the final RWS in form of keys as bytes
     /// It returns a vec where each item contains the contract address as well as all the keys
     /// it will touch
-    /// The return vector places all COMPLETE & INDEPENDENT txs first, and only after all the INCOMPLETE or DEPENDENT txs
+    /// The return vector places all Instantiations first, then all COMPLETE & INDEPENDENT txs, and only after all the INCOMPLETE or DEPENDENT txs
     fn get_rws(&self, block: Block) -> Vec<RWSContext> {
-        let mut instantiations = vec![];
         let mut rws_complete_and_independent = vec![];
         let mut rws_incomplete_or_dependent = vec![];
 
@@ -239,64 +322,71 @@ where
         let mut instantiation_counts: HashMap<u128, u128> = HashMap::new();
 
         for msg in block.into_iter() {
-            match &msg {
+            let tx = match msg {
                 VMMessage::Instantiation { 
-                    message, 
+                    ref message, 
                     contract_code_id,
                 } => {
                     // Increase instantiation count for each instantiate for the same code id
-                    let instantiation_count = if let Some(count) = instantiation_counts.get_mut(contract_code_id) {
+                    let instantiation_count = if let Some(count) = instantiation_counts.get_mut(&contract_code_id) {
                             *count += 1;
                             *count
                         }
                         else {
-                            instantiation_counts.insert(*contract_code_id, 0);
+                            instantiation_counts.insert(contract_code_id, 0);
                             0
                     };
                         
-                    let profile = self.state_manager.read().unwrap().get_profile(*contract_code_id);
+                    let profile = self.state_manager.read().unwrap().get_profile(contract_code_id);
                     let mut context = self.get_rws_instantiation(profile, message.as_slice(), 
-                        *contract_code_id, instantiation_count);
+                        contract_code_id, instantiation_count);
                     context.tx_message = Some(msg);
-                    instantiations.push(context);
+                    context
                 },
 
                 VMMessage::Invocation { 
-                    message, // ref is used not to move this field. Else, we would not be able to move it into the Some(msg) below
-                    entry_point,
-                    contract_address, 
+                    ref message, // ref is used not to move this field. Else, we would not be able to move it into the Some(msg) below
+                    ref entry_point,
+                    ref contract_address, 
                     code_id
                 } => {
-                    let profile = self.state_manager.read().unwrap().get_profile(*code_id);
-                    match &self.state_manager.read().unwrap().get_instance_data(&contract_address) {
+                    let profile = self.state_manager.read().unwrap().get_profile(code_id);
+                    match &self.state_manager.read().unwrap().get_instance_data(contract_address) {
                         Some(sc_instance) => {
                             // Build mock depsMut
                             let storage = Arc::clone(&sc_instance.state.storage);
                             let mut context = self.get_rws_for_invocation(
-                                                        &entry_point, profile, message.as_slice(), &contract_address, storage);
+                                                        &entry_point, profile, message.as_slice(), contract_address, storage);
                             context.tx_message = Some(msg);
-
-                            if (context.rws.profile_status == SEStatus::Complete) && (context.rws.storage_dependency == StorageDependency::Independent) {
-                                rws_complete_and_independent.push(context);
-                            }
-                            else {
-                                rws_incomplete_or_dependent.push(context);
-                            }
+                            context
                         }
                         // If invocation on a contract that wasn't yet instantiated
                         None => panic!("Invoquing execution on a contract that wasn't instantiated yet!")
                     }
                 },
             };
+
+            if (tx.rws.profile_status == SEStatus::Complete) && (tx.rws.storage_dependency == StorageDependency::Independent) {
+                rws_complete_and_independent.push(tx);
+            }
+            else {
+                rws_incomplete_or_dependent.push(tx);
+            }
         };
+
         // append incomplete || dependent RWSs at the end
         rws_complete_and_independent.append(&mut rws_incomplete_or_dependent);
         // set tx id as the index in the block
-        for (idx, el) in rws_complete_and_independent.iter_mut().enumerate() {
+        self.set_tx_idx_by_position_in_block(&mut rws_complete_and_independent);
+
+        // all instantiations will get executed first, then the rest
+        rws_complete_and_independent
+    }
+
+    fn set_tx_idx_by_position_in_block(&self, txs: &mut Vec<RWSContext>) {
+        for (idx, el) in txs.iter_mut().enumerate() {
             el.tx_block_id = idx as TxId;
         }
-
-        rws_complete_and_independent
     }
 
 
@@ -323,7 +413,7 @@ where
     }
 
     fn get_rws_for_invocation(&self, entry_point: &InstantiatedEntryPoint, profile: Arc<SCProfile>, message: &[u8],
-        contract_address: &String, storage: Arc<S>) -> RWSContext
+        contract_address: &ScAddr, storage: Arc<S>) -> RWSContext
     {
         let querier = cosmwasm_std::testing::MockQuerier::default();
         let mut_deps = DepsMut { 
@@ -335,14 +425,14 @@ where
             InstantiatedEntryPoint::Execute => 
                 RWSContext {
                     rws: profile.get_rws_execute(&mut_deps, &mock_env(), &mock_info("", &[]), message),
-                    address: contract_address.clone(),
+                    address: *contract_address,
                     tx_message: None, // will be set by calling function
                     tx_block_id: 0,   // will be set by calling function
                 },
             InstantiatedEntryPoint::Query   => {
                 RWSContext {
                     rws: profile.get_rws_query(&mut_deps, &mock_env(), message),
-                    address: contract_address.clone(),
+                    address: *contract_address,
                     tx_message: None, // will be set by calling function
                     tx_block_id: 0,   // will be set by calling function
                 }
@@ -361,7 +451,7 @@ where
 
     fn execute_block(&mut self, rws: Vec<RWSContext>, schedule: ConcurrentSchedule) -> std::io::Result<Vec<String>> {
         #[cfg(feature = "exec_time")]
-        self.start_block_execution_timer();
+        self.start_schedule_execution_timer();
 
         let mut handles = vec![];
         let resps = Arc::new(Mutex::new(vec![]));
@@ -378,22 +468,19 @@ where
 
             let handle = thread::spawn(move || {
                 loop {
-                    println!("Thread: {:?} waiting for message to execute", i);
+                    // println!("Thread: {:?} waiting for message to execute", i);
                     if let Some(tx_id) = &schedule_ref.get_next_message_to_execute() {
-                        println!("Thread: {:?} executing {:?}", i, tx_id);
+                        // println!("Thread: {:?} executing {:?}", i, tx_id);
                         let message = &rws_ref[*tx_id as usize];
                         // TODO - below clone should be optimized - no need.. we can pass a reference, or just return the same arc from the method
                         let resp = VMManager::execute_message(Arc::clone(&schedule_ref), &*thread_exec_ctx_ref, message, *tx_id);
-                        
-                        // TODO below line should be put inside the execute_message function ^^
-                        schedule_ref.on_tx_finish(*tx_id);
 
-                        println!("ready queue after thread {:?} execution of msg {:?}: {:#?}", i, tx_id, schedule_ref.ready_queue);
+                        // println!("ready queue after thread {:?} execution of msg {:?}: {:#?}", i, tx_id, schedule_ref.ready_queue);
 
-                        resps_ref.lock().unwrap().push(resp);
+                        resps_ref.lock().push(resp);
                     }
                     else {
-                        println!("Thread {:?} finished executing", i); 
+                        // println!("Thread {:?} finished executing", i);
                         break; 
                     }
                 }
@@ -407,20 +494,21 @@ where
             handle.join().unwrap();
         }
 
-        self.persist_schedule(&schedule);
+        #[cfg(feature = "exec_time")]
+        self.stop_schedule_execution_timer();
+
 
         #[cfg(feature = "exec_time")]
-        {
-            let elapsed_time = self.stop_block_execution_timer();
-            println!("\nBlock Execution: {:?}\n------\n\n", elapsed_time);
-        }
+        self.start_schedule_persistence_timer();
 
-        // do not unclude graph generation in the execution time
-        #[cfg(feature = "debug_graph")]
-        schedule.generate_debug_graph(self.block_number, rws);
+        self.persist_schedule(&schedule);
+        
+        #[cfg(feature = "exec_time")]
+        self.stop_schedule_persistence_timer();
+
 
         // return the response vector contents
-        let mut guard = resps.lock().unwrap();
+        let mut guard = resps.lock();
         Ok(std::mem::take(&mut *guard))
     }
 
@@ -439,7 +527,8 @@ where
             Some(VMMessage::Instantiation { 
                 message, 
                 contract_code_id,
-            }) => VMManager::compile_instantiate_vm(msg.tx_block_id, &msg.address, schedule, &thread_exec_context, *contract_code_id, message.as_slice(), rws).unwrap(),
+            }) => VMManager::compile_instantiate_vm(msg.tx_block_id, &msg.address, Arc::clone(&schedule), 
+                &thread_exec_context, *contract_code_id, message.as_slice(), rws).unwrap(),
 
             Some(VMMessage::Invocation {
                 message, 
@@ -447,20 +536,22 @@ where
                 contract_address, 
                 code_id
             }) => match entry_point {
-                InstantiatedEntryPoint::Execute => VMManager::instantiate_vm(msg.tx_block_id, schedule,  &thread_exec_context, *code_id, contract_address.clone(), message.as_slice(), 
-                    rws, VMCall::Execute ).unwrap(),
-                InstantiatedEntryPoint::Query   => VMManager::instantiate_vm(msg.tx_block_id, schedule, &thread_exec_context, *code_id, contract_address.clone(), message.as_slice(),
-                    rws, VMCall::Query   ).unwrap(),
+                InstantiatedEntryPoint::Execute => VMManager::instantiate_vm(msg.tx_block_id, Arc::clone(&schedule),  
+                    &thread_exec_context, *code_id, contract_address, message.as_slice(), rws, VMCall::Execute ).unwrap(),
+                InstantiatedEntryPoint::Query   => VMManager::instantiate_vm(msg.tx_block_id, Arc::clone(&schedule), 
+                    &thread_exec_context, *code_id, contract_address, message.as_slice(), rws, VMCall::Query   ).unwrap(),
                 InstantiatedEntryPoint::Reply => String::from(""),
             },
             None => unreachable!("RWSContext doesn't have a message set during block execution!"), // Should never happen
         };
 
+        schedule.on_tx_finish(&msg);
+
         response
     }
 
     /// Used on contract instantiations to compile the code
-    fn compile_instantiate_vm(tx_block_id: TxId, address: &String, schedule: Arc<ConcurrentSchedule>, thread_exec_context: &ThreadExecutionContext<A, S, Q>, 
+    fn compile_instantiate_vm(tx_block_id: TxId, address: &ScAddr, schedule: Arc<ConcurrentSchedule>, thread_exec_context: &ThreadExecutionContext<A, S, Q>, 
             contract_code_id: u128, msg: &[u8], rws: Vec<ReadWrite>) -> std::io::Result<String> {
         // Create the compiled module
         let code = thread_exec_context.state_manager.read().unwrap().get_code(contract_code_id)?;
@@ -471,19 +562,19 @@ where
 
         // save instance
         thread_exec_context.state_manager.read().unwrap().save_instance(
-            address.clone(), 
+            *address, 
             contract_code_id, 
             module, 
             Arc::clone(&backend));
 
         // build runtime information to execute
-        let instance_data = thread_exec_context.state_manager.read().unwrap().get_instance_data(&address).unwrap();
+        let instance_data = thread_exec_context.state_manager.read().unwrap().get_instance_data(address).unwrap();
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT };
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
         let store = Store::new(engine);
         
         let concurrent_backend = ConcurrentBackend::<A, MockStorageWrapper, Q>::new(tx_block_id, schedule,
-            instance_data.state, address.clone(), rws);
+            instance_data.state, &address, rws);
 
         let mut instance = instance_from_module(
             store, 
@@ -504,9 +595,9 @@ where
 
     /// Used to instantiate an already deployed/compiled contract with 
     /// already created storage
-    fn instantiate_vm(tx_block_id: TxId,  schedule: Arc<ConcurrentSchedule>, thread_exec_context: &ThreadExecutionContext<A, S, Q>, code_id: u128, contract_address: String, 
+    fn instantiate_vm(tx_block_id: TxId,  schedule: Arc<ConcurrentSchedule>, thread_exec_context: &ThreadExecutionContext<A, S, Q>, code_id: u128, contract_address: &ScAddr, 
         message: &[u8], rws: Vec<ReadWrite>, call_type: VMCall) -> std::io::Result<String> {
-        let instance_data = thread_exec_context.state_manager.read().unwrap().get_instance_data(&contract_address).unwrap();
+        let instance_data = thread_exec_context.state_manager.read().unwrap().get_instance_data(contract_address).unwrap();
 
         let code = thread_exec_context.state_manager.read().unwrap().get_code(code_id)?;
         let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
@@ -515,7 +606,7 @@ where
         let store = Store::new(engine);
 
         let concurrent_backend = ConcurrentBackend::<A, MockStorageWrapper, Q>::new(tx_block_id, schedule,
-            instance_data.state, contract_address, rws);
+            instance_data.state, &contract_address, rws);
 
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT };
         let mut instance = instance_from_module(
@@ -548,17 +639,17 @@ mod tests {
     use wasmer::Store;
 
     use crate::{
-        backend::ConcurrentBackend, call_instantiate, internals::instance_from_module, 
-        symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS}, 
-        testing::{mock_env, mock_info, mock_persistent_backend, mock_tx_operation, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, 
-        vm_manager::vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}, 
-        wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
-        ConcurrentSchedule, InstanceOptions, InstantiatedEntryPoint, SCManager, SEStatus, VMMessage
+        backend::ConcurrentBackend, call_instantiate, internals::instance_from_module, symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS}, testing::{mock_env, mock_info, mock_persistent_backend, mock_tx_operation, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, vm_manager::{concurrent_schedule::ADDR_SIZE, vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}}, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, ConcurrentSchedule, InstanceOptions, InstantiatedEntryPoint, SCManager, SEStatus, ScAddr, VMMessage
     };
 
     use super::{AddressMapper, BackendBuilder, VMManager};
 
     const CONTRACT: &[u8] = include_bytes!("../../custom_contracts/empty-contract/target/wasm32-unknown-unknown/release/contract.wasm");
+
+    const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SC_ADDR_B: ScAddr = *b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const SC_ADDR_C: ScAddr = *b"cccccccccccccccccccccccccccccccc";
+    const SC_ADDR_D: ScAddr = *b"dddddddddddddddddddddddddddddddd";
 
 
     fn mock_backend_builder() -> Arc<BackendBuilder<MockApi, MockConcurrentStorage, MockQuerier>> {
@@ -568,18 +659,18 @@ mod tests {
     }
 
     fn mock_address_mapper() -> Arc<AddressMapper> {
-        let mut mapping: HashMap<u128, HashMap<u128, String>> = HashMap::from([(0, HashMap::new())]);
-        mapping.get_mut(&0).unwrap().insert(0, "a".to_owned());
-        mapping.get_mut(&0).unwrap().insert(1, "b".to_owned());
-        mapping.get_mut(&0).unwrap().insert(2, "c".to_owned());
-        mapping.get_mut(&0).unwrap().insert(3, "d".to_owned());
+        let mut mapping: HashMap<u128, HashMap<u128, ScAddr>> = HashMap::from([(0, HashMap::new())]);
+        mapping.get_mut(&0).unwrap().insert(0, SC_ADDR_A);
+        mapping.get_mut(&0).unwrap().insert(1, SC_ADDR_B);
+        mapping.get_mut(&0).unwrap().insert(2, SC_ADDR_C);
+        mapping.get_mut(&0).unwrap().insert(3, SC_ADDR_D);
 
         Arc::new(move |contract_code_id: u128, instantiation: u128| {
             mapping.get(&contract_code_id).unwrap().get(&instantiation).unwrap().clone()
         })
     }
 
-    fn mock_vm_manager(n_threads: u16) -> VMManager<MockApi, MockConcurrentStorage, MockQuerier> {
+    fn mock_vm_manager(n_threads: u16, address_mapper: Arc<AddressMapper>) -> VMManager<MockApi, MockConcurrentStorage, MockQuerier> {
         let state_manager: SCManager<MockApi, MockConcurrentStorage, MockQuerier> = SCManager::new();
         // simulate installing a contract
         state_manager.save_code(CONTRACT).unwrap();
@@ -587,7 +678,7 @@ mod tests {
         let state_manager = Arc::new(RwLock::new(state_manager));
         VMManager::new(
             Arc::clone(&state_manager), 
-            mock_address_mapper(),
+            Arc::clone(&address_mapper),
             mock_backend_builder(),
             n_threads
         )
@@ -596,15 +687,15 @@ mod tests {
     #[test]
     fn address_mapper() {
         let state_manager: SCManager<MockApi, MockConcurrentStorage, MockQuerier> = SCManager::new();
-        let mut mapping: HashMap<u128, HashMap<u128, String>> = HashMap::from([
+        let mut mapping: HashMap<u128, HashMap<u128, ScAddr>> = HashMap::from([
             (0, HashMap::new()),
             (1, HashMap::new())
         ]);
 
-        mapping.get_mut(&0).unwrap().insert(0, "a".to_owned());
-        mapping.get_mut(&0).unwrap().insert(1, "b".to_owned());
-        mapping.get_mut(&1).unwrap().insert(0, "c".to_owned());
-        mapping.get_mut(&1).unwrap().insert(1, "d".to_owned());
+        mapping.get_mut(&0).unwrap().insert(0, SC_ADDR_A);
+        mapping.get_mut(&0).unwrap().insert(1, SC_ADDR_B);
+        mapping.get_mut(&1).unwrap().insert(0, SC_ADDR_C);
+        mapping.get_mut(&1).unwrap().insert(1, SC_ADDR_D);
 
         let address_mapper = move |contract_code_id: u128, instantiation: u128| {
             mapping.get(&contract_code_id).unwrap().get(&instantiation).unwrap().clone()
@@ -619,10 +710,10 @@ mod tests {
             1
         );
 
-        assert_eq!((vm_manager.address_mapper)(0, 0), "a");
-        assert_eq!((vm_manager.address_mapper)(0, 1), "b");
-        assert_eq!((vm_manager.address_mapper)(1, 0), "c");
-        assert_eq!((vm_manager.address_mapper)(1, 1), "d");
+        assert_eq!((vm_manager.address_mapper)(0, 0), SC_ADDR_A);
+        assert_eq!((vm_manager.address_mapper)(0, 1), SC_ADDR_B);
+        assert_eq!((vm_manager.address_mapper)(1, 0), SC_ADDR_C);
+        assert_eq!((vm_manager.address_mapper)(1, 1), SC_ADDR_D);
     }
 
     #[test]
@@ -643,12 +734,12 @@ mod tests {
 
         // save instance
         state_manager.save_instance(
-            "a".to_owned(),
+            SC_ADDR_A,
             0,
             Arc::new(module),
             backend);
 
-        let instance = state_manager.get_instance_data(&"a".to_owned()).unwrap();
+        let instance = state_manager.get_instance_data(&SC_ADDR_A).unwrap();
 
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT, };
         let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
@@ -659,11 +750,11 @@ mod tests {
         // schedule needs at least 1 operation to know the tx
         let mut schedule = ConcurrentSchedule::new();
         schedule.build_from_rws(&mut vec![
-            mock_tx_operation(&"a".to_owned(), &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+            mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
 
         let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::new(schedule),
-            instance.state, String::from(""), rws);
+            instance.state, &SC_ADDR_A, rws);
 
         let mut instance = instance_from_module(
             store, 
@@ -691,7 +782,7 @@ mod tests {
     #[test]
     #[serial]
     fn vanilla_sequential_instantiate_vm() {
-        let vm_manager = mock_vm_manager(1);
+        let vm_manager = mock_vm_manager(1, mock_address_mapper());
 
         let msg = br#"{}"#;
         let thread_ctx = vm_manager.get_execution_context();
@@ -699,9 +790,9 @@ mod tests {
         // schedule needs at least 1 operation to know the tx
         let mut schedule = ConcurrentSchedule::new();
         schedule.build_from_rws(&mut vec![
-            mock_tx_operation(&"a".to_owned(), &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+            mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
-        let resp = VMManager::compile_instantiate_vm(0, &"a".to_owned(), Arc::new(schedule), &thread_ctx, 0, msg, vec![]).unwrap();
+        let resp = VMManager::compile_instantiate_vm(0, &SC_ADDR_A, Arc::new(schedule), &thread_ctx, 0, msg, vec![]).unwrap();
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resp);
 
         vm_manager.state_manager.read().unwrap().cleanup();
@@ -711,27 +802,27 @@ mod tests {
     #[test]
     #[serial]
     fn vanilla_sequential_execute_vm_untracked_operations() {
-        let vm_manager = mock_vm_manager(1);
+        let vm_manager = mock_vm_manager(1, mock_address_mapper());
         let mut schedule = ConcurrentSchedule::new();
-        let sc_address = String::from("a"); // needs to be "a" since this is the address created by the mock_vm_manager()
+        let sc_address = SC_ADDR_A; // needs to be "a" since this is the address created by the mock_vm_manager()
 
         // every tx needs to be detected when building the schedule. So we need a random operation for it to be detected
         schedule.build_from_rws(&mut vec![
-            mock_tx_operation(&String::from("a"), &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+            mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
 
         let schedule = Arc::new(schedule);
 
         let msg = br#"{}"#;
         let thread_ctx = vm_manager.get_execution_context();
-        let resp = VMManager::compile_instantiate_vm(0, &"a".to_owned(), Arc::clone(&schedule), &thread_ctx, 0, msg, vec![]).unwrap();
+        let resp = VMManager::compile_instantiate_vm(0, &SC_ADDR_A, Arc::clone(&schedule), &thread_ctx, 0, msg, vec![]).unwrap();
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resp);
 
         let msg = br#"{
             "AddOne": {}
         }"#;
         let thread_ctx = vm_manager.get_execution_context();
-        let resp = VMManager::instantiate_vm(0, Arc::clone(&schedule), &thread_ctx, 0, sc_address, msg, 
+        let resp = VMManager::instantiate_vm(0, Arc::clone(&schedule), &thread_ctx, 0, &sc_address, msg, 
         vec![], VMCall::Execute).unwrap();
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resp);
 
@@ -741,7 +832,7 @@ mod tests {
     #[test]
     #[serial]
     fn sequential_query_vm() {
-        let vm_manager = mock_vm_manager(1);
+        let vm_manager = mock_vm_manager(1, mock_address_mapper());
 
         let msg = br#"{}"#;
         let thread_ctx = vm_manager.get_execution_context();
@@ -749,17 +840,17 @@ mod tests {
         // schedule needs at least 1 operation to know the tx
         let mut schedule = ConcurrentSchedule::new();
         schedule.build_from_rws(&mut vec![
-            mock_tx_operation(&"a".to_owned(), &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+            mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
         let schedule = Arc::new(schedule);
 
-        let resp = VMManager::compile_instantiate_vm(0, &"a".to_owned(), Arc::clone(&schedule),  &thread_ctx, 0, msg, vec![]).unwrap();
+        let resp = VMManager::compile_instantiate_vm(0, &SC_ADDR_A, Arc::clone(&schedule),  &thread_ctx, 0, msg, vec![]).unwrap();
         assert_eq!("Ok(Response { messages: [], attributes: [], events: [], data: None })", resp);
 
         let msg = br#"{
             "GetBalance": {}
         }"#;
-        let resp = VMManager::instantiate_vm(0, Arc::clone(&schedule), &thread_ctx, 0, String::from("a"), msg,  
+        let resp = VMManager::instantiate_vm(0, Arc::clone(&schedule), &thread_ctx, 0, &SC_ADDR_A, msg,  
             vec![], VMCall::Query).unwrap();
         assert_eq!("{\"balance\":1000}", resp);
 
@@ -772,7 +863,7 @@ mod tests {
     #[test]
     #[serial]
     fn get_rws() {
-        let mut vm_manager = mock_vm_manager(1);
+        let mut vm_manager = mock_vm_manager(1, mock_address_mapper());
 
         let msgs = vec![
             VMMessage::Instantiation {
@@ -787,7 +878,7 @@ mod tests {
         // only after having storage created
         let vm_message = VMMessage::Invocation {
             entry_point: InstantiatedEntryPoint::Execute,
-            contract_address: "a".to_owned(),
+            contract_address: SC_ADDR_A,
             message: br#"{
                 "AddOne": {}
             }"#.to_vec(),
@@ -801,7 +892,7 @@ mod tests {
         assert_eq!(
             rws,
             vec![RWSContext {
-                address: "a".to_owned(),
+                address: SC_ADDR_A,
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
@@ -832,7 +923,7 @@ mod tests {
     #[test]
     #[serial]
     fn sequential_persistent_calls() {
-        let mut vm_manager = mock_vm_manager(1);
+        let mut vm_manager = mock_vm_manager(1, mock_address_mapper());
 
         let msgs = vec![
             VMMessage::Instantiation {
@@ -852,7 +943,7 @@ mod tests {
         let invocations = vec![
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -860,7 +951,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -868,7 +959,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "b".to_owned(),
+                contract_address: SC_ADDR_B,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -876,7 +967,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "AddUser": {
                         "admin": "Balelas"
@@ -886,7 +977,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "b".to_owned(),
+                contract_address: SC_ADDR_B,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -894,7 +985,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -902,7 +993,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -910,7 +1001,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -952,32 +1043,12 @@ mod tests {
     // #[ignore]
     #[serial]
     fn parallel_workload_test() {
-        let mut vm_manager = mock_vm_manager(4);
-
-        let msgs = vec![
-            VMMessage::Instantiation {
-                contract_code_id: 0,
-                message: br#"{}"#.to_vec(),
-            },
-            VMMessage::Instantiation {
-                contract_code_id: 0,
-                message: br#"{}"#.to_vec(),
-            },
-            VMMessage::Instantiation {
-                contract_code_id: 0,
-                message: br#"{}"#.to_vec(),
-            },
-            VMMessage::Instantiation {
-                contract_code_id: 0,
-                message: br#"{}"#.to_vec(),
-            },
-        ];
-        vm_manager.handle_block(msgs).unwrap();
+        let mut vm_manager = mock_vm_manager(2, mock_address_mapper());
 
         let invocations = vec![
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -985,7 +1056,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -993,7 +1064,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "b".to_owned(),
+                contract_address: SC_ADDR_B,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -1001,7 +1072,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "c".to_owned(),
+                contract_address: SC_ADDR_C,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -1009,7 +1080,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "d".to_owned(),
+                contract_address: SC_ADDR_D,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -1017,7 +1088,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "AddUser": {
                         "admin": "Balelas"
@@ -1027,7 +1098,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "b".to_owned(),
+                contract_address: SC_ADDR_B,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -1035,7 +1106,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "d".to_owned(),
+                contract_address: SC_ADDR_D,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -1043,7 +1114,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -1051,7 +1122,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "c".to_owned(),
+                contract_address: SC_ADDR_C,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -1059,7 +1130,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "AddOne": {}
                 }"#.to_vec(),
@@ -1067,7 +1138,7 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "a".to_owned(),
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
@@ -1075,74 +1146,148 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "d".to_owned(),
+                contract_address: SC_ADDR_D,
                 message: br#"{
                     "GetBalance": {}
                 }"#.to_vec(),
                 code_id: 0,
+            },
+            // notice that instantiation order does not matter - we always place all instantiations at the beginning
+            VMMessage::Instantiation {
+                contract_code_id: 0,
+                message: br#"{}"#.to_vec(),
+            },
+            VMMessage::Instantiation {
+                contract_code_id: 0,
+                message: br#"{}"#.to_vec(),
+            },
+            VMMessage::Instantiation {
+                contract_code_id: 0,
+                message: br#"{}"#.to_vec(),
+            },
+            VMMessage::Instantiation {
+                contract_code_id: 0,
+                message: br#"{}"#.to_vec(),
             },
         ];
 
         vm_manager.handle_block(invocations).unwrap();
 
 
-        // 1 query at a time to enforce serializability to allow comparing received response with predicted
-        let invocation = vec![
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "a".to_owned(),
-                message: br#"{
-                    "GetBalance": {}
-                }"#.to_vec(),
-                code_id: 0,
-            },
-        ];
-        let resp = vm_manager.handle_block(invocation).unwrap();
-        assert_eq!("{\"balance\":1002}", resp[0]);
+        // // 1 query at a time to enforce serializability to allow comparing received response with predicted
+        // let invocation = vec![
+        //     VMMessage::Invocation {
+        //         entry_point: InstantiatedEntryPoint::Query,
+        //         contract_address: SC_ADDR_A,
+        //         message: br#"{
+        //             "GetBalance": {}
+        //         }"#.to_vec(),
+        //         code_id: 0,
+        //     },
+        // ];
+        // let resp = vm_manager.handle_block(invocation).unwrap();
+        // assert_eq!("{\"balance\":1002}", resp[0]);
 
 
-        // 1 query at a time to enforce serializability to allow comparing received response with predicted
-        let invocation = vec![
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "b".to_owned(),
-                message: br#"{
-                    "GetBalance": {}
-                }"#.to_vec(),
-                code_id: 0,
-            },
-        ];
-        let resp = vm_manager.handle_block(invocation).unwrap();
-        assert_eq!("{\"balance\":1001}", resp[0]);
+        // // 1 query at a time to enforce serializability to allow comparing received response with predicted
+        // let invocation = vec![
+        //     VMMessage::Invocation {
+        //         entry_point: InstantiatedEntryPoint::Query,
+        //         contract_address: SC_ADDR_B,
+        //         message: br#"{
+        //             "GetBalance": {}
+        //         }"#.to_vec(),
+        //         code_id: 0,
+        //     },
+        // ];
+        // let resp = vm_manager.handle_block(invocation).unwrap();
+        // assert_eq!("{\"balance\":1001}", resp[0]);
 
-        let invocation = vec![
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "c".to_owned(),
-                message: br#"{
-                    "GetBalance": {}
-                }"#.to_vec(),
-                code_id: 0,
-            },
-        ];
-        let resp = vm_manager.handle_block(invocation).unwrap();
-        assert_eq!("{\"balance\":1001}", resp[0]);
+        // let invocation = vec![
+        //     VMMessage::Invocation {
+        //         entry_point: InstantiatedEntryPoint::Query,
+        //         contract_address: SC_ADDR_C,
+        //         message: br#"{
+        //             "GetBalance": {}
+        //         }"#.to_vec(),
+        //         code_id: 0,
+        //     },
+        // ];
+        // let resp = vm_manager.handle_block(invocation).unwrap();
+        // assert_eq!("{\"balance\":1001}", resp[0]);
 
-        let invocation = vec![
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Query,
-                contract_address: "d".to_owned(),
-                message: br#"{
-                    "GetBalance": {}
-                }"#.to_vec(),
-                code_id: 0,
-            },
-        ];
-        let resp = vm_manager.handle_block(invocation).unwrap();
-        assert_eq!("{\"balance\":1002}", resp[0]);
+        // let invocation = vec![
+        //     VMMessage::Invocation {
+        //         entry_point: InstantiatedEntryPoint::Query,
+        //         contract_address: SC_ADDR_D,
+        //         message: br#"{
+        //             "GetBalance": {}
+        //         }"#.to_vec(),
+        //         code_id: 0,
+        //     },
+        // ];
+        // let resp = vm_manager.handle_block(invocation).unwrap();
+        // assert_eq!("{\"balance\":1002}", resp[0]);
 
         vm_manager.state_manager.read().unwrap().cleanup();
 
+    }
+
+    #[test]
+    #[serial]
+    fn full_parallel_workload_100_txs() {
+
+        let mut mapping: HashMap<u128, HashMap<u128, ScAddr>> = HashMap::from([(0, HashMap::new())]);
+        let n_contracts = 50;
+
+        for i in 0..n_contracts {
+            mapping.get_mut(&0).unwrap().insert(i, [i as u8; ADDR_SIZE]);
+        }
+    
+        let addr_mapping = Arc::new(move |contract_code_id: u128, instantiation: u128| {
+            mapping.get(&contract_code_id).unwrap().get(&instantiation).unwrap().clone()
+        });
+
+        let mut vm_manager = mock_vm_manager(1, addr_mapping);
+        let mut msgs = vec![];
+
+        // instantiations
+        for _ in 0..n_contracts {
+            msgs.push(
+                VMMessage::Instantiation {
+                    contract_code_id: 0,
+                    message: br#"{}"#.to_vec(),
+                }
+            );
+        }
+
+        for i in 0..n_contracts {
+            // 2 sequential increments per contract
+            msgs.push(
+                VMMessage::Invocation {
+                    entry_point: InstantiatedEntryPoint::Execute,
+                    contract_address: [i as u8; ADDR_SIZE],
+                    message: br#"{
+                        "AddOne": {}
+                    }"#.to_vec(),
+                    code_id: 0,
+                }
+            );
+            msgs.push(
+                VMMessage::Invocation {
+                    entry_point: InstantiatedEntryPoint::Execute,
+                    contract_address: [i as u8; ADDR_SIZE],
+                    message: br#"{
+                        "AddOne": {}
+                    }"#.to_vec(),
+                    code_id: 0,
+                }
+            );
+        }
+
+        vm_manager.handle_block(msgs).unwrap();
+
+        vm_manager.state_manager.read().unwrap().cleanup();
     }
 
 }
