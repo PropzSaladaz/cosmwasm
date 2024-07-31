@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use crate::{testing::ConcurrentStorage, vm_manager::{SCManager, VMManager, VMMessage}, BackendApi, Querier, Storage};
+use crate::{testing::{ConcurrentStorage, StorageWrapper}, vm_manager::{SCManager, VMManager, VMMessage}, BackendApi, Querier, Storage};
 
 pub enum Message<'a> {
     Invocation(VMMessage),
@@ -9,25 +9,27 @@ pub enum Message<'a> {
     }
 }
 
-pub struct MessageHandler<A, S, Q> 
+pub struct MessageHandler<A, S, W, Q> 
 where
-    A: BackendApi + 'static + Send + Sync,
+    A: BackendApi        + 'static + Send + Sync,
     S: ConcurrentStorage + 'static + Send + Sync,
-    Q: Querier + 'static + Send + Sync,
+    W: StorageWrapper    + 'static,
+    Q: Querier           + 'static + Send + Sync,
 {
-    vm_manager: VMManager<A, S, Q>,
-    sc_manager: Arc<RwLock<SCManager<A, S, Q>>>,
+    vm_manager: VMManager<A, S, W, Q>,
+    sc_manager: Arc<RwLock<SCManager<A, S, W, Q>>>,
     block_size: usize,
 }
 
-impl<A, S, Q> MessageHandler<A, S, Q> 
+impl<A, S, W, Q> MessageHandler<A, S, W, Q> 
 where
-    A: BackendApi + Send + Sync, 
+    A: BackendApi        + Send + Sync, 
     S: ConcurrentStorage + Send + Sync, 
-    Q: Querier + Send + Sync
+    W: StorageWrapper,
+    Q: Querier           + Send + Sync
 {
 
-    pub fn new(sc_manager: Arc<RwLock<SCManager<A, S, Q>>>, vm_manager: VMManager<A, S, Q> , block_size: usize)-> Self {
+    pub fn new(sc_manager: Arc<RwLock<SCManager<A, S, W, Q>>>, vm_manager: VMManager<A, S, W, Q> , block_size: usize)-> Self {
         MessageHandler {
             vm_manager,
             sc_manager,

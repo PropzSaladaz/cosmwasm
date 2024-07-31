@@ -377,6 +377,25 @@ where
         env.is_storage_readonly()
     }
 
+    /// Sets the concurrent backend, mainly the storage wrapper, with the RWS, contract address, and position in the RWS info
+    /// needed to keep track of current operation during the SC execution.
+    /// Should be called before executing a SC.
+    /// 
+    /// The only time we can avoid calling this before executing a tx, is when we first build the instance, and
+    /// pass already the correct ConcurrentBackend.
+    /// 
+    /// If the instance was already initialized before, then we need to call this. Else we would be executing a tx with the
+    /// RWS context of a previous tx.
+    pub fn set_concurrent_backend(&mut self, concurrent_backend: ConcurrentBackend<A, S, Q>) {
+        let mut fe_mut = self.fe.clone().into_mut(&mut self.store);
+        let (env, mut store) = fe_mut.data_and_store_mut();
+
+        // TODO - is this needed? - Do we need to re-set the gas_left? maybe we do...
+        // env.set_gas_left(&mut store, gas_limit);
+        
+        env.move_in(concurrent_backend.storage, Arc::clone(&concurrent_backend.querier));
+    }
+
     /// Sets the readonly storage flag on this instance. Since one instance can be used
     /// for multiple calls in integration tests, this should be set to the desired value
     /// right before every call.

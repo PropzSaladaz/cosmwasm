@@ -60,8 +60,8 @@ _msg: ExecuteMsg
 <- None
 
 [PC_3] Type(_msg) == AddOne
-=> GET(=AARiYW5rQURNSU4=): Inc
-=> SET(=AARiYW5rQURNSU4=): Inc
+=> GET(=AARiYW5rQURNSU4=): Non-Inc
+=> SET(=AARiYW5rQURNSU4=): Non-Inc
 <- [PC_4]
 
 [PC_4] Type(_msg) == Transfer

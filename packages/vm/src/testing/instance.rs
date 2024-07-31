@@ -14,7 +14,7 @@ use crate::{BackendApi, Querier};
 
 use super::mock::{MockApi, MOCK_CONTRACT_ADDR};
 use super::querier::MockQuerier;
-use super::{MockConcurrentStorage, MockStorageWrapper, StorageWrapper};
+use super::{ConcurrentStorage, MockConcurrentStorage, MockStorageWrapper, StorageWrapper};
 
 /// This gas limit is used in integration tests and should be high enough to allow a reasonable
 /// number of contract executions and queries on one instance. For this reason it is significatly
@@ -148,7 +148,7 @@ pub fn mock_instance_with_options(
 
     let backend = ConcurrentBackend {
         api: api,
-        storage: Default::default(),
+        storage: MockStorageWrapper::default(Arc::new(MockConcurrentStorage::new())),
         querier: Arc::new(RwLock::new(MockQuerier::new(&balances))),
     };
     let memory_limit = options.memory_limit;

@@ -53,7 +53,7 @@ pub fn main() {
             let partitioned_storage = MockConcurrentStorage::default();
             let backend = Arc::new(mock_persistent_backend(&[], Arc::new(partitioned_storage)));
             let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0,
-                Arc::new(ConcurrentSchedule::new()), backend, String::from(""), vec![]);
+                Arc::new(ConcurrentSchedule::new()), backend, &[0u8; 32], vec![]);
             let mut instance = cache
                 .get_instance(&checksum, concurrent_backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();

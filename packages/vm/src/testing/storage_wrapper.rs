@@ -6,23 +6,19 @@ use cosmwasm_std::Record;
 
 use crate::symb_exec::Key;
 use crate::symb_exec::Commutativity;
-use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, Operation, ScAddr, Storage, TxId};
+use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, Operation, ScAddr, Storage, TxId, VecOperation};
 
 use crate::{symb_exec::ReadWrite, BackendResult};
 
 use super::storage_partitioned::{BaseStorage, ConcurrentStorage};
-use super::{MockConcurrentStorage};
+use super::{mock_tx_operation, MockConcurrentStorage};
 
 static DEFAULT_CONTRACT: &ScAddr = br#"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"#;
 
 /// Serves as a wrapper around storage, created when executing a tx
-/// with some specific sender address.
-/// When the WASM code then calls the db_write, it will use the 
-/// current sender address saved in this context to choose the storage item 
-/// partition to write to.
+/// with some specific context, such as the RWS, the address of the sc, and so on.
 /// This wrapper also stores the RWS and marks each read/write for each
-/// call to choose whether the current write/read is supposed to be
-/// aimed to a single partition, or to all partitions.
+/// call to keep track of the respective node in the schedule that Read/Write corresponds to.
 #[derive(Debug)]
 pub struct MockStorageWrapper {
     storage: Arc<dyn ConcurrentStorage>,
@@ -36,9 +32,14 @@ pub struct MockStorageWrapper {
 }
 
 impl MockStorageWrapper {
-    /// Used strictly fo rtesting pruposes
+    /// Used strictly for testing pruposes
     pub fn default(storage: Arc<MockConcurrentStorage>) -> MockStorageWrapper {
-        StorageWrapper::new(0, storage, Arc::new(ConcurrentSchedule::new()), *DEFAULT_CONTRACT, vec![])
+        let mut schedule = ConcurrentSchedule::new();
+        // all schedules must have at least 1 operation detected by the SE
+        schedule.build_from_rws(&mut vec![
+            mock_tx_operation(*DEFAULT_CONTRACT, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+        ]);
+        StorageWrapper::new(0, storage, Arc::new(schedule), *DEFAULT_CONTRACT, vec![])
     }
 }
 
@@ -103,21 +104,27 @@ impl BaseStorage for MockStorageWrapper {
 /// In worst case, if profile is incomplete, we treat all operations as non-commutative
 impl StorageWrapper for MockStorageWrapper {
     
+    /// Reads an item.
+    /// If the read depends on an operation from the schedule, then read from that node.
+    /// Else read from storage.
+    /// 
+    /// When reading a value, if the current read is Commutative, then also update the value read on the node.
+    /// This value will be used to compute the delta when the respective Commutative write is performed.
     fn get(&mut self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
 
-        let read = |operation_node: &Option<NodeRef<Operation>>, key: &[u8]| {
-            // operation depends on another operation -> read value from the schedule
-            if let Some(dependency) = &operation_node.as_ref().unwrap().read().unwrap().dependency {
+        let read_value = |operation_node: &NodeRef<VecOperation>, key: &[u8]| {
+            if let Some(schedule_value) = self.schedule.get_value(
+                operation_node,
+                &self.storage, 
+                &self.sc_address, 
+                key) 
+            {
                 let gas_info = GasInfo::with_externally_used(key.len() as u64);
-                let value = dependency.read().unwrap().value.wait_for_value();
-                (Ok(Some(value)), gas_info)
+                (Ok(Some(schedule_value)), gas_info)
             }
-
-            // operation has no dependency -> read the value from storage ONLY IF no previous instantiation
             else {
-                let res = ConcurrentStorage::get(&*self.storage, key);
-                res
-            }
+                ConcurrentStorage::get(&*self.storage, key)
+            }      
         };
 
         let res = match self.rws.get(self.rws_idx) {
@@ -133,23 +140,16 @@ impl StorageWrapper for MockStorageWrapper {
                     ReadWrite::Read { 
                         operation_node ,
                         ..
-                    } => {
-                        // Note that the 'commutativity' value of the RWS in this stage is irrelevant
-                        // since we already built the schedule, the dependency of our commutative read operation is actually
-                        // set to the last non-commutative write and not the write of the last tx before ours
-                        read(operation_node, key)
-                        
-                    }
+                    } => read_value(operation_node.as_ref().unwrap(), key)
                 }
             },
             // operation not tracked by RWS
             None => {
-                // println!("Untracked read");
                 // mark new operations as non-commutative by default
                 let concurrent_op = DependencyNode::new_ref(OpType::Read, self.tx_block_id, Commutativity::NonCommutative);
                 // this will modify the dependencies of the node after being inserted
                 self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
-                read(&Some(concurrent_op), key)
+                read_value(&concurrent_op, key)
             }
         };
         res
@@ -159,36 +159,18 @@ impl StorageWrapper for MockStorageWrapper {
         ConcurrentStorage::get(&*self.storage, key)
     }
 
-    // Note that writes don't need to wait on any previous instantiation - this is because writes only write to an in-memory struct.
-    // Only at the end of all txs executing they are persisted. SO no access to the SC's storge is ever made on a write.
     fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()> {
         // match current Read/Write in the sequence of the RWS
         let res = match self.rws.get(self.rws_idx) {
             Some(rws) => {
                 self.rws_idx += 1;
-                // println!("Tracked Write");
-
                 match rws {
-                    ReadWrite::Write { storage_dependency: _, key: k, commutativity, operation_node } => {
-
-                        // write to the operation node
+                    ReadWrite::Write { 
+                        operation_node ,
+                        ..
+                    } => {
                         ConcurrentSchedule::set_value(operation_node.as_ref().unwrap(), value);
-                        // println!("Value set on write for SC: {:#?}, key: {:#?}", self.sc_address, key);
-
-                        GasInfo::with_externally_used((key.len() + value.len()) as u64)
-
-                        // match commutativity {
-                        // Commutativity::Commutative    => {
-                        //     let commutative = true;
-                        //     let is_partitioned = self.partitioned_items.contains(key);
-                        //     ConcurrentStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
-                        // }
-                        // Commutativity::NonCommutative => {
-                        //     let commutative = false;
-                        //     let is_partitioned = self.partitioned_items.contains(key);
-                        //     ConcurrentStorage::set(&*self.storage, key, value, &self.sender_address.as_slice(), commutative, is_partitioned)
-                        // }
-                        
+                        GasInfo::with_externally_used((key.len() + value.len()) as u64)                           
                     },
                     ReadWrite::Read { .. } => {
                         unreachable!("Trying to set an item in storage, but the corresponding operation was a read in the predicted RWS")
@@ -197,7 +179,6 @@ impl StorageWrapper for MockStorageWrapper {
             },
 
             None => {
-                // println!("Untracked Write. Key: {:#?}", key);
                 // mark new operations as non-commutative by default
                 let concurrent_op = DependencyNode::new_ref(OpType::Write, self.tx_block_id, Commutativity::NonCommutative);
                 // this will modify the dependencies of the node after being inserted
@@ -205,8 +186,6 @@ impl StorageWrapper for MockStorageWrapper {
 
                 // write to the operation node
                 ConcurrentSchedule::set_value(&concurrent_op, value);
-                // println!("Value set on write for SC: {:#?}, key: {:#?}", self.sc_address, key);
-
                 GasInfo::with_externally_used((key.len() + value.len()) as u64)
             }
         };

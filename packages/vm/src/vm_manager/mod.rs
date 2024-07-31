@@ -5,6 +5,6 @@ mod concurrent_schedule;
 #[cfg(feature = "debug_graph")]
 mod dot_schedule;
 
-pub use vm_manager::{VMManager, VMMessage, InstantiatedEntryPoint, DepsMut, RWSContext};
+pub use vm_manager::{VMManager, VMMessage, InstantiatedEntryPoint, DepsMut, RWSContext, AddressMapper};
 pub use sc_storage::{SCManager, ContractRWS, PersistentBackend};
-pub use concurrent_schedule::{ConcurrentSchedule, Operation, NodeRef, DependencyNode, OpType, TxId, ScAddr};
+pub use concurrent_schedule::{ConcurrentSchedule, VecOperation, Operation, NodeRef, DependencyNode, OpType, TxId, ScAddr};

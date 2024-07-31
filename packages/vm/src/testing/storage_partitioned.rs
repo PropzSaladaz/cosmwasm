@@ -98,10 +98,20 @@ impl cosmwasm_std::Storage for MockConcurrentStorage {
 /// This trait differs from StorageWrapper since here get/set do not mutate any other fields beside the storage
 /// The get/set of the StorageWrapper will mutate the current idx in the RWS
 pub trait ConcurrentStorage: BaseStorage + fmt::Debug + cosmwasm_std::Storage {
+
     /// Creates an empty storage
     fn new() -> Self where Self: Sized;
+
     /// 'Non mutable' get, used to get the respective item from storage
     fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>>;
+    
+    /// Works exactly as the get, but does not charge for gas utilization.
+    /// This is strictly used by the concurrent schedule when it needs to 
+    /// fetch data from storage mid-computation, to then merge the deltas
+    /// to the fetched value. The gas cost will then be computed by the
+    /// StorageWrapper.
+    fn get_uncharged(&self, key: &[u8]) -> Option<Vec<u8>>;
+    
     /// 'Non mutable' set, used to set an item in storage.
     /// Multiple sets may be called concurrently - solved using locking
     fn set(&self, key: &[u8], value: &[u8]) -> BackendResult<()>;
@@ -118,13 +128,20 @@ impl ConcurrentStorage for MockConcurrentStorage {
 
     fn get(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
         let gas_info = GasInfo::with_externally_used(key.len() as u64);
-        if let Some(val) = self.data.get(key) {
-            (Ok(Some(val.value().clone())), gas_info)
+        if let Some(val) = self.get_uncharged(key) {
+            (Ok(Some(val)), gas_info)
         }
         else {
             (Ok(None), gas_info)
         }
         
+    }
+
+    fn get_uncharged(&self, key: &[u8]) -> Option<Vec<u8>> {
+        if let Some(val) = self.data.get(key) {
+            Some(val.value().clone())
+        }
+        else { None }
     }
 
     fn set(&self, key: &[u8], value: &[u8]) -> BackendResult<()> {
@@ -299,7 +316,10 @@ impl BaseStorage for MockConcurrentStorage {
 impl fmt::Debug for MockConcurrentStorage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MockConcurrentStorage")
-            .field("data", &self.data)
+            .field("data", &format_args!("{{ {} }}", self.data.iter()
+                .map(|entry| format!("{:?}: {:?}", entry.key(), entry.value()))
+                .collect::<Vec<_>>()
+                .join(", ")))
             .field("iterators", &self.iterators)
             .finish()
     }

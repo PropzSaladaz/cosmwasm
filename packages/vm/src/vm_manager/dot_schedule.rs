@@ -2,7 +2,7 @@ use std::{sync::Arc};
 
 use graphviz_rust::{cmd::{CommandArg, Format}, exec_dot};
 
-use crate::{ConcurrentSchedule, DependencyNode, OpType, Operation, RWSContext, ScAddr, TxId};
+use crate::{ConcurrentSchedule, DependencyNode, OpType, VecOperation, RWSContext, ScAddr, TxId};
 
 use super::concurrent_schedule::{LinkedList, SCSchedule};
 
@@ -140,7 +140,7 @@ impl<'a> DotSchedule<'a> {
         keys
     }
 
-    fn generate_key(&self, operations: &Arc<LinkedList<Operation>>, key_bytes: &Vec<u8>, key_prefix: &String, contract_prefix: &String) -> String {
+    fn generate_key(&self, operations: &Arc<LinkedList<VecOperation>>, key_bytes: &Vec<u8>, key_prefix: &String, contract_prefix: &String) -> String {
         let contract_key_prefix = format!("{}{}", contract_prefix, key_prefix);
 
         let mut key = String::new();
@@ -174,7 +174,7 @@ impl<'a> DotSchedule<'a> {
         // };
     }
 
-    fn generate_operation_labels(&self, operations: &Arc<LinkedList<Operation>>, contract_key_prefix: &String) -> String {
+    fn generate_operation_labels(&self, operations: &Arc<LinkedList<VecOperation>>, contract_key_prefix: &String) -> String {
         self.apply_for_each_node(operations, contract_key_prefix, |node_id, node| -> String {
             let mut node_config = String::new();
             node_config.push_str(&format!("\n            {} ", node_id ));
@@ -183,7 +183,7 @@ impl<'a> DotSchedule<'a> {
         })
     }
 
-    fn generate_operations_sequence(&self, operations: &Arc<LinkedList<Operation>>, contract_key_prefix: &String) -> String {
+    fn generate_operations_sequence(&self, operations: &Arc<LinkedList<VecOperation>>, contract_key_prefix: &String) -> String {
         let mut sequence = String::new();
         sequence.push_str(&format!("\n            {}", contract_key_prefix));
         let nodes = self.apply_for_each_node(operations, contract_key_prefix, |node_id, _node| -> String {
@@ -196,7 +196,7 @@ impl<'a> DotSchedule<'a> {
         sequence
     }
 
-    fn generate_operation_dependencies(&self, operations: &Arc<LinkedList<Operation>>, contract_key_prefix: &String) -> String {
+    fn generate_operation_dependencies(&self, operations: &Arc<LinkedList<VecOperation>>, contract_key_prefix: &String) -> String {
         let dependencies = self.apply_for_each_node(operations, contract_key_prefix, |node_id, node| -> String {
             let mut idx = 0;
             // if node has a dependency
@@ -226,9 +226,9 @@ impl<'a> DotSchedule<'a> {
     }
 
 
-    fn apply_for_each_node<F>(&self, operations: &Arc<LinkedList<Operation>>, contract_key_prefix: &String, string_builder: F) -> String 
+    fn apply_for_each_node<F>(&self, operations: &Arc<LinkedList<VecOperation>>, contract_key_prefix: &String, string_builder: F) -> String 
     where
-        F: Fn(&String, &DependencyNode<Operation>) -> String
+        F: Fn(&String, &DependencyNode<VecOperation>) -> String
     {
         let mut content = String::new();
         let mut op_idx = 0;
@@ -256,20 +256,19 @@ impl<'a> DotSchedule<'a> {
     }
 
 
-    fn generate_node_layout(&self, node: &DependencyNode<Operation>) -> String {
-        let tx_id: usize = node.value.tx_block_id;
+    fn generate_node_layout(&self, node: &DependencyNode<VecOperation>) -> String {
         let mut completeness = None;
         let mut storage_dependency = None;
 
         for rws in &*self.rws.unwrap() {
-            if rws.tx_block_id == tx_id {
+            if node.data.is_from_tx(rws.tx_block_id) {
                 completeness = Some(rws.rws.profile_status);
                 storage_dependency = Some(rws.rws.storage_dependency);
                 break;
             }
         }
 
-        let color = node.value.tx_block_id % self.node_colors.len();
+        let color = node.data.tx_block_id % self.node_colors.len();
         format!(r#"[label=<
                 <table border="0" cellborder="1" cellspacing="0">
                 <tr><td><b>Transaction        </b></td><td>{}  </td></tr>
@@ -281,10 +280,10 @@ impl<'a> DotSchedule<'a> {
                 </table>
                 >, style="filled", shape=plaintext, fontname="Arial", fontsize=12, fontcolor=black, fillcolor="{}", color=black, penwidth=2];        
         "#,
-            node.value.tx_block_id, 
-            node.value.operation_type,
-            node.value.commutativity, 
-            node.value.value,
+            node.data.tx_block_id, 
+            node.data.operation_type,
+            node.data.commutativity, 
+            node.data.value,
             completeness.unwrap(),
             storage_dependency.unwrap(),
             self.node_colors[color].as_str(),

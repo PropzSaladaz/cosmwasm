@@ -7,7 +7,7 @@ use std::string::FromUtf8Error;
 use thiserror::Error;
 
 use crate::symb_exec::ReadWrite;
-use crate::testing::{ConcurrentStorage, MockStorageWrapper, StorageWrapper};
+use crate::testing::{ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper, StorageWrapper};
 use crate::vm_manager::PersistentBackend;
 use crate::{ConcurrentSchedule, ScAddr, TxId};
 
@@ -118,19 +118,27 @@ where
         rws: Vec<ReadWrite>, 
     ) -> ConcurrentBackend<A, MockStorageWrapper, Q>
     where
-        S2: ConcurrentStorage + 'static, 
+        S2: ConcurrentStorage + 'static,
     {
-        // TODO -  maybe we can use Rc instead of Arc - has less overhead, and there will only be  1 COncurrentBackend per thread
+        // TODO -  maybe we can use Rc instead of Arc - has less overhead, and there will only be  1 ConcurrentBackend per thread
         let api = (*backend.api).clone();
         let storage = Arc::clone(&backend.storage);
         let querier = Arc::clone(&backend.querier);
 
-        let storage_wrapper: MockStorageWrapper = MockStorageWrapper::new(tx_block_id, storage, concurrent_schedule, *sc_address, rws);
+        let storage_wrapper = MockStorageWrapper::new(tx_block_id, storage, concurrent_schedule, *sc_address, rws);
         
         ConcurrentBackend {
             api: api,
             storage: storage_wrapper,
             querier,
+        }
+    }
+
+    pub fn default() -> ConcurrentBackend<MockApi, MockStorageWrapper, MockQuerier> {
+        ConcurrentBackend {
+            api: MockApi::default(),
+            storage: MockStorageWrapper::default(Arc::new(MockConcurrentStorage::new())),
+            querier: Arc::new(RwLock::new(MockQuerier::new(&[]))),
         }
     }
 }

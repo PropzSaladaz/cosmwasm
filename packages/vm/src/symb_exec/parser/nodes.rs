@@ -5,7 +5,7 @@ use cosmwasm_std::{Env, MessageInfo};
 use num::traits::ToBytes;
 use serde::Serialize;
 
-use crate::{DepsMut, NodeRef, Operation};
+use crate::{DepsMut, NodeRef, Operation, VecOperation};
 
 pub type Float = f64;
 pub type Integer = i64;
@@ -230,7 +230,7 @@ pub enum ReadWrite {
         key: Key,
         commutativity: Commutativity,
         // This will start off as None, and will be set when building the concurrent schedule
-        operation_node: Option<NodeRef<Operation>>,
+        operation_node: Option<NodeRef<VecOperation>>,
     },
 
 
@@ -249,7 +249,7 @@ pub enum ReadWrite {
         key: Key,
         commutativity: Commutativity,
         // This will start off as None, and will be set when building the concurrent schedule
-        operation_node: Option<NodeRef<Operation>>,
+        operation_node: Option<NodeRef<VecOperation>>,
     },
 }
 

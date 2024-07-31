@@ -1,10 +1,14 @@
-use std::{collections::HashMap, fs::{self, File}, io::{Read, Write}, sync::{Arc, Mutex, RwLock}};
+use std::{collections::HashMap, fs::{self, File}, io::{ErrorKind, Read, Write}, sync::{Arc, RwLock}};
+use std::io::Error;
+
+use cosmwasm_std::{ContractResult, Response};
+use parking_lot::Mutex;
 
 use dashmap::DashMap;
 use wasmer::Module;
 
 use crate::{ 
-    backend::ConcurrentBackend, symb_exec::{SEEngine, SEEngineParse}, testing::ConcurrentStorage, BackendApi, Querier, SCProfile, SCProfileParser, Storage};
+    backend::ConcurrentBackend, symb_exec::{SEEngine, SEEngineParse}, testing::{mock_backend, ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, StorageWrapper}, BackendApi, Instance, Querier, SCProfile, SCProfileParser, Storage, VmResult};
 
 use super::concurrent_schedule::ScAddr;
 
@@ -42,12 +46,12 @@ impl SCStaticData {
     }
 
     pub fn incr_instantiation(&self, code_id: u128) {
-        self.instantiation_count.lock().unwrap()
+        self.instantiation_count.lock()
             .entry(code_id).and_modify(|count| *count += 1);
     }
 
     pub fn get_instantiation_count(&self, code_id: u128) -> u128 {
-        match self.instantiation_count.lock().unwrap().get(&code_id) {
+        match self.instantiation_count.lock().get(&code_id) {
             Some(count) => *count,
             None => 0,
         }
@@ -67,7 +71,7 @@ impl SCStaticData {
 
         self.profiles.insert(self.sc_code_id, Arc::new(sc_profile));
         
-        self.instantiation_count.lock().unwrap().insert(self.sc_code_id, 0);
+        self.instantiation_count.lock().insert(self.sc_code_id, 0);
 
         let id = self.sc_code_id;
    
@@ -116,30 +120,45 @@ where
     pub querier: Arc<RwLock<Q>>,
 }
 
-#[derive(Debug)]
-pub struct SCInstance<A, S, Q> // TEST - should be private 
+impl<A, S, Q> PersistentBackend<A, S, Q>
 where
     A: BackendApi, 
     S: ConcurrentStorage, 
     Q: Querier
 {
-    sc_code_id: u128,
-    compiled_code: Arc<Module>,
-    // TEST
-    pub state: Arc<PersistentBackend<A, S, Q>>
+    pub fn default() -> PersistentBackend<MockApi, MockConcurrentStorage, MockQuerier> {
+        PersistentBackend {
+            api: Arc::new(MockApi::default()),
+            storage: Arc::new(MockConcurrentStorage::default()),
+            querier: Arc::new(RwLock::new(MockQuerier::new(&[("", &[])]))),
+        }
+    }
 }
 
-impl<A, S, Q> SCInstance<A, S, Q> 
+pub struct SCInstance<A, S, W, Q> // TEST - should be private 
 where
     A: BackendApi, 
-    S: ConcurrentStorage, 
+    S: ConcurrentStorage,
+    W: StorageWrapper,
     Q: Querier
 {
-    fn new(sc_code_id: u128, compiled_code: Arc<Module>, state: Arc<PersistentBackend<A, S, Q>>) -> Self {
+    code_id: u128, // Just to keep track of which code this contract was generated from
+    pub state: Arc<PersistentBackend<A, S, Q>>,
+    pub vm_instances: Arc<Vec<Mutex<Instance<A, W, Q>>>>,
+}
+
+impl<A, S, W, Q> SCInstance<A, S, W, Q> 
+where
+    A: BackendApi, 
+    S: ConcurrentStorage,
+    W: StorageWrapper, 
+    Q: Querier
+{
+    fn new(code_id: u128, state: &Arc<PersistentBackend<A, S, Q>>, instances: Vec<Mutex<Instance<A, W, Q>>>) -> Self {
         Self {
-            sc_code_id,
-            compiled_code,
-            state
+            code_id,
+            state: Arc::clone(state),
+            vm_instances: Arc::new(instances),
         }
     }
 }
@@ -170,34 +189,34 @@ where
     pub compiled_code: Arc<Module>,
 }
 
-/// Stores the SC's state, compiled module and code_id
+/// Stores the SC's vm instance.
 /// for each instantiated contract.
 //                 SC address -> SC instantiation
-type SCStorage<A, S, Q> = DashMap<ScAddr, Arc<SCInstance<A, S, Q>>>;
+type SCStorage<A, S, W, Q> = DashMap<ScAddr, Arc<SCInstance<A, S, W, Q>>>;
 
 /// Mocks interface for handling smart contracts.
 /// 
 /// This includes both static state - SC code & profile, as well as
-/// "dynamic state" - SC state per each instantiation of a contract & its 
-/// corresponding compiled wasm module. 
-#[derive(Debug)]
-pub struct SCManager<A, S, Q> 
+/// "dynamic state" - SC state per each instantiation of a contract
+pub struct SCManager<A, S, W, Q> 
 where
     A: BackendApi + 'static,
     S: ConcurrentStorage + 'static,
+    W: StorageWrapper + 'static,
     Q: Querier + 'static
 {
     static_data: Arc<RwLock<SCStaticData>>,
-    pub sc_storage: SCStorage<A, S, Q>,
+    pub sc_storage: SCStorage<A, S, W, Q>,
 }
 
-impl<A, S, Q> SCManager<A, S, Q> 
+impl<A, S, W, Q> SCManager<A, S, W, Q> 
 where
     A: BackendApi, 
     S: ConcurrentStorage, 
+    W: StorageWrapper,
     Q: Querier
 {
-    pub fn new() -> SCManager<A, S, Q> {
+    pub fn new() -> SCManager<A, S, W, Q> {
         SCManager {
             static_data: Arc::new(RwLock::new(SCStaticData::new())),
             sc_storage: DashMap::new(),
@@ -205,26 +224,47 @@ where
     }
 
     /// Saves the storage & compiled module that refers to some instantiated SC
-    pub fn save_instance(&self, address: ScAddr, code_id: u128,
-        compiled_code: Arc<Module>, state: Arc<PersistentBackend<A, S, Q>>) {
+    pub fn save_instance(&self, code_id: u128, address: ScAddr, state: Arc<PersistentBackend<A, S, Q>>, instances: Vec<Mutex<Instance<A, W, Q>>>) {
         self.sc_storage.insert(address, Arc::new(
             SCInstance::new(
                 code_id,
-                compiled_code, 
-                state)
+                &state,
+                instances)
             ));
         self.static_data.write().unwrap().incr_instantiation(code_id);
     }
 
-    pub fn get_instance_data(&self, address: &ScAddr) -> Option<InstanceData<A, S, Q>> {
+    /// Executes something using a mutable reference of a cosmwasm instance.
+    /// Tries locking one instance form a set of N instances.
+    /// If none is available, then wait for the first one to finish.
+    pub fn execute_instance<F>(&self, address: &ScAddr, concurrent_backend: ConcurrentBackend<A, W, Q>,  work: F) -> std::io::Result<String> 
+    where
+        F: FnOnce(&mut Instance<A, W, Q>) -> std::io::Result<String>,
+    {
         match self.sc_storage.get(address) {
-            Some(sc_instance) => Some(InstanceData {
-                compiled_code: Arc::clone(&sc_instance.compiled_code),
-                state:         Arc::clone(&sc_instance.state),
-            }),
+            Some(sc_instance) => {
+                let instances = &sc_instance.vm_instances;
+                for instance in &**instances { // dereference &Arc<Vec> + Arc<Vec> to get the Vec. THen reference &Vec as we cannot move it out
+                    if let Some(ref mut instance) = instance.try_lock() {
+                        // println!("SC {:?} - Executing on Free VM", address);
+                        instance.set_concurrent_backend(concurrent_backend);
+                        let res = work(instance);
+                        return Ok(res.unwrap());
+                    }
+                }
+                // println!("SC {:?} - Waiting for VM 0 to be free!", address);
+                let mut forced_vm = instances[0].lock();
+                Ok(format!("{:?}", work(&mut forced_vm)))
+            },
+            None => Result::Err(Error::new(ErrorKind::Other, "Trying to execute an uninstanciated contract!".to_owned()))
+        }
+    }
+
+    pub fn get_sc_storage(&self, address: &ScAddr) -> Option<Arc<PersistentBackend<A, S, Q>>> {
+        match self.sc_storage.get(address) {
+            Some(sc_instance) => Some(Arc::clone(&sc_instance.state)),
             None => None
         }
-
     }
 
     pub fn get_code(&self, code_id: u128) -> std::io::Result<Vec<u8>> {
@@ -269,7 +309,7 @@ mod tests {
     use serial_test::serial;
     use wasmer::Store;
 
-    use crate::{call_instantiate, internals::instance_from_module, symb_exec::{EntryPoint, SEStatus}, testing::{mock_env, mock_info, mock_persistent_backend, MockApi, MockQuerier, MockConcurrentStorage, MockStorageWrapper}, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, ConcurrentSchedule, InstanceOptions, Size};
+    use crate::{call_execute, call_instantiate, internals::instance_from_module, symb_exec::{Commutativity, EntryPoint, SEStatus}, testing::{mock_concurrent_backend, mock_env, mock_info, mock_persistent_backend, mock_tx_operation, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, ConcurrentSchedule, InstanceOptions, ReadWrite, Size};
 
     use super::*;
 
@@ -283,13 +323,18 @@ mod tests {
     #[serial]
     fn generics_test() {
         let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
-        let module = Arc::new(compile( &engine, CONTRACT).unwrap());
-        let partitioned_store = Arc::new(MockConcurrentStorage::default());
-        let backend = Arc::new(mock_persistent_backend(&[], partitioned_store));
-        SCInstance::new(0, Arc::clone(&module), Arc::clone(&backend));
+        let module = compile( &engine, CONTRACT).unwrap();
+        let concurrent_store = Arc::new(MockConcurrentStorage::default());
+        let backend = Arc::new(mock_persistent_backend(&[], Arc::clone(&concurrent_store)));
+
+        let store = Store::new(engine);
+        let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT };
+        let concurrent_backend = mock_concurrent_backend(&[], concurrent_store);
+        let instance = instance_from_module(store, &module, concurrent_backend, much_gas.gas_limit, None).unwrap();
+        let instances = vec![Mutex::new(instance)];
 
         let sc_manager = Arc::new(RwLock::new(SCManager::new()));
-        sc_manager.write().unwrap().save_instance(SC_ADDR_A, 0, module, backend);
+        sc_manager.write().unwrap().save_instance(0, SC_ADDR_A, backend, instances);
 
         sc_manager.write().unwrap().cleanup();
     }
@@ -351,55 +396,97 @@ _msg: InstantiateMsg
         let sc_manager = SCManager::new();
         // save code
         sc_manager.save_code(CONTRACT).unwrap();
-        // get code
-        let code = sc_manager.get_code(0).unwrap();
 
+        let backend;
 
-        // compile code & create storage
-        let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
-        let module = compile( &engine, code.as_slice()).unwrap();
-        let partitioned_storage = Arc::new(MockConcurrentStorage::default());
-        let mock_backend = Arc::new(mock_persistent_backend(&[], partitioned_storage));
+        let mut schedule = ConcurrentSchedule::new();
+        schedule.build_from_rws(&mut vec![
+            mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+        ]);
+        let concurrent_schedule = Arc::new(schedule);
 
-        // save it to that SC code
-        sc_manager.save_instance(
-            SC_ADDR_A, 
-            0, 
-            Arc::new(module), 
-            Arc::clone(&mock_backend)
-        );
+        { // simulate saving instance in a separate context
+            // compile code & create storage
+            // get code
+            let code = sc_manager.get_code(0).unwrap();
+            let engine = make_compiling_engine(Some(DEFAULT_MEMORY_LIMIT));
+            let module = compile( &engine, code.as_slice()).unwrap();
+            let concurrent_store = Arc::new(MockConcurrentStorage::default());
+            backend = Arc::new(mock_persistent_backend(&[], Arc::clone(&concurrent_store)));
 
-        // get instance data
-        let instance_data = sc_manager.get_instance_data(&SC_ADDR_A).unwrap();
+            // simulate instantiating N vms - we use runtime engine now, since we already got the module compiled.
+            let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
+            let store = Store::new(engine);
+            let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT };
+            
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::clone(&concurrent_schedule),
+            Arc::clone(&backend), &SC_ADDR_A, vec![]);
 
-        // instantiate vm
-        let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT, };
-        let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
-        let store = Store::new(engine);
+            let instance = instance_from_module(store, &module, concurrent_backend, much_gas.gas_limit, None).unwrap();
+            let instances = vec![Mutex::new(instance)];
 
-        let rws = vec![];
-        
-        let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::new(ConcurrentSchedule::new()),
-            mock_backend, &SC_ADDR_A, rws);
+            // save it to that SC code
+            sc_manager.save_instance(
+                0,
+                SC_ADDR_A, 
+                Arc::clone(&backend),
+                instances
+            );
+        }
 
-        let mut instance = instance_from_module(
-            store, 
-            &*instance_data.compiled_code, 
-            concurrent_backend, 
-            much_gas.gas_limit, 
-            None).unwrap();
+        // Instantiate
+       
+        { // simulate instantiate call in a separate context
+            let rws = vec![];
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::clone(&concurrent_schedule),
+                Arc::clone(&backend), &SC_ADDR_A, rws);
+    
+            // execute instantiate contract
+            let msg = br#"{}"#;
+            let resp = sc_manager.execute_instance(&SC_ADDR_A, concurrent_backend, |instance| {
+                let contract_res = call_instantiate::<_, _, _, Empty>(
+                    instance, 
+                    &mock_env(), 
+                    &mock_info("", &[]), 
+                    msg
+                ).unwrap();
+                Ok(format!("{:?}", contract_res))
+            });
+    
+            
+            assert_eq!(resp.unwrap(), "Ok(\"Ok(Response { messages: [], attributes: [], events: [], data: None })\")".to_owned());
+            assert_eq!(sc_manager.get_instantiation_count(0), 1);
+        }
 
-        // execute instantiate contract
-        let msg = br#"{}"#;
-        let contract_res = call_instantiate::<_, _, _, Empty>(
-            &mut instance, 
-            &mock_env(), 
-            &mock_info("", &[]), 
-            msg
-        ).unwrap();
-        
-        assert_eq!(contract_res, ContractResult::Ok(Response::new()));
-        assert_eq!(sc_manager.get_instantiation_count(0), 1);
+        { // simulate executing in a separate context
+            // Execute
+            let mut schedule = ConcurrentSchedule::new();
+            schedule.build_from_rws(&mut vec![
+                mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+            ]);
+            
+            let rws = vec![];
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::clone(&concurrent_schedule),
+                Arc::clone(&backend), &SC_ADDR_A, rws);
+
+            // execute instantiate contract
+            let msg = br#"{ 
+                "AddOne": {} 
+            }"#;
+            let resp = sc_manager.execute_instance(&SC_ADDR_A, concurrent_backend, |instance| {
+                let contract_res = call_execute::<_, _, _, Empty>(
+                    instance, 
+                    &mock_env(), 
+                    &mock_info("", &[]), 
+                    msg
+                ).unwrap();
+                Ok(format!("{:?}", contract_res))
+            });
+            
+            assert_eq!(resp.unwrap(), "Ok(\"Ok(Response { messages: [], attributes: [], events: [], data: None })\")".to_owned());
+            assert_eq!(sc_manager.get_instantiation_count(0), 1);
+        }
+
 
         sc_manager.cleanup();
 

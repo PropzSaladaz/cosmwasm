@@ -59,12 +59,12 @@ mod execute {
             match bank {
                 Some(value) => {
                     let mut counter = 0;
-                    for i in 0..30000000 {
+                    for i in 0..300000 {
                         if i % 2 == 0 { counter += i; }
                         else { counter -= i; }
                     };
 
-                    Ok(value + 1)
+                    Ok(value + counter)
                 },
                 None => Err(StdError::generic_err("Value doesn't exist")),
             }
