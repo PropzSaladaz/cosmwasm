@@ -45,6 +45,10 @@ _msg: ExecuteMsg
 > AddUser:
     - admin: string
 > AddOne:
+    - user: string
+> SetVal:
+    - user: string
+    - val: int
 > Transfer:
     - from: string
     - to: string
@@ -60,11 +64,21 @@ _msg: ExecuteMsg
 <- None
 
 [PC_3] Type(_msg) == AddOne
-=> GET(=AARiYW5rQURNSU4=): Non-Inc
-=> SET(=AARiYW5rQURNSU4=): Non-Inc
+=> GET(=AARiYW5r @ _msg.user): Inc
+=> SET(=AARiYW5r @ _msg.user): Inc
 <- [PC_4]
 
-[PC_4] Type(_msg) == Transfer
+[PC_4] Type(_msg) == SetVal
+=> GET(=AARiYW5r @ _msg.user): Non-Inc
+=> SET(=AARiYW5r @ _msg.user): Non-Inc
+<- [PC_5]
+
+[PC_5] Type(_msg) == DoubleVal
+=> GET(=AARiYW5r @ _msg.user): Non-Inc
+=> SET(=AARiYW5r @ _msg.user): Non-Inc
+<- [PC_6]
+
+[PC_6] Type(_msg) == Transfer
 => None
 <- None
 
@@ -72,10 +86,12 @@ Q ----------------------------
 
 _deps: DepsMut
 _env: Env
-_msg: ExecuteMsg
+_msg: QueryMsg
+> GetBalance:
+    - user: string
 
 [PC_1] True
-=> GET(=AARiYW5rQURNSU4=): Non-Inc
+=> GET(=AARiYW5r @ _msg.user): Non-Inc
 <- None
 "#
             .to_owned()

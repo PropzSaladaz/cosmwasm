@@ -131,8 +131,6 @@ impl StorageWrapper for MockStorageWrapper {
             // We have a next predicted RWS operation
             Some(rws) => {
                 self.rws_idx += 1;
-                // println!("Tracked read");
-
                 match rws {
                     ReadWrite::Write { .. } => {
                         unreachable!("Trying to read an item from storage, but the corresponding operation was a write in the predicted RWS")

@@ -466,7 +466,7 @@ fn run_persistent_vm() {
 }
 
 
-fn run_n_contracts_n_increments(n_contracts: u128, n_increments: u128) {
+fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128) {
     let sc_manager: SCManager<MockApi, MockConcurrentStorage, MockStorageWrapper, MockQuerier> = SCManager::new();
 
     let mut mapping: HashMap<u128, HashMap<u128, ScAddr>> = HashMap::from([(0, HashMap::new())]);
@@ -498,8 +498,8 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_increments: u128) {
         Arc::new(address_mapper),
         Arc::new(backend_builder),
         Arc::new(concurrent_backend_builder),
-    4,
-    4);
+    2,
+    2);
 
 
     let mut msgs = vec![
@@ -521,14 +521,36 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_increments: u128) {
     }
 
     for i in 0..n_contracts {
-        for _ in 0..n_increments {
+        for _ in 0..n_operation_repetitions {
             msgs.push(
                 Message::Invocation(
                     VMMessage::Invocation {
                         entry_point: InstantiatedEntryPoint::Execute,
                         contract_address: [i as u8; 32],
                         message: br#"{
-                            "AddOne": {}
+                            "AddOne": {
+                                "user": "ADMIN"
+                            }
+                        }"#.to_vec(),
+                        code_id: 0,
+                    }
+                )
+            );
+        }
+    }
+
+    for i in 0..n_contracts {
+        for _ in 0..n_operation_repetitions {
+            msgs.push(
+                Message::Invocation(
+                    VMMessage::Invocation {
+                        entry_point: InstantiatedEntryPoint::Execute,
+                        contract_address: [i as u8; 32],
+                        message: br#"{
+                            "SetVal": {
+                                "user": "ADMIN",
+                                "val": 10
+                            }
                         }"#.to_vec(),
                         code_id: 0,
                     }
@@ -541,7 +563,7 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_increments: u128) {
     let mut message_handler = MessageHandler::new(
         sc_manager, 
         vm_manager,
-        (3 * n_contracts * n_increments) as usize
+        (10 * n_contracts * n_operation_repetitions) as usize
     );
     
     let start = Instant::now();
@@ -553,5 +575,5 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_increments: u128) {
 
 fn main() {
     // run_persistent_vm();
-    run_n_contracts_n_increments(2, 500);
+    run_n_contracts_n_increments(4, 500);
 }

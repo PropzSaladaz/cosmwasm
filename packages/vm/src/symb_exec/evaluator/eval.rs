@@ -100,7 +100,9 @@ pub trait Eval {
                     Some(InputType::DepsMut)     => todo!(),
                     Some(InputType::Env)         => todo!(),
                     Some(InputType::MessageInfo) => todo!(),
-                    Some(InputType::Custom)      => self.parse_custom_msg_identifier(&attrs[1..], variable_context),
+                    Some(InputType::Custom)      => {
+                        self.parse_custom_msg_identifier(&attrs[1..], variable_context)
+                    },
                     None => unreachable!("Variables should always reference one of the inputs...")
                 }
             }
@@ -153,7 +155,9 @@ pub trait Eval {
                 if n.is_u64() { return Expr::Number(Number::Int(n.as_i64().unwrap())); }
                 else { unreachable!("Expecting either i64, u64 or f64") }
             },
-            Some(Value::String(s)) => return Expr::String(s.clone()),
+            Some(Value::String(s)) => {
+                return Expr::String(s.clone())
+            },
 
             None => unreachable!("Attribute does not exist in custom message"), 
             other => unreachable!("Value should be primitive (int, float, string), got {:?}", other),

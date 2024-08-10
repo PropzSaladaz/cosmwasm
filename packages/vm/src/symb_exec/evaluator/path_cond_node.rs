@@ -339,7 +339,6 @@ mod tests {
 
     #[test]
     fn parse_pc1_f_pc3_f_pc4_t() {
-        // PC_1 true, PC_2 true
         let arg_types = mock_arg_types();
         let ctx = SEContext::new(br#"
             {
@@ -359,7 +358,6 @@ mod tests {
 
     #[test]
     fn parse_pc1_f_pc3_f_pc4_f() {
-        // PC_1 true, PC_2 true
         let arg_types = mock_arg_types();
         let ctx = SEContext::new(br#"
             {

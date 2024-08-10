@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque}, fmt, io::{self, Write}, sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, RwLock}, thread
+    collections::{HashMap, HashSet, VecDeque}, fmt, i128, io::{self, Write}, sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, RwLock}, thread
 };
 
 use parking_lot::{Mutex, Condvar};
@@ -19,88 +19,32 @@ pub const ADDR_SIZE: usize = 32;
 pub type ScAddr = [u8; ADDR_SIZE];
 pub type TxId = usize;
 
+// TODO - we are currently assuming all will be signed integers.
+// they may be unsigned - we need to create more conditions to conver to unsigned in cases of overflow of integer
+// We may discard floats, as these are inherently non deterministic types
+fn ascii_encoded_sub(lhs: &Vec<u8>, rhs: &Vec<u8>) -> Vec<u8> {
+    let lhs = String::from_utf8(lhs.clone()).unwrap();
+    let rhs = String::from_utf8(rhs.clone()).unwrap();
 
-fn bytewise_sub(lhs: &Vec<u8>, rhs: &Vec<u8>) -> Vec<u8> {
-    let n_bytes = lhs.len();
-    let mut res: Vec<u8> = vec![0x00; n_bytes];
-    let mut borrow_amount: u8 = 0;
+    let lhs = lhs.parse::<i128>().unwrap();
+    let rhs = rhs.parse::<i128>().unwrap();
 
-    // subtract each byte from right to left
-    for ((lhs, rhs), diff) in lhs.iter().rev().zip(
-                                                 rhs.iter().rev()).zip(
-                                                 res.iter_mut().rev()) {
-        let mut tmp_diff: u8;
-        let mut borrow: bool;
-        let mut tmp_borrow: bool;
+    let res = lhs - rhs;
 
-        // Borrow can come either from the subtraction or from subtracting the borrow
-        // after a non-borrowing subtraction
-        //
-        // lhs - rhs            lhs - rhs - borrow     
-        //   0 1 <- lhs             0 1 <- lhs
-        // - 1 1 <- rhs           - 0 1 <- rhs + borrow amount
-        // _____                  _____
-        // 1 0 0                  0 0 0
-        // ^                      ^
-        // |                      |
-        // borrow from subtraction    borrow from borrow (after subtraction without borrow)
-
-        (tmp_diff, borrow) = lhs.overflowing_sub(*rhs);
-        tmp_borrow = borrow;
-        (tmp_diff, borrow) = tmp_diff.overflowing_sub(borrow_amount);
-        tmp_borrow = tmp_borrow || borrow;
-
-        if tmp_borrow { borrow_amount = 1 }
-        else          { borrow_amount = 0 }
-
-        *diff = tmp_diff;
-    }
-
-    // If there's still a borrow after processing all bytes, the result is negative
-    if borrow_amount > 0 {
-        println!("Result would be negative");
-    }
-
-    res
+    res.to_string().into_bytes()
 }
 
 
-fn bytewise_add(lhs: &Vec<u8>, rhs: &Vec<u8>) -> Vec<u8> {
-    let n_bytes = lhs.len();
-    let mut res: Vec<u8> = vec![0x00; n_bytes];
-    let mut overflow_amount: u8 = 0;
-                                            // add each byte from right to left
-    for ((lhs, rhs), sum) in lhs.iter().rev().zip(
-                                                rhs.iter().rev()).zip(
-                                                res.iter_mut().rev()) {
-        let mut tmp_sum: u8;
-        let mut over: bool;
-        let mut tmp_over: bool;
+fn ascii_encoded_add(lhs: &Vec<u8>, rhs: &Vec<u8>) -> Vec<u8> {
+    let lhs = String::from_utf8(lhs.clone()).unwrap();
+    let rhs = String::from_utf8(rhs.clone()).unwrap();
 
-        // overflow can come either from the sum or from adding the overflow
-        // after a non-overflowing sum
-        //
-        // lhs + rhs            lhs + rhs + overflow     
-        //   1 1 <- rhs             1 1 <- lhs + rhs
-        // + 1 1 <- lhs           + 0 1 <- overflow amount
-        // _____                  _____
-        // 1 1 0                  1 0 0
-        // ^                      ^
-        // |                      |
-        // transport from sum     transport from overflow (after sum without overflow)
+    let lhs = lhs.parse::<i128>().unwrap();
+    let rhs = rhs.parse::<i128>().unwrap();
 
-        (tmp_sum, over) = lhs.overflowing_add(*rhs);
-        tmp_over = over;
-        (tmp_sum, over) = tmp_sum.overflowing_add(overflow_amount);
-        tmp_over = tmp_over || over;
+    let res = lhs + rhs;
 
-        if tmp_over { overflow_amount = 1 }
-        else        { overflow_amount = 0 }
-
-        *sum = tmp_sum;
-
-    };
-    res
+    res.to_string().into_bytes()
 }
 
 
@@ -277,11 +221,11 @@ pub trait OperationValue: Clone + Sized {
 
 impl OperationValue for Vec<u8> {
     fn compute_delta(&self, other: &Self) -> Self {
-        bytewise_sub(self, other)
+        ascii_encoded_sub(self, other)
     }
 
     fn merge(&mut self, other: &Self) {
-        *self = bytewise_add(self, other);
+        *self = ascii_encoded_add(self, other);
     }
 }
 
@@ -1362,7 +1306,7 @@ impl ConcurrentSchedule {
 
 
     #[cfg(feature = "debug_graph")]
-    pub fn generate_debug_graph(&self, graph_name: String, rws:  &Vec<RWSContext>) {
+    pub fn generate_debug_graph(&self, graph_name: String, rws:  &Arc<Vec<RWSContext>>) {
         let mut dot = DotSchedule::new(NodeColor::LightBlue, 2);
 
         let dot_file = dot.parse(self, &rws);
@@ -1380,7 +1324,18 @@ mod tests {
     use wasmer::Store;
 
     use crate::{
-        internals::instance_from_module, symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS}, testing::{mock_concurrent_backend, mock_persistent_backend, mock_tx_operation, ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, vm_manager::{concurrent_schedule::{bytewise_add, bytewise_sub, LastWrite, LastWrites}, vm_manager::{InstantiatedEntryPoint, RWSContext, VMMessage}}, wasm_backend::{compile, make_compiling_engine}, ConcurrentSchedule, InstanceOptions, SCManager, SEStatus, ScAddr, Size
+        internals::instance_from_module, 
+        symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS}, 
+        testing::{
+            mock_concurrent_backend, mock_persistent_backend, mock_tx_operation, 
+            ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper
+        }, 
+        vm_manager::{
+            concurrent_schedule::{ascii_encoded_add, ascii_encoded_sub, LastWrite, LastWrites}, 
+            vm_manager::{InstantiatedEntryPoint, RWSContext, VMMessage}
+        }, 
+        wasm_backend::{compile, make_compiling_engine}, 
+        ConcurrentSchedule, InstanceOptions, SCManager, SEStatus, ScAddr, Size
     };
 
     use super::{DependencyNode, LinkedList, NodeRef, OpType, Operation, Schedule, VecOperation};
@@ -1444,29 +1399,29 @@ mod tests {
     }
 
     #[test]
-    fn bytewise_addition() {
-        let lhs = vec![1u8, 255u8];
-        let rhs = vec![0u8, 255u8];
-        let res = bytewise_add(&lhs, &rhs);
-        assert_eq!(res, vec![2u8, 254u8]);
+    fn ascii_add() {
+        let lhs = String::from("145").into_bytes();
+        let rhs = String::from("66").into_bytes();
+        let res = ascii_encoded_add(&lhs, &rhs);
+        assert_eq!(res, String::from("211").into_bytes());
 
-        let lhs = vec![0, 255, 200];
-        let rhs = vec![0, 0  , 100];
-        let res = bytewise_add(&lhs, &rhs);
-        assert_eq!(res, vec![1u8, 0u8, 44u8]);
+        let lhs = String::from("35").into_bytes();
+        let rhs = String::from("-40").into_bytes();
+        let res = ascii_encoded_add(&lhs, &rhs);
+        assert_eq!(res, String::from("-5").into_bytes());
     }
 
     #[test]
-    fn bytewise_subtraction() {
-        let lhs = vec![1u8, 255u8];
-        let rhs = vec![0u8, 255u8];
-        let res = bytewise_sub(&lhs, &rhs);
-        assert_eq!(res, vec![1u8, 0u8]);
+    fn ascii_sub() {
+        let lhs = String::from("100").into_bytes();
+        let rhs = String::from("45").into_bytes();
+        let res = ascii_encoded_sub(&lhs, &rhs);
+        assert_eq!(res, String::from("55").into_bytes());
 
-        let lhs = vec![0u8, 0u8, 100u8];
-        let rhs = vec![0u8, 0u8, 200u8];
-        let res = bytewise_sub(&lhs, &rhs);
-        assert_eq!(res, vec![255u8, 255u8, 156u8]);
+        let lhs = String::from("50").into_bytes();
+        let rhs = String::from("100").into_bytes();
+        let res = ascii_encoded_sub(&lhs, &rhs);
+        assert_eq!(res, String::from("-50").into_bytes());
     }
 
     #[test]

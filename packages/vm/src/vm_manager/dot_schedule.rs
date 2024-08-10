@@ -57,7 +57,7 @@ pub struct DotSchedule<'a> {
     pub key_width: i32,
 
     node_colors: Vec<NodeColor>,
-    rws: Option<&'a Vec<RWSContext>>,
+    rws: Option<&'a Arc<Vec<RWSContext>>>,
 }
 
 impl<'a> DotSchedule<'a> {
@@ -76,7 +76,7 @@ impl<'a> DotSchedule<'a> {
         }
     }
 
-    pub fn parse(&mut self, schedule: &ConcurrentSchedule,  rws: &'a Vec<RWSContext>) -> String {
+    pub fn parse(&mut self, schedule: &ConcurrentSchedule,  rws: &'a Arc<Vec<RWSContext>>) -> String {
         self.rws = Some(rws);
         let mut file = String::new();
         file.push_str("digraph G {");
@@ -260,7 +260,7 @@ impl<'a> DotSchedule<'a> {
         let mut completeness = None;
         let mut storage_dependency = None;
 
-        for rws in &*self.rws.unwrap() {
+        for rws in &**self.rws.unwrap() {
             if node.data.is_from_tx(rws.tx_block_id) {
                 completeness = Some(rws.rws.profile_status);
                 storage_dependency = Some(rws.rws.storage_dependency);

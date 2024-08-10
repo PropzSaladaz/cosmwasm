@@ -474,7 +474,7 @@ pub struct MockQuerier<C: DeserializeOwned = Empty> {
     /// always errors by default. Update it via `with_custom_handler`.
     ///
     /// Use box to avoid the need of another generic type
-    custom_handler: Box<dyn for<'a> Fn(&'a C) -> MockQuerierCustomHandlerResult>,
+    custom_handler: Box<dyn for<'a> Fn(&'a C) -> MockQuerierCustomHandlerResult + Sync + Send>,
 }
 
 impl<C: DeserializeOwned> MockQuerier<C> {
@@ -499,14 +499,14 @@ impl<C: DeserializeOwned> MockQuerier<C> {
 
     pub fn update_wasm<WH: 'static>(&mut self, handler: WH)
     where
-        WH: Fn(&WasmQuery) -> QuerierResult,
+        WH: Fn(&WasmQuery) -> QuerierResult + Send + Sync,
     {
         self.wasm.update_handler(handler)
     }
 
     pub fn with_custom_handler<CH: 'static>(mut self, handler: CH) -> Self
     where
-        CH: Fn(&C) -> MockQuerierCustomHandlerResult,
+        CH: Fn(&C) -> MockQuerierCustomHandlerResult + Sync + Send,
     {
         self.custom_handler = Box::from(handler);
         self
@@ -566,17 +566,17 @@ struct WasmQuerier {
     /// always errors by default. Update it via `with_custom_handler`.
     ///
     /// Use box to avoid the need of generic type.
-    handler: Box<dyn for<'a> Fn(&'a WasmQuery) -> QuerierResult>,
+    handler: Box<dyn for<'a> Fn(&'a WasmQuery) -> QuerierResult + Send + Sync>,
 }
 
 impl WasmQuerier {
-    fn new(handler: Box<dyn for<'a> Fn(&'a WasmQuery) -> QuerierResult>) -> Self {
+    fn new(handler: Box<dyn for<'a> Fn(&'a WasmQuery) -> QuerierResult + Send + Sync>) -> Self {
         Self { handler }
     }
 
     fn update_handler<WH: 'static>(&mut self, handler: WH)
     where
-        WH: Fn(&WasmQuery) -> QuerierResult,
+        WH: Fn(&WasmQuery) -> QuerierResult + Send + Sync,
     {
         self.handler = Box::from(handler)
     }

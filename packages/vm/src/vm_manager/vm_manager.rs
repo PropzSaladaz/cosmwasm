@@ -318,9 +318,6 @@ where
         // 1 for the instantiations, which is the first to get executed.
         // a 2nd for all the other txs in the block.
         for (idx, mut batch) in txs_batch.into_iter().enumerate() {
-            #[cfg(feature = "exec_time")]
-            if idx == 0 { self.start_instantiation_calls_timer(); }
-
             let mut rws: Vec<RWSContext> = self.get_rws(batch);
 
             let mut schedule = ConcurrentSchedule::new();
@@ -333,20 +330,9 @@ where
             #[cfg(feature = "exec_time")]
             self.stop_schedule_build_timer();
 
-            // not included in execution time
-            #[cfg(feature = "debug_graph")]
-            {
-                let suffix = if idx == 0 { "instantiation".to_owned() } else { "execution".to_owned() };
-                let graph_name = format!("{:?}_{:?}", self.block_number, suffix);
-                schedule.generate_debug_graph(graph_name, &rws);
-            }
-
             let batch = if idx == 0 { BatchType::Instantiation } else { BatchType::Invocation };
             let mut resp = self.execute_block(rws, schedule, batch).unwrap();
             resps.append(&mut resp);
-
-            #[cfg(feature = "exec_time")]
-            if idx == 0 { self.stop_instantiation_calls_timer(); }
         }
 
         #[cfg(feature = "exec_time")]
@@ -513,7 +499,8 @@ where
 
     fn execute_block(&mut self, rws: Vec<RWSContext>, schedule: ConcurrentSchedule, batchType: BatchType ) -> std::io::Result<Vec<String>> {
         #[cfg(feature = "exec_time")] // Only count tx invocation (after the VMs are instantiated)
-        if batchType == BatchType::Invocation { self.start_schedule_execution_timer(); }
+        if batchType == BatchType::Invocation { self.start_schedule_execution_timer();  }
+        else                                  { self.start_instantiation_calls_timer(); }
 
         let mut handles = vec![];
         let resps = Arc::new(Mutex::new(vec![]));
@@ -557,7 +544,8 @@ where
         }
 
         #[cfg(feature = "exec_time")]
-        if batchType == BatchType::Invocation { self.stop_schedule_execution_timer(); }
+        if batchType == BatchType::Invocation { self.stop_schedule_execution_timer();  }
+        else                                  { self.stop_instantiation_calls_timer(); }
 
 
         #[cfg(feature = "exec_time")]
@@ -567,6 +555,15 @@ where
         
         #[cfg(feature = "exec_time")]
         self.stop_schedule_persistence_timer();
+
+
+        // not included in execution time
+        #[cfg(feature = "debug_graph")]
+        {
+            let suffix = if batchType == BatchType::Instantiation { "instantiation".to_owned() } else { "execution".to_owned() };
+            let graph_name = format!("{:?}_{:?}", self.block_number, suffix);
+            schedule.generate_debug_graph(graph_name, &rws);
+        }
 
 
         // return the response vector contents
@@ -856,7 +853,9 @@ mod tests {
         // execute
 
         let msg = br#"{
-            "AddOne": {}
+            "AddOne": { 
+                "user": "ADMIN"
+            }
         }"#;
         let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::clone(&concurrent_schedule),
             Arc::clone(&backend), &SC_ADDR_A, vec![]);
@@ -893,8 +892,6 @@ mod tests {
             mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
 
-        println!("Schedule --> {:#?}", schedule);
-
         let resp = VMManager::compile_instantiate_vm(0, &SC_ADDR_A, Arc::new(schedule), &thread_ctx, 0, msg, vec![]).unwrap();
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resp);
 
@@ -922,14 +919,13 @@ mod tests {
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resp);
 
         let msg = br#"{
-            "AddOne": {}
+            "AddOne": {
+                "user": "ADMIN"
+            }
         }"#;
-        println!("I'm here");
         let thread_ctx = vm_manager.get_execution_context();
-        println!("I'm there");
         let resp = VMManager::instantiate_vm(0, Arc::clone(&schedule), &thread_ctx, &sc_address, msg, 
         vec![], VMCall::Execute).unwrap();
-        println!("after");
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resp);
 
         vm_manager.state_manager.read().unwrap().cleanup();
@@ -954,7 +950,9 @@ mod tests {
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resp);
 
         let msg = br#"{
-            "GetBalance": {}
+            "GetBalance": {
+                "user": "ADMIN"
+            }
         }"#;
         let resp = VMManager::instantiate_vm(0, Arc::clone(&schedule), &thread_ctx, &SC_ADDR_A, msg,  
             vec![], VMCall::Query).unwrap();
@@ -986,7 +984,9 @@ mod tests {
             entry_point: InstantiatedEntryPoint::Execute,
             contract_address: SC_ADDR_A,
             message: br#"{
-                "AddOne": {}
+                "AddOne": {
+                    "user": "ADMIN"
+                }
             }"#.to_vec(),
             code_id: 0,
         };
@@ -1051,7 +1051,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1059,7 +1061,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1067,7 +1071,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_B,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1085,7 +1091,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_B,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1093,7 +1101,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1101,7 +1111,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1109,7 +1121,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1156,7 +1170,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1164,7 +1180,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1172,7 +1190,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_B,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1180,7 +1200,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_C,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1188,7 +1210,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_D,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1206,7 +1230,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_B,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1214,7 +1240,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_D,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1222,7 +1250,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1230,7 +1260,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_C,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1238,7 +1270,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "AddOne": {}
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1246,7 +1280,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1254,7 +1290,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_D,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1286,7 +1324,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_A,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1301,7 +1341,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_B,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1314,7 +1356,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_C,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1327,7 +1371,9 @@ mod tests {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_D,
                 message: br#"{
-                    "GetBalance": {}
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
                 }"#.to_vec(),
                 code_id: 0,
             },
@@ -1374,7 +1420,9 @@ mod tests {
                     entry_point: InstantiatedEntryPoint::Execute,
                     contract_address: [i as u8; ADDR_SIZE],
                     message: br#"{
-                        "AddOne": {}
+                        "AddOne": {
+                            "user": "ADMIN"
+                        }
                     }"#.to_vec(),
                     code_id: 0,
                 }
@@ -1384,7 +1432,9 @@ mod tests {
                     entry_point: InstantiatedEntryPoint::Execute,
                     contract_address: [i as u8; ADDR_SIZE],
                     message: br#"{
-                        "AddOne": {}
+                        "AddOne": {
+                            "user": "ADMIN"
+                        }
                     }"#.to_vec(),
                     code_id: 0,
                 }

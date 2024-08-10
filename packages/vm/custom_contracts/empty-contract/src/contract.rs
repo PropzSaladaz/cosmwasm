@@ -13,7 +13,9 @@ pub fn execute(
     use ExecuteMsg::*;
     match _msg {
         AddUser { admin } => execute::add_user(_deps, _info, admin),
-        AddOne { } => execute::add(_deps),
+        AddOne { user } => execute::add(_deps, user),
+        SetVal { user, val } => execute::set_val(_deps, user, val),
+        DoubleVal { user } => execute::double_val(_deps, user),
         Transfer {from , to} => Ok(Response::new()),
     }
 }
@@ -37,7 +39,7 @@ pub fn query(
     use QueryMsg::*;
 
     match _msg {
-        GetBalance {} => to_json_binary(&query::get_balance(_deps)?),
+        GetBalance { user } => to_json_binary(&query::get_balance(_deps, user)?),
     }
 }
 
@@ -54,14 +56,14 @@ mod execute {
         Ok(Response::new())
     }
 
-    pub fn add(deps: DepsMut) -> StdResult<Response> {
-        COINS.update(deps.storage, "ADMIN".to_owned(), |bank: Option<u64>| {
+    pub fn add(deps: DepsMut, user: String) -> StdResult<Response> {
+        COINS.update(deps.storage, user, |bank: Option<i64>| {
             match bank {
                 Some(value) => {
                     let mut counter = 0;
-                    for i in 0..300000 {
-                        if i % 2 == 0 { counter += i; }
-                        else { counter -= i; }
+                    for i in 0..300001 {
+                        if i % 2 == 0 { counter += 1; }
+                        else { counter -= 1; }
                     };
 
                     Ok(value + counter)
@@ -69,10 +71,29 @@ mod execute {
                 None => Err(StdError::generic_err("Value doesn't exist")),
             }
         })?;
-
         Ok(Response::new())
-
     }
+
+    pub fn set_val(deps: DepsMut, user: String, val: u64) -> StdResult<Response> {
+        COINS.update(deps.storage, user, |bank: Option<i64>| {
+            match bank {
+                Some(_) => Ok(val as i64),
+                None => Err(StdError::generic_err("Value doesn't exist")),
+            }
+        })?;
+        Ok(Response::new())
+    }
+
+    pub fn double_val(deps: DepsMut, user: String) -> StdResult<Response> {
+        COINS.update(deps.storage, user, |bank: Option<i64>| {
+            match bank {
+                Some(val) => Ok(val * 2),
+                None => Err(StdError::generic_err("Value doesn't exist")),
+            }
+        })?;
+        Ok(Response::new())
+    }
+
 }
 
 mod query {
@@ -80,8 +101,8 @@ mod query {
 
     use super::*;
 
-    pub fn get_balance(deps: Deps) -> StdResult<GetBalanceResp> {
-        let balance = COINS.load(deps.storage, "ADMIN".to_owned()).unwrap();
+    pub fn get_balance(deps: Deps, user: String) -> StdResult<GetBalanceResp> {
+        let balance = COINS.load(deps.storage, user).unwrap();
 
         let resp = GetBalanceResp { balance };
         Ok(resp)

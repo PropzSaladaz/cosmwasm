@@ -11,7 +11,16 @@ pub enum ExecuteMsg {
     AddUser {
         admin: String
     },
-    AddOne {},
+    AddOne {
+        user: String,
+    },
+    SetVal { 
+        user: String,
+        val: u64 
+    },
+    DoubleVal { 
+        user: String,
+    },
     Transfer {
         from: String,
         to: String
@@ -24,12 +33,14 @@ pub enum ExecuteMsg {
 pub enum QueryMsg {
     // the curly braces allow for the serialzed json to be in the correct format!
     // https://book.cosmwasm.com/basics/query.html
-    GetBalance {},
+    GetBalance { 
+        user: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct GetBalanceResp {
-    pub balance: u64,
+    pub balance: i64,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
