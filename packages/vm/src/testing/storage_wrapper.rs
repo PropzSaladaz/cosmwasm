@@ -235,6 +235,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Dependent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "A".to_owned(),
                     rws: rws,
                 },
                 address: SC_ADDR_A,
@@ -288,6 +289,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Dependent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "A".to_owned(),
                     rws: vec![
                         ReadWrite::Write { 
                             storage_dependency: StorageDependency::Dependent, 
@@ -305,6 +307,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Dependent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "B".to_owned(),
                     rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Dependent, 

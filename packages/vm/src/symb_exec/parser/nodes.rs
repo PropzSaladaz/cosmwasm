@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::sync::{Arc, RwLock};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use std::ops::Not;
@@ -207,7 +208,7 @@ pub enum PathCondition {
 /// Represents a storage key. 
 /// Can either be represented in Bytes if the SE-output is in base64,
 /// or in the form of an expression otherwise to be computed at runtime.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Serialize)]
 pub enum Key {
     Bytes(Vec<u8>),
     Expression {
@@ -216,7 +217,24 @@ pub enum Key {
     }, 
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize)]
+impl Eq for Key {}
+
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Key::Bytes(a), Key::Bytes(b)) => a.cmp(b),
+            (Key::Expression { base: base_a, expr: _ },
+             Key::Expression { base: base_b, expr: _ }) => {
+                base_a.cmp(base_b)
+             }
+
+            (Key::Bytes(_), Key::Expression { .. }) => Ordering::Less,
+            (Key::Expression { .. }, Key::Bytes(_)) => Ordering::Greater,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Commutativity {
     Commutative,
     NonCommutative
@@ -271,6 +289,30 @@ impl ReadWrite {
             operation_node: None,
         }
     }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            ReadWrite::Read { 
+                storage_dependency, 
+                key, 
+                commutativity, 
+                operation_node 
+            } |
+            ReadWrite::Write { 
+                storage_dependency, 
+                key, 
+                commutativity, 
+                operation_node 
+            } => {
+                let key = match key {
+                    Key::Bytes(b) => b.to_ascii_lowercase(),
+                    Key::Expression { base, expr: _ } => base.to_ascii_lowercase(),
+                };
+
+                format!("Read({:?},{:?})", key, commutativity)
+            },
+        }
+    }
 }
 
 impl PartialEq for ReadWrite {
@@ -289,6 +331,33 @@ impl PartialEq for ReadWrite {
     }
 }
 
+impl Eq for ReadWrite {}
+
+impl Ord for ReadWrite {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use ReadWrite::*;
+        match (self, other) {
+            // Order Reads before Writes
+            (Read { .. }, Write { .. }) => Ordering::Less,
+            (Write { .. }, Read { .. }) => Ordering::Greater,
+
+            (Read { storage_dependency: storage_a, key: key_a, commutativity: comm_a , .. },
+             Read { storage_dependency: storage_b, key: key_b, commutativity: comm_b , .. }) 
+            |
+            (Write { storage_dependency: storage_a, key: key_a, commutativity: comm_a , .. },
+             Write { storage_dependency: storage_b, key: key_b, commutativity: comm_b , .. }) => {
+                comm_a.cmp(comm_b).then_with(|| key_a.cmp(key_b))
+            },
+        }
+    }
+}
+
+impl PartialOrd for ReadWrite {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Default for ReadWrite {
     fn default() -> ReadWrite {
         Self::Read {
@@ -304,6 +373,7 @@ impl Default for ReadWrite {
 // a immutable reference to avoid overhead of RwLock, since after building this, it will
 // never change
 pub type CondNodeRef = Arc<RwLock<Box<PathConditionNode>>>;
+
 /// Represents a node in the path condition tree.
 /// 
 /// Each node has 1 condition and at least 1 positive and 1 negative branch.
@@ -325,6 +395,7 @@ pub enum PathConditionNode {
     /// Represents the RWS under a specific child branch (positive / negative)
     RWSNode {
         storage_dependency: StorageDependency,
+        rws_uid: String,
         rws: Vec<ReadWrite>,
     },
     None,
@@ -357,9 +428,9 @@ impl PartialEq for PathConditionNode {
                     _ => false
                 }
             },
-            (PathConditionNode::RWSNode { storage_dependency: storage_dependency_a, rws: rws_a }, 
-             PathConditionNode::RWSNode { storage_dependency: storage_dependency_b, rws: rws_b }) => {
-                storage_dependency_a == storage_dependency_b && rws_a == rws_b
+            (PathConditionNode::RWSNode { storage_dependency: storage_dependency_a, rws_uid: uid_a, rws: rws_a }, 
+             PathConditionNode::RWSNode { storage_dependency: storage_dependency_b, rws_uid: uid_b, rws: rws_b }) => {
+                storage_dependency_a == storage_dependency_b && uid_a == uid_b && rws_a == rws_b
             }
 
             (PathConditionNode::None, PathConditionNode::None) => true,

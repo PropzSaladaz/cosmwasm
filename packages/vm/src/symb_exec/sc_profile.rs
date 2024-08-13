@@ -7,11 +7,21 @@ use super::{evaluator::eval::SEContext, parser::{
     nodes::*, SCProfile
 }, SEStatus};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct TxRWS {
     pub storage_dependency: StorageDependency,
     pub profile_status: SEStatus,
+    pub rws_uid: String,
     pub rws: Vec<ReadWrite>
+}
+
+impl PartialEq for TxRWS {
+    // do not consider the RWS hash
+    fn eq(&self, other: &Self) -> bool {
+        self.storage_dependency == other.storage_dependency &&
+        self.profile_status == other.profile_status &&
+        self.rws == other.rws
+    }
 }
 
 impl SCProfile {
@@ -62,22 +72,24 @@ impl SCProfile {
                     CosmwasmInputs::Execute     { deps, env: _, info: _ } |
                     CosmwasmInputs::Query       { deps, env: _          } => {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
-                        let (storage_dependency, rws) = self.parse_tree(path_cond, deps.storage, &context);
+                        let (storage_dependency, rws_uid, rws) = self.parse_tree(path_cond, deps.storage, &context);
                         TxRWS {
                             storage_dependency,
                             profile_status: self.status,
+                            rws_uid,
                             rws,
                         }
                     },
                     CosmwasmInputs::Instantiate { deps: _, env: _, info: _ } => 
                     {
                         let context = SEContext::new(custom, arg_types, cosmwasm_inputs);
-                        let (storage_dependency, rws) = self.parse_tree(path_cond, &MockConcurrentStorage::default(), &context);
+                        let (storage_dependency, rws_uid, rws) = self.parse_tree(path_cond, &MockConcurrentStorage::default(), &context);
                         // TODO we are sending empty storage for instatiates -> Instantiates should not have yet a storage (the tx wasn't executed yet)
                         // thus we send a mock storage. Need to think better about this
                         TxRWS {
                             storage_dependency,
                             profile_status: self.status,
+                            rws_uid,
                             rws,
                         }
                     },
@@ -90,10 +102,20 @@ impl SCProfile {
         }
     }
 
-    fn parse_tree(&self, path_cond: &Arc<RwLock<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> (StorageDependency, Vec<ReadWrite>) {
+    fn parse_tree(&self, path_cond: &Arc<RwLock<Box<PathConditionNode>>> , storage: &dyn Storage, context: &SEContext ) -> 
+        (StorageDependency, String, Vec<ReadWrite>) {
+
         match path_cond.write().unwrap().parse_tree(storage, &context) {
-            PathConditionNode::RWSNode{ storage_dependency, rws} => (storage_dependency, rws),
-            PathConditionNode::None => (StorageDependency::Independent, vec![]),
+            PathConditionNode::RWSNode { 
+                storage_dependency, 
+                rws_uid,
+                rws
+            } => (
+                storage_dependency,
+                rws_uid,
+                rws
+            ),
+            PathConditionNode::None => (StorageDependency::Independent, "".to_owned(), vec![]),
             other => unreachable!("Expecting RWSNode, got {:?}", other)
         }
     }

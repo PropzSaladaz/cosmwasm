@@ -1,16 +1,6 @@
-Compile the contract into WASM - release version:
+install webassembly target
 ```
-cargo wasm
-```
-
-Compile debug version:
-```
-cargo wasm-debug
-```
-
-Check if contract is valid:
-```
-cosmwasm-check ./target/wasm32-unknown-unknown/release/contract.wasm
+rustup target add wasm32-unknown-unknown
 ```
 
 Compile:

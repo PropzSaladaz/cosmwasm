@@ -536,11 +536,7 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
                     }
                 )
             );
-        }
-    }
 
-    for i in 0..n_contracts {
-        for _ in 0..n_operation_repetitions {
             msgs.push(
                 Message::Invocation(
                     VMMessage::Invocation {
@@ -559,6 +555,12 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
         }
     }
 
+    // for i in 0..n_contracts {
+    //     for _ in 0..n_operation_repetitions {
+
+    //     }
+    // }
+
     // handle messages
     let mut message_handler = MessageHandler::new(
         sc_manager, 
@@ -575,5 +577,5 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
 
 fn main() {
     // run_persistent_vm();
-    run_n_contracts_n_increments(4, 500);
+    run_n_contracts_n_increments(2, 500);
 }

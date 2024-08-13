@@ -15,6 +15,7 @@ use pest::{
 
 use pest_derive::Parser;
 use base64::{engine::general_purpose, Engine};
+use sha2::{Digest, Sha256};
 
 use crate::symb_exec::{se_engine::SEStatus, SEProfile};
 
@@ -98,10 +99,17 @@ impl SCProfileParser {
         SCProfileParser::from_string(status, contents)
     }
 
+    /// Parses a Symbolic Execution profile, which is a string that specifies the path conditions and read-write-sets
+    /// for each path, for each entry point using ASCII characters.
+    /// The SEProfile also outputs information relative to completeness, which is to be saved in the generated SCProfile.
+    /// 
+    /// A SCProfile is basically a in-memory representation of all the conditions, and RWS, ready to be evaluated at runtime
+    /// given some transaction inputs.
     pub fn from_se_profile(se_profile: SEProfile) -> SCProfile {
         SCProfileParser::from_string(se_profile.status, se_profile.profile)
     }
 
+    /// Parses a Symb. Exec. profile string.
     pub fn from_string(status: SEStatus, contents: String) -> SCProfile {
         let mut parser = SCProfileParser::new(status);
 
@@ -315,12 +323,15 @@ impl SCProfileParser {
                     };
                     write_set.push(read_write);
                 };
-    
+
+                let rws_uid = self.sort_and_compute_rws_uid(&mut write_set);
+
                 // Update child branch in current path_cond_node with the RWS - detects 
                 // automatically the type of child branch (positive vs. negative)
                 set_child_branch_for_curr_node(
                     Arc::new(RwLock::new(Box::new(PathConditionNode::RWSNode {
                         storage_dependency: Independent,
+                        rws_uid,
                         rws: write_set 
                     }))));
             },
@@ -353,6 +364,23 @@ impl SCProfileParser {
             },
             rule => unreachable!("Expected path_data, found {:?}", rule)
         }
+    }
+
+    fn sort_and_compute_rws_uid(&self, rws: &mut Vec<ReadWrite>) -> String {
+        let mut stringified_items = vec![]; 
+        rws.sort();
+
+        for item in rws {
+            stringified_items.push(item.to_string());
+        }
+
+        let joined_string = stringified_items.join(",");
+
+        // compute the hash
+        let digest = Sha256::digest(joined_string);
+        let encoded = hex::encode(digest);
+
+        encoded
     }
 
     fn parse_bool_expr(&self, bool_expr: Pair<Rule>) -> PathCondition {
@@ -411,7 +439,7 @@ impl SCProfileParser {
     /// 
     /// `Type(something) == ...``
     /// 
-    /// Where something can be either a single variable identifier - `msg` - or an attribute accessor - `msg.a.b`
+    /// Where <something> can be either a single variable identifier - `msg` - or an attribute accessor - `msg.a.b`
     /// If `msg` is any of the inputs, set it as `MessageType`, else set it as `Identifier`.
     /// Then set the inner Identifier as `AttributeAccessor` or `Variable` depending on the type.
     fn parse_type(&self, variable: Pair<Rule>) -> Expr {
@@ -605,6 +633,7 @@ msg: ExecuteMsg
             // => SET(=AARiYW5r= @ _msg.admin): Non-Inc
             pos_branch: Some(Arc::new(RwLock::new(Box::new(PathConditionNode::RWSNode {
                 storage_dependency: Independent,
+                rws_uid: "A".to_owned(),
                 rws: vec![
                 ReadWrite::Read {
                     storage_dependency: Independent,
@@ -638,6 +667,7 @@ msg: ExecuteMsg
             }), 
             pos_branch: Some(Arc::new(RwLock::new(Box::new(PathConditionNode::RWSNode {
                 storage_dependency: Independent,
+                rws_uid: "B".to_owned(),
                 rws: vec![
                 
                 // RWS

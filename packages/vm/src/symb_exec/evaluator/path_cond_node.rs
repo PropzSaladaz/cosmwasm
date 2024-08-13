@@ -46,9 +46,11 @@ impl PathConditionNode {
                     },
                     PathConditionNode::RWSNode { 
                         storage_dependency, 
+                        rws_uid,
                         rws 
                     } => PathConditionNode::RWSNode { 
                         storage_dependency: storage_dependency | condition_storage_dependency, 
+                        rws_uid,
                         rws 
                     },
                     PathConditionNode::None => PathConditionNode::None
@@ -59,7 +61,7 @@ impl PathConditionNode {
             // When we parse all conditions, and reach the final RWS, we still have to evaluate it.
             // The received RWS is of the type "SET(GET(xyz)): 1" -> thus we need to evaluate the GETs to know the exact key 
             // in bytes (note that this key can still change during execution)
-            Self::RWSNode { storage_dependency, rws} => {
+            Self::RWSNode { storage_dependency, rws_uid, rws} => {
                 let rws: Vec<ReadWrite> = rws.iter_mut().map(|read_write| {
                     read_write.eval(storage, variable_context)
                 }).collect();
@@ -77,6 +79,7 @@ impl PathConditionNode {
                 }
                 Self::RWSNode { 
                     storage_dependency: *storage_dependency | dependency, 
+                    rws_uid: rws_uid.clone(),
                     rws
                 }
 
@@ -84,8 +87,9 @@ impl PathConditionNode {
             // When we parse all conditions, and reach the final RWS, we still have to evaluate it.
             // The received RWS is of the type "SET(GET(xyz)): 1" -> thus we need to evaluate the GETs to know the exact key 
             // in bytes (note that this key can still change during execution)
-            Self::RWSNode { storage_dependency, rws} => Self::RWSNode { 
+            Self::RWSNode { storage_dependency, rws_uid, rws} => Self::RWSNode { 
                 storage_dependency: *storage_dependency, 
+                rws_uid: rws_uid.clone(),
                 rws: rws.iter_mut().map(|read_write| {
                     read_write.eval(storage, variable_context)
                 }).collect()
@@ -160,6 +164,7 @@ mod tests {
                 // => GET(=AARiYW5r= @ _msg.admin)
                 pos_branch: Some(Arc::new(RwLock::new(Box::new(PathConditionNode::RWSNode{ 
                     storage_dependency: Independent,
+                    rws_uid: "A".to_owned(),
                     rws: vec![
                     ReadWrite::Write { 
                         storage_dependency: Independent,
@@ -191,6 +196,7 @@ mod tests {
                 }), 
                 pos_branch: Some(Arc::new(RwLock::new(Box::new(PathConditionNode::RWSNode {
                     storage_dependency: Independent,
+                    rws_uid: "B".to_owned(),
                     rws: vec![
                     // SET(GET(=AARiYW5rQURNSU4=)): Inc
                     // GET(=AARiYW5rQURNSU4=)
@@ -252,6 +258,7 @@ mod tests {
 
         assert_eq!(rws, PathConditionNode::RWSNode {
             storage_dependency: Dependent, // the condition depends on a GET from storage!
+            rws_uid: "A".to_owned(),
             rws: vec![
             ReadWrite::Write { 
                 storage_dependency: Independent,
@@ -321,6 +328,7 @@ mod tests {
 
         assert_eq!(rws, PathConditionNode::RWSNode{
             storage_dependency: Dependent,
+            rws_uid: "A".to_owned(),
             rws: vec![
             ReadWrite::Read {
                 storage_dependency: Independent,

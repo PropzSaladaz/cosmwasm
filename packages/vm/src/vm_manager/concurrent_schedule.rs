@@ -1605,6 +1605,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "A".to_owned(),
                     rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
@@ -1653,6 +1654,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "B".to_owned(),
                     rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
@@ -1695,6 +1697,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "C".to_owned(),
                     rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
@@ -1725,6 +1728,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "D".to_owned(),
                     rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
@@ -1755,6 +1759,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "E".to_owned(),
                     rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
@@ -1785,6 +1790,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "F".to_owned(),
                     rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
@@ -1861,7 +1867,7 @@ mod tests {
     #[test]
     fn get_value_non_commutative_depends_on_storage() {
         let key = vec![0u8];
-        let val = vec![100u8];
+        let val = "100".as_bytes().to_vec();
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
         let mut rws = vec![
@@ -1892,7 +1898,7 @@ mod tests {
     #[test]
     fn get_value_commutative_depends_on_storage() {
         let key = vec![0u8];
-        let val = vec![100u8];
+        let val = "100".as_bytes().to_vec();
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
         let mut rws = vec![
@@ -1922,7 +1928,7 @@ mod tests {
     #[test]
     fn set_value_commutative_depends_on_commutative_read() {
         let key = vec![0u8];
-        let val = vec![100u8];
+        let val = "100".as_bytes().to_vec();
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
         let mut rws = vec![
@@ -1951,17 +1957,17 @@ mod tests {
             _ => unreachable!("")
         };
  
-        ConcurrentSchedule::set_value(node, vec![105u8].as_slice());
+        ConcurrentSchedule::set_value(node, "105".as_bytes());
 
         // write commutative node should end up having the delta -> 105 - 100 = 5
-        assert_eq!(node.read().unwrap().data.value, Some(vec![5u8]));
+        assert_eq!(node.read().unwrap().data.value, Some("5".as_bytes().to_vec()));
     }
 
     // Storage | [Non Comm Write] <- [Non Comm Read]
     #[test]
     fn get_value_non_commutative_depends_on_non_commutative_write() {
         let key = vec![0u8];
-        let val = vec![100u8];
+        let val = "100".as_bytes().to_vec();
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
         let mut rws = vec![
@@ -1996,10 +2002,10 @@ mod tests {
     #[test]
     fn get_value_non_commutative_depends_on_commutative_write_depending_on_storage() {
         let key = vec![0u8];
-        let val = vec![100u8];
-        let comm_write = vec![109u8];
-        let delta = vec![comm_write.get(0).unwrap() - val.get(0).unwrap()];
-        let final_val = vec![val.get(0).unwrap() + delta.get(0).unwrap()];
+        let val = "100".as_bytes().to_vec();
+        let comm_write = "109".as_bytes().to_vec();
+        let delta = "9".as_bytes().to_vec();
+        let final_val = "109".as_bytes().to_vec();
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
         let mut rws = vec![
@@ -2047,10 +2053,10 @@ mod tests {
     #[test]
     fn get_value_non_commutative_depends_on_commutative_write_depending_on_non_comm_write() {
         let key = vec![0u8];
-        let val = vec![100u8];
-        let comm_write = vec![109u8];
-        let delta = vec![comm_write.get(0).unwrap() - val.get(0).unwrap()];
-        let final_val = vec![val.get(0).unwrap() + delta.get(0).unwrap()];
+        let val = "100".as_bytes().to_vec();
+        let comm_write = "109".as_bytes().to_vec();
+        let delta = "9".as_bytes().to_vec();
+        let final_val = "109".as_bytes().to_vec();
 
         let mut concurrent_schedule = ConcurrentSchedule::new();
         let mut rws = vec![
@@ -2093,6 +2099,80 @@ mod tests {
 
         // NonComm read -> read X + Z = Y
         let read_operation = rws.get(3).unwrap().rws.rws.get(0).unwrap();
+        let read_node = match read_operation { 
+            ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
+            _ => unreachable!("")
+        };
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+
+        assert_eq!(read_val, Some(final_val));
+    }
+
+
+    // Storage | <- [Comm Read] <- [Comm write] <- [Comm Read] <- [Comm write] <- [Non Comm Read]
+    // last non commutative read should see the sum of the previous two deltas over the value in storage
+    #[test]
+    fn get_value_non_commutative_depends_on_two_commutative_operations() {
+        let key = vec![0u8];
+        let val = "100".as_bytes().to_vec();
+        let comm_write1 = "109".as_bytes().to_vec();
+        let delta1 = "9".as_bytes().to_vec();
+        let comm_write2 = "104".as_bytes().to_vec();
+        let delta2 = "4".as_bytes().to_vec();
+        let final_val = "113".as_bytes().to_vec();
+
+        let mut concurrent_schedule = ConcurrentSchedule::new();
+        let mut rws = vec![
+            mock_tx_operation(SC_ADDR_A, &key, 1, ReadWrite::read(),  Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A, &key, 1, ReadWrite::write(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A, &key, 2, ReadWrite::read(),  Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A, &key, 2, ReadWrite::write(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A, &key, 3, ReadWrite::read(),  Commutativity::NonCommutative),
+        ];
+
+        concurrent_schedule.build_from_rws(&mut rws);
+
+        let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
+        concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap();
+
+        // Comm read1
+        let read_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
+        let read_node = match read_operation { 
+            ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
+            _ => unreachable!("")
+        };
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        assert_eq!(read_val, Some(val.clone()));
+
+        // Comm write1
+        let write_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
+        let write_node = match write_operation { 
+            ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
+            _ => unreachable!("")
+        };
+        ConcurrentSchedule::set_value(write_node, &comm_write1);
+        assert_eq!(write_node.read().unwrap().data.value, Some(delta1));
+
+        // Comm read2
+        let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap();
+        let read_node = match read_operation { 
+            ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
+            _ => unreachable!("")
+        };
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        assert_eq!(read_val, Some(val));
+
+        // Comm write2
+        let write_operation = rws.get(3).unwrap().rws.rws.get(0).unwrap();
+        let write_node = match write_operation { 
+            ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
+            _ => unreachable!("")
+        };
+        ConcurrentSchedule::set_value(write_node, &comm_write2);
+        assert_eq!(write_node.read().unwrap().data.value, Some(delta2));
+
+        // NonComm read
+        let read_operation = rws.get(4).unwrap().rws.rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -2320,6 +2400,7 @@ mod tests {
             rws: TxRWS {
                 storage_dependency: StorageDependency::Independent,
                 profile_status: SEStatus::Complete,
+                rws_uid: "A".to_owned(),
                 rws: vec![],
             },
             address: SC_ADDR_A,

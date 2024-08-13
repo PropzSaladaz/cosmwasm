@@ -52,6 +52,8 @@ pub fn mock_concurrent_backend(contract_balance: &[Coin], storage: Arc<MockConcu
 
 pub fn mock_tx_operation(sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId, 
     op_type: ReadWrite, commutativity: Commutativity) -> RWSContext {
+    let rws_uid = format!("{:?}{:?}", key.to_ascii_lowercase(), commutativity);
+    
     RWSContext {
         address: sc_address,
         tx_message: Some(VMMessage::Invocation {
@@ -64,6 +66,7 @@ pub fn mock_tx_operation(sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId,
         rws: TxRWS {
             storage_dependency: StorageDependency::Independent,
             profile_status: SEStatus::Complete,
+            rws_uid,
             rws: vec![
                 match op_type {
                     ReadWrite::Write { .. } => ReadWrite::Write { 

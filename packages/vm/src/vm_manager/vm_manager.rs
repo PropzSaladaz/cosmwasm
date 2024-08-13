@@ -1,5 +1,6 @@
 use std::{collections::HashMap, io::{self, Write}, sync::{Arc, RwLock}, thread};
 
+use indexmap::IndexMap;
 use parking_lot::Mutex;
 
 use cosmwasm_std::{Api, CustomQuery, Empty, QuerierWrapper};
@@ -318,7 +319,7 @@ where
         // 1 for the instantiations, which is the first to get executed.
         // a 2nd for all the other txs in the block.
         for (idx, mut batch) in txs_batch.into_iter().enumerate() {
-            let mut rws: Vec<RWSContext> = self.get_rws(batch);
+            let mut rws: Vec<RWSContext> = self.get_ordered_rws(batch);
 
             let mut schedule = ConcurrentSchedule::new();
 
@@ -358,9 +359,16 @@ where
     /// It returns a vec where each item contains the contract address as well as all the keys
     /// it will touch
     /// The return vector places all Instantiations first, then all COMPLETE & INDEPENDENT txs, and only after all the INCOMPLETE or DEPENDENT txs
-    fn get_rws(&self, block: Block) -> Vec<RWSContext> {
-        let mut rws_complete_and_independent = vec![];
-        let mut rws_incomplete_or_dependent = vec![];
+    /// 
+    /// Within all the instantiations/invocations there is still an order applied:
+    /// - The 1st tx with some rws_uid sets the order for all the remaining txs with the same rws_uid in the current block
+    /// - Txs with the same rws_uid are appended according to their position in the original block 
+    fn get_ordered_rws(&self, block: Block) -> Vec<RWSContext> {
+        let mut final_tx_order = vec![];
+
+        // will store txs that have the same RWS as key (RWS_ID) -> value (vec of txs, ordered by order of appearence)
+        let mut rws_complete_and_independent_tx_map = IndexMap::new();
+        let mut rws_incomplete_or_dependent_tx_map = IndexMap::new();
 
         // this is different from the instantiation count from state_manager. This is just a mock.
         // We don't actually instantiate. And here we do it best case scenario - we assume every instantiaion
@@ -413,20 +421,29 @@ where
             };
 
             if (tx.rws.profile_status == SEStatus::Complete) && (tx.rws.storage_dependency == StorageDependency::Independent) {
-                rws_complete_and_independent.push(tx);
+                let same_profile_txs = rws_complete_and_independent_tx_map.entry(tx.rws.rws_uid.clone()).or_insert(vec![]);
+                same_profile_txs.push(tx);
             }
             else {
-                rws_incomplete_or_dependent.push(tx);
+                let same_profile_txs = rws_incomplete_or_dependent_tx_map.entry(tx.rws.rws_uid.clone()).or_insert(vec![]);
+                same_profile_txs.push(tx);
             }
         };
 
-        // append incomplete || dependent RWSs at the end
-        rws_complete_and_independent.append(&mut rws_incomplete_or_dependent);
-        // set tx id as the index in the block
-        self.set_tx_idx_by_position_in_block(&mut rws_complete_and_independent);
+        // append complete and independent first
+        for (_key, mut value) in rws_complete_and_independent_tx_map {
+            final_tx_order.append(&mut value);
+        }
 
-        // all instantiations will get executed first, then the rest
-        rws_complete_and_independent
+        // append incomplete || dependent RWSs at the end
+        for (_key, mut value) in rws_incomplete_or_dependent_tx_map {
+            final_tx_order.append(&mut value);
+        }
+
+        // set tx id as the index in the block
+        self.set_tx_idx_by_position_in_block(&mut final_tx_order);
+
+        final_tx_order
     }
 
     fn set_tx_idx_by_position_in_block(&self, txs: &mut Vec<RWSContext>) {
@@ -994,7 +1011,7 @@ mod tests {
             vm_message.clone()
         ];
 
-        let rws = vm_manager.get_rws(msgs);
+        let rws = vm_manager.get_ordered_rws(msgs);
         assert_eq!(
             rws,
             vec![RWSContext {
@@ -1002,6 +1019,7 @@ mod tests {
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
+                    rws_uid: "A".to_owned(),
                     rws: vec![
                         ReadWrite::Read {
                             storage_dependency: StorageDependency::Independent,
@@ -1042,21 +1060,11 @@ mod tests {
             },
         ];
 
-        // We ordered this by order of the scheduled execution. Not that conceptually
-        // we would execute 4th message right after the 2nd to confirm the incremented value on contract 'a'
-        // but since there is a dependency, the 4th will only execute after all txs with no dependencies.
-        // Meaning the 3rd message will run before the 4th message
+        // We ordered this by order of the scheduled execution. 
+        // Internally, there will be a reordering, placing all txs
+        // with the same RWS together. So even if we placed a Query in between
+        // the executes, all queries would be ordered to be executed after the executes.
         let invocations = vec![
-            VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Query,
-                contract_address: SC_ADDR_A,
-                message: br#"{
-                    "GetBalance": {
-                        "user": "ADMIN"
-                    }
-                }"#.to_vec(),
-                code_id: 0,
-            },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_A,
@@ -1070,6 +1078,16 @@ mod tests {
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
                 contract_address: SC_ADDR_B,
+                message: br#"{
+                    "AddOne": {
+                        "user": "ADMIN"
+                    }
+                }"#.to_vec(),
+                code_id: 0,
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Execute,
+                contract_address: SC_ADDR_A,
                 message: br#"{
                     "AddOne": {
                         "user": "ADMIN"
@@ -1089,6 +1107,16 @@ mod tests {
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
+                contract_address: SC_ADDR_A,
+                message: br#"{
+                    "GetBalance": {
+                        "user": "ADMIN"
+                    }
+                }"#.to_vec(),
+                code_id: 0,
+            },
+            VMMessage::Invocation {
+                entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_B,
                 message: br#"{
                     "GetBalance": {
@@ -1108,16 +1136,6 @@ mod tests {
                 code_id: 0,
             },
             VMMessage::Invocation {
-                entry_point: InstantiatedEntryPoint::Execute,
-                contract_address: SC_ADDR_A,
-                message: br#"{
-                    "AddOne": {
-                        "user": "ADMIN"
-                    }
-                }"#.to_vec(),
-                code_id: 0,
-            },
-            VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
                 contract_address: SC_ADDR_A,
                 message: br#"{
@@ -1127,30 +1145,23 @@ mod tests {
                 }"#.to_vec(),
                 code_id: 0,
             },
+
         ];
 
         vm_manager.handle_block(msgs).unwrap();
         let resps = vm_manager.handle_block(invocations).unwrap();
 
-        assert_eq!("{\"balance\":1000}", resps[0]);
+        assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resps[0]);
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resps[1]);
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resps[2]);
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resps[3]);
 
-        // the 4th and 5th operations may interchange nondeterministically. This is because we use 
-        // a HashSet to store the dependent txs. Since 3rd & 4th operations depend on the 2nd,
-        // then when we execute these, any order is possible - there are no conflicts between them
-        if resps[4].starts_with("{\"balance\"") {
-            assert_eq!("{\"balance\":1001}", resps[4]);         
-            assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resps[5]);
-        }
-        else {        
-            assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resps[4]);
-            assert_eq!("{\"balance\":1001}", resps[5]); 
-        }
-
-
-        assert_eq!("{\"balance\":1001}", resps[6]);
+        // this is the query for SC B - as the execute of it is in 2nd place, it pushes first its dependencies
+        // before the executes of SC A
+        assert_eq!("{\"balance\":1001}", resps[4]);
+        // these are the queries for SC A
+        assert_eq!("{\"balance\":1002}", resps[5]);
+        assert_eq!("{\"balance\":1002}", resps[6]);
         assert_eq!("{\"balance\":1002}", resps[7]);
 
         vm_manager.state_manager.read().unwrap().cleanup();
