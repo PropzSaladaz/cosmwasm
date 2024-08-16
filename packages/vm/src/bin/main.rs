@@ -59,7 +59,7 @@ fn run_persistent_vm() {
         Arc::new(backend_builder),
         Arc::new(concurrent_backend_builder),
     4,
-    2);
+    4);
 
     // handle messages
     let mut message_handler = MessageHandler::new(
@@ -499,7 +499,7 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
         Arc::new(backend_builder),
         Arc::new(concurrent_backend_builder),
     2,
-    2);
+    1);
 
 
     let mut msgs = vec![
@@ -577,5 +577,5 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
 
 fn main() {
     // run_persistent_vm();
-    run_n_contracts_n_increments(2, 500);
+    run_n_contracts_n_increments(1, 2);
 }

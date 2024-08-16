@@ -141,10 +141,14 @@ impl ConcurrentQueues {
 
     /// Tries popping txs from any of the queues. 
     /// 
-    /// Checks ready queue 1st, and if no elements available, checks prtial ready.
+    /// Checks ready queue 1st, and if no elements available, checks partial ready.
     /// Waits until signaled by another thread pushing a new element, or until no more txs
     /// to execute.
     fn pop(&self) -> Option<TxId> {
+        {
+            println!("Ready queue: {:?}", *self.ready_queue.lock());
+            println!("Partial_Ready queue: {:?}", *self.partial_ready_queue.lock());
+        }
         
         'try_popping: loop {
 
@@ -514,14 +518,6 @@ impl Schedule {
         }
     }
 
-    /// Returns the head node of a list of dependent operations on some Key of some Contract
-    pub fn get_head_node(&self, address: &ScAddr, key: &[u8]) -> NodeRef<VecOperation> {
-        let sc = self.schedule.get(address).unwrap();
-        let list = sc.get(key).unwrap();
-        let head_node = list.head.read().unwrap();
-        Arc::clone(&head_node)
-    }
-
     /// Sets the entries of the schedule & last_write (there will be 1 last_write for each key in a SC)
     /// for the chosen SC address
     fn create_if_not_exists(&mut self, sc_address: ScAddr) {
@@ -631,6 +627,8 @@ impl Schedule {
             // TODO - Optimization!! We should store the last_non_commutative_write per each tx number
             // and we would only need to check if that last wrtie exists - then mark dependency on it. Else, 
             // read from storage
+            // TODO - Optimization - We should also have the last operation node from each tx for each SC - avoid searching all operations within a SC
+            // (can be benefitial for long chains - lots of operations for a single key)
             let mut prev_node: Option<NodeRef<VecOperation>> = None;
             let mut node_ref = Arc::clone(&linked_list.tail.read().unwrap());
             let mut tmp_node;
@@ -890,6 +888,7 @@ impl ConcurrentSchedule {
             }
 
             if self.deps.entry(tx_id).or_insert(AtomicUsize::new(0)).load(Ordering::SeqCst) == 0 { // no dependencies
+                println!("Pushing to ready queue - BUILD FROM RWS");
                 self.execution_queues.push_ready(tx_id);
                 self.execution_queues.remove_partial_ready(tx_id);
             }
@@ -914,6 +913,7 @@ impl ConcurrentSchedule {
         if let Some(dep) = self.deps.get(&tx_id) {
             if dep.load(Ordering::SeqCst) == 0 {
                 // If tx has no dependencies, push to ready queue
+                println!("Pushing to ready queue - UNTRACKED OP");
                 self.execution_queues.push_ready(tx_id);
             }
         }

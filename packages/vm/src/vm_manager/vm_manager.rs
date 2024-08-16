@@ -446,6 +446,87 @@ where
         final_tx_order
     }
 
+    fn get_rws<F, F2>(&self, block: Block, mut save_rws: F, order_rws: F2) -> Vec<RWSContext>
+    where
+        F: FnMut(RWSContext),
+        F2: Fn() -> Vec<RWSContext>,
+    {
+
+        // this is different from the instantiation count from state_manager. This is just a mock.
+        // We don't actually instantiate. And here we do it best case scenario - we assume every instantiaion
+        // will 'work', and assign it a different SC address. We use this to get a unique address fo reach 
+        // instantiation - to guarantee no conflicts between operations on the instantiated contract.
+        let mut instantiation_counts: HashMap<u128, u128> = HashMap::new();
+
+        for msg in block.into_iter() {
+            let tx = match msg {
+                VMMessage::Instantiation { 
+                    ref message, 
+                    contract_code_id,
+                } => {
+                    // Increase instantiation count for each instantiate for the same code id
+                    let instantiation_count = if let Some(count) = instantiation_counts.get_mut(&contract_code_id) {
+                            *count += 1;
+                            *count
+                        }
+                        else {
+                            instantiation_counts.insert(contract_code_id, 0);
+                            0
+                    };
+                        
+                    let profile = self.state_manager.read().unwrap().get_profile(contract_code_id);
+                    let mut context = self.get_rws_instantiation(profile, message.as_slice(), 
+                        contract_code_id, instantiation_count);
+                    context.tx_message = Some(msg);
+                    context
+                },
+
+                VMMessage::Invocation { 
+                    ref message, // ref is used not to move this field. Else, we would not be able to move it into the Some(msg) below
+                    ref entry_point,
+                    ref contract_address, 
+                    code_id
+                } => {
+                    let profile = self.state_manager.read().unwrap().get_profile(code_id);
+                    match &self.state_manager.read().unwrap().get_sc_storage(contract_address) {
+                        Some(state) => { 
+                            // Build mock depsMut
+                            let mut context = self.get_rws_for_invocation(
+                                                        &entry_point, profile, message.as_slice(), contract_address, &state.storage);
+                            context.tx_message = Some(msg);
+                            context
+                        }
+                        // If invocation on a contract that wasn't yet instantiated
+                        None => panic!("Invoquing execution on a contract that wasn't instantiated yet!")
+                    }
+                },
+            };
+
+            save_rws(tx);
+        };
+
+        let mut ordered_rws = order_rws();
+
+        self.set_tx_idx_by_position_in_block(&mut ordered_rws);
+        ordered_rws
+    }
+
+
+    /// Get the RWS given an input message for some contract.
+    /// Fetches the SE profile, parses it & gets the final RWS in form of keys as bytes
+    /// It returns a vec where each item contains the contract address as well as all the keys
+    /// it will touch
+    /// The return vector places all Instantiations first, then all COMPLETE & INDEPENDENT txs, and only after all the INCOMPLETE or DEPENDENT txs
+    fn get_original_ordered_rws(&self, block: Block) -> Vec<RWSContext> {
+        let mut rws = vec![];
+
+        self.get_rws(
+            block,
+            |tx| rws.push(tx),
+            || { rws },
+        )
+    }
+
     fn set_tx_idx_by_position_in_block(&self, txs: &mut Vec<RWSContext>) {
         for (idx, el) in txs.iter_mut().enumerate() {
             el.tx_block_id = idx as TxId;
@@ -525,6 +606,14 @@ where
         let rws = Arc::new(rws);
         let thread_exec_ctx = Arc::new(VMManager::get_execution_context(&self));
 
+        // // not included in execution time
+        // #[cfg(feature = "debug_graph")]
+        // {
+        //     let suffix = if batchType == BatchType::Instantiation { "instantiation".to_owned() } else { "execution".to_owned() };
+        //     let graph_name = format!("{:?}_{:?}_before", self.block_number, suffix);
+        //     schedule.generate_debug_graph(graph_name, &rws);
+        // }
+
         // execute each message
         for i in 0..self.n_threads {
             let schedule_ref = Arc::clone(&schedule);
@@ -534,9 +623,9 @@ where
 
             let handle = thread::spawn(move || {
                 loop {
-                    // println!("Thread: {:?} waiting for message to execute", i);
+                    println!("Thread: {:?} waiting for message to execute", i);
                     if let Some(tx_id) = &schedule_ref.get_next_message_to_execute() {
-                        // println!("Thread: {:?} executing {:?}", i, tx_id);
+                        println!("Thread: {:?} executing {:?}", i, tx_id);
                         let message = &rws_ref[*tx_id as usize];
                         // TODO - below clone should be optimized - no need.. we can pass a reference, or just return the same arc from the method
                         let resp = VMManager::execute_message(Arc::clone(&schedule_ref), &*thread_exec_ctx_ref, message, *tx_id);
@@ -546,7 +635,7 @@ where
                         resps_ref.lock().push(resp);
                     }
                     else {
-                        // println!("Thread {:?} finished executing", i);
+                        println!("Thread {:?} finished executing", i);
                         break; 
                     }
                 }
@@ -578,7 +667,7 @@ where
         #[cfg(feature = "debug_graph")]
         {
             let suffix = if batchType == BatchType::Instantiation { "instantiation".to_owned() } else { "execution".to_owned() };
-            let graph_name = format!("{:?}_{:?}", self.block_number, suffix);
+            let graph_name = format!("{:?}_{:?}_after", self.block_number, suffix);
             schedule.generate_debug_graph(graph_name, &rws);
         }
 
