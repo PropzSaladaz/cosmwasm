@@ -328,7 +328,7 @@ mod tests {
 
         assert_eq!(rws, PathConditionNode::RWSNode{
             storage_dependency: Dependent,
-            rws_uid: "A".to_owned(),
+            rws_uid: "B".to_owned(),
             rws: vec![
             ReadWrite::Read {
                 storage_dependency: Independent,

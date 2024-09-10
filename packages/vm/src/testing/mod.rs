@@ -1,4 +1,6 @@
 // The external interface is `use cosmwasm_vm::testing::X` for all integration testing symbols, no matter where they live internally.
+#[macro_use]
+mod macros;
 
 mod calls;
 mod instance;
@@ -22,8 +24,9 @@ pub use instance::{
 };
 pub use mock::{
     mock_backend, mock_persistent_backend, mock_concurrent_backend, mock_backend_with_balances, 
-    mock_tx_operation, mock_env, mock_info, MockApi, MOCK_CONTRACT_ADDR,
+    mock_tx_operation, mock_env, mock_info, MockApi, MOCK_CONTRACT_ADDR
 };
+
 pub use querier::MockQuerier;
 pub use storage::MockStorage;
 

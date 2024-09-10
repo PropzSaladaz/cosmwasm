@@ -1,10 +1,15 @@
 mod sc_storage;
 mod vm_manager;
 mod concurrent_schedule;
+mod schedule;
+mod parallel_schedule_builder;
+mod serial_schedule;
 
 #[cfg(feature = "debug_graph")]
 mod dot_schedule;
 
 pub use vm_manager::{VMManager, VMMessage, InstantiatedEntryPoint, DepsMut, RWSContext, AddressMapper};
 pub use sc_storage::{SCManager, ContractRWS, PersistentBackend};
-pub use concurrent_schedule::{ConcurrentSchedule, VecOperation, Operation, NodeRef, DependencyNode, OpType, TxId, ScAddr};
+pub use concurrent_schedule::{ConcurrentSchedule, TxState};
+pub use schedule::{Schedule, LastWrites, TxId, ScAddr, NodeRef, VecOperation, DependencyNode, OpType};
+pub use parallel_schedule_builder::ParallelScheduleBuilder;

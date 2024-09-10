@@ -454,7 +454,7 @@ mod tests {
     use crate::conversion::ref_to_u32;
     use crate::errors::VmError;
     use crate::size::Size;
-    use crate::testing::{MockApi, MockQuerier, MockConcurrentStorage, MockStorageWrapper};
+    use crate::testing::{ConcurrentStorage, MockApi, MockQuerier, MockConcurrentStorage, MockStorageWrapper};
     use crate::wasm_backend::{compile, make_compiling_engine};
     use cosmwasm_std::{
         coins, from_json, to_json_vec, AllBalanceResponse, BankQuery, Empty, QueryRequest,
@@ -520,12 +520,15 @@ mod tests {
     }
 
     fn leave_default_data(env: &Environment<MockApi, MockStorageWrapper, MockQuerier>) {
-        // create some mock data
-        let mut storage: MockStorageWrapper = Default::default();
-        storage
+        let concurrent_storage: MockConcurrentStorage = MockConcurrentStorage::new();
+        concurrent_storage
             .set(INIT_KEY, INIT_VALUE)
             .0
             .expect("error setting value");
+
+        // create some mock data
+        let mut storage = MockStorageWrapper::default(Arc::new(concurrent_storage));
+
         let querier: MockQuerier<Empty> =
             MockQuerier::new(&[(INIT_ADDR, &coins(INIT_AMOUNT, INIT_DENOM))]);
         env.move_in(storage, Arc::new(RwLock::new(querier)));

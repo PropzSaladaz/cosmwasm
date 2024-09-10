@@ -6,7 +6,7 @@ use cosmwasm_std::{Env, MessageInfo};
 use num::traits::ToBytes;
 use serde::Serialize;
 
-use crate::{DepsMut, NodeRef, Operation, VecOperation};
+use crate::{DepsMut, NodeRef, VecOperation};
 
 pub type Float = f64;
 pub type Integer = i64;
@@ -292,17 +292,10 @@ impl ReadWrite {
 
     pub fn to_string(&self) -> String {
         match self {
-            ReadWrite::Read { 
-                storage_dependency, 
+            ReadWrite::Read {  
                 key, 
                 commutativity, 
-                operation_node 
-            } |
-            ReadWrite::Write { 
-                storage_dependency, 
-                key, 
-                commutativity, 
-                operation_node 
+                .. 
             } => {
                 let key = match key {
                     Key::Bytes(b) => b.to_ascii_lowercase(),
@@ -310,6 +303,18 @@ impl ReadWrite {
                 };
 
                 format!("Read({:?},{:?})", key, commutativity)
+            }
+            ReadWrite::Write { 
+                key, 
+                commutativity, 
+                .. 
+            } => {
+                let key = match key {
+                    Key::Bytes(b) => b.to_ascii_lowercase(),
+                    Key::Expression { base, expr: _ } => base.to_ascii_lowercase(),
+                };
+
+                format!("Write({:?},{:?})", key, commutativity)
             },
         }
     }
@@ -341,11 +346,11 @@ impl Ord for ReadWrite {
             (Read { .. }, Write { .. }) => Ordering::Less,
             (Write { .. }, Read { .. }) => Ordering::Greater,
 
-            (Read { storage_dependency: storage_a, key: key_a, commutativity: comm_a , .. },
-             Read { storage_dependency: storage_b, key: key_b, commutativity: comm_b , .. }) 
+            (Read { key: key_a, commutativity: comm_a , .. },
+             Read { key: key_b, commutativity: comm_b , .. }) 
             |
-            (Write { storage_dependency: storage_a, key: key_a, commutativity: comm_a , .. },
-             Write { storage_dependency: storage_b, key: key_b, commutativity: comm_b , .. }) => {
+            (Write { key: key_a, commutativity: comm_a , .. },
+             Write { key: key_b, commutativity: comm_b , .. }) => {
                 comm_a.cmp(comm_b).then_with(|| key_a.cmp(key_b))
             },
         }
@@ -446,7 +451,7 @@ pub type CustomArgTypes = HashMap<String, HashMap<String, Type>>;
 /// Represents all info related to each entry point:
 /// 
 /// Inputs, type_defs, and Path conditions (RWS)
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct EntryPointProfile {
     /// Maps all input variable names to their types.
     /// 

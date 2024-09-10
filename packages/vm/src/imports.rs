@@ -613,7 +613,7 @@ mod tests {
 
     use crate::backend::{BackendError, Storage};
     use crate::size::Size;
-    use crate::testing::{MockApi, MockQuerier, MockConcurrentStorage, MockStorageWrapper};
+    use crate::testing::{ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper};
     use crate::wasm_backend::{compile, make_compiling_engine};
 
     static CONTRACT: &[u8] = include_bytes!("../testdata/hackatom.wasm");
@@ -709,9 +709,11 @@ mod tests {
         let (env, _store) = fe_mut.data_and_store_mut();
 
         // create some mock data
-        let mut storage: MockStorageWrapper = Default::default();
-        storage.set(KEY1, VALUE1).0.expect("error setting");
-        storage.set(KEY2, VALUE2).0.expect("error setting");
+        let concurrent_storage = MockConcurrentStorage::new();
+        concurrent_storage.set(KEY1, VALUE1).0.expect("error setting");
+        concurrent_storage.set(KEY2, VALUE2).0.expect("error setting");
+
+        let storage: MockStorageWrapper = MockStorageWrapper::default(Arc::new(concurrent_storage));
         let querier: MockQuerier<Empty> =
             MockQuerier::new(&[(INIT_ADDR, &coins(INIT_AMOUNT, INIT_DENOM))]);
         env.move_in(storage, Arc::new(RwLock::new(querier)));

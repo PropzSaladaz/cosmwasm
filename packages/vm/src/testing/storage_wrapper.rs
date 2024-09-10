@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 use std::sync::RwLock;
+use std::thread;
 use std::{collections::HashMap, sync::Arc};
 use cosmwasm_std::Order;
 use cosmwasm_std::Record;
 
 use crate::symb_exec::Key;
 use crate::symb_exec::Commutativity;
-use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, Operation, ScAddr, Storage, TxId, VecOperation};
+use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, ScAddr, Storage, TxId, VecOperation};
 
 use crate::{symb_exec::ReadWrite, BackendResult};
 
@@ -112,7 +113,8 @@ impl StorageWrapper for MockStorageWrapper {
     /// This value will be used to compute the delta when the respective Commutative write is performed.
     fn get(&mut self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
 
-        println!("Get key: {:?}", key);
+        #[cfg(feature = "debug")]
+        print_with_thread_id!("Get key: {:?}", key);
 
         let read_value = |operation_node: &NodeRef<VecOperation>, key: &[u8]| {
             if let Some(schedule_value) = self.schedule.get_value(
@@ -145,10 +147,8 @@ impl StorageWrapper for MockStorageWrapper {
             },
             // operation not tracked by RWS
             None => {
-                println!("Untracked operation on: {:?}\nRWS was: {:#?}", key, self.rws);
-
                 // mark new operations as non-commutative by default
-                let concurrent_op = DependencyNode::new_ref(OpType::Read, self.tx_block_id, Commutativity::NonCommutative);
+                let concurrent_op = DependencyNode::new_ref(OpType::Read, self.tx_block_id, Commutativity::NonCommutative, false);
                 // this will modify the dependencies of the node after being inserted
                 self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
                 read_value(&concurrent_op, key)
@@ -162,7 +162,9 @@ impl StorageWrapper for MockStorageWrapper {
     }
 
     fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()> {
-        println!("Set val for key: {:?}", key);
+
+        #[cfg(feature = "debug")]
+        print_with_thread_id!("Set key: {:?}", key);
 
         // match current Read/Write in the sequence of the RWS
         let res = match self.rws.get(self.rws_idx) {
@@ -183,12 +185,9 @@ impl StorageWrapper for MockStorageWrapper {
             },
 
             None => {
-                
-                
-                println!("Untracked operation on: {:?}\nRWS was: {:#?}", key, self.rws);
 
                 // mark new operations as non-commutative by default
-                let concurrent_op = DependencyNode::new_ref(OpType::Write, self.tx_block_id, Commutativity::NonCommutative);
+                let concurrent_op = DependencyNode::new_ref(OpType::Write, self.tx_block_id, Commutativity::NonCommutative, false);
                 // this will modify the dependencies of the node after being inserted
                 self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
 

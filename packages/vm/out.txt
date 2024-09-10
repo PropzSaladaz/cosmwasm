@@ -1,0 +1,2258 @@
+Stringified items: "Write([0, 4, 98, 97, 110, 107, 97, 100, 109, 105, 110],NonCommutative)"
+Stringified items: "Read([0, 4, 98, 97, 110, 107],NonCommutative),Write([0, 4, 98, 97, 110, 107],NonCommutative)"
+Stringified items: "Read([0, 4, 98, 97, 110, 107],Commutative),Write([0, 4, 98, 97, 110, 107],Commutative)"
+Stringified items: "Read([0, 4, 98, 97, 110, 107],NonCommutative),Write([0, 4, 98, 97, 110, 107],NonCommutative)"
+Stringified items: "Read([0, 4, 98, 97, 110, 107],NonCommutative),Write([0, 4, 98, 97, 110, 107],NonCommutative)"
+Stringified items: "Read([0, 4, 98, 97, 110, 107],NonCommutative)"
+Ordered Senders: {0: [1], 1: []}
+Thread ConcurrentQueue: ConcurrentQueues {
+    executed_txs: Mutex {
+        data: 0,
+    },
+    total_txs: 1,
+    ready_queue: Mutex {
+        data: [
+            0,
+        ],
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+    },
+    cvar: Condvar { .. },
+}
+Thread 0 waiting to receive new data
+Thread ConcurrentQueue: ConcurrentQueues {
+    executed_txs: Mutex {
+        data: 0,
+    },
+    total_txs: 1,
+    ready_queue: Mutex {
+        data: [
+            1,
+        ],
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+    },
+    cvar: Condvar { .. },
+}
+Thread 1 sending data
+Thread 0 received data from 1
+Thread 0 merging data from 1
+Merging
+Ready_queues Mutex {
+    data: [
+        0,
+        1,
+    ],
+}
+Partial_ready_queues Mutex {
+    data: [],
+}
+Thread 0 sending data
+Parallel schedule: ConcurrentSchedule {
+    tx_states: [
+        NotExecuted,
+        NotExecuted,
+    ],
+    transactions: {
+        0,
+        1,
+    },
+    total: 2,
+    deps: {
+        0: {},
+        1: {},
+    },
+    dependent_txs: {},
+    partial_ready_tx: {},
+    execution_queues: ConcurrentQueues {
+        executed_txs: Mutex {
+            data: 0,
+        },
+        total_txs: 2,
+        ready_queue: Mutex {
+            data: [
+                0,
+                1,
+            ],
+        },
+        partial_ready_queue: Mutex {
+            data: [],
+        },
+        cvar: Condvar { .. },
+    },
+    schedule: Schedule {
+        schedule: {
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 1,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                        },
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 1,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                        },
+                    },
+                },
+            },
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 0,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                        },
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 0,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        last_non_commutative_write: {
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 1,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            prev: None,
+                            next: None,
+                        },
+                    },
+                },
+            },
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 0,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            prev: None,
+                            next: None,
+                        },
+                    },
+                },
+            },
+        },
+        last_commutative_write: {},
+    },
+}
+Sequential schedule ConcurrentSchedule {
+    tx_states: [
+        NotExecuted,
+        NotExecuted,
+    ],
+    transactions: {
+        1,
+        0,
+    },
+    total: 2,
+    deps: {
+        1: {},
+        0: {},
+    },
+    dependent_txs: {},
+    partial_ready_tx: {},
+    execution_queues: ConcurrentQueues {
+        executed_txs: Mutex {
+            data: 0,
+        },
+        total_txs: 2,
+        ready_queue: Mutex {
+            data: [
+                0,
+                1,
+            ],
+        },
+        partial_ready_queue: Mutex {
+            data: [],
+        },
+        cvar: Condvar { .. },
+    },
+    schedule: Schedule {
+        schedule: {
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 0,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                        },
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 0,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                        },
+                    },
+                },
+            },
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 1,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                        },
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 1,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: None,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        last_non_commutative_write: {
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 0,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            prev: None,
+                            next: None,
+                        },
+                    },
+                },
+            },
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 1,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            prev: None,
+                            next: None,
+                        },
+                    },
+                },
+            },
+        },
+        last_commutative_write: {},
+    },
+}
+Ordered Senders: {3: [], 2: [3], 0: [1, 2, 4], 4: [5], 1: [], 5: []}
+Thread ConcurrentQueue: ConcurrentQueues {
+    executed_txs: Mutex {
+        data: 0,
+    },
+    total_txs: 2,
+    ready_queue: Mutex {
+        data: [
+            0,
+        ],
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+    },
+    cvar: Condvar { .. },
+}
+Thread 0 waiting to receive new data
+Thread ConcurrentQueue: ConcurrentQueues {
+    executed_txs: Mutex {
+        data: 0,
+    },
+    total_txs: 1,
+    ready_queue: Mutex {
+        data: [
+            5,
+        ],
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+    },
+    cvar: Condvar { .. },
+}
+Thread 3 sending data
+Thread ConcurrentQueue: ConcurrentQueues {
+    executed_txs: Mutex {
+        data: 0,
+    },
+    total_txs: 2,
+    ready_queue: Mutex {
+        data: [
+            2,
+        ],
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+    },
+    cvar: Condvar { .. },
+}
+Thread 1 sending data
+Thread ConcurrentQueue: ConcurrentQueues {
+    executed_txs: Mutex {
+        data: 0,
+    },
+    total_txs: 1,
+    ready_queue: Mutex {
+        data: [
+            4,
+        ],
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+    },
+    cvar: Condvar { .. },
+}
+Thread 2 waiting to receive new data
+Thread 2 received data from 3
+Thread ConcurrentQueue: ConcurrentQueues {
+    executed_txs: Mutex {
+        data: 0,
+    },
+    total_txs: 1,
+    ready_queue: Mutex {
+        data: [
+            7,
+        ],
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+    },
+    cvar: Condvar { .. },
+}
+Thread 5 sending data
+Thread ConcurrentQueue: ConcurrentQueues {
+    executed_txs: Mutex {
+        data: 0,
+    },
+    total_txs: 1,
+    ready_queue: Mutex {
+        data: [
+            6,
+        ],
+    },
+    partial_ready_queue: Mutex {
+        data: [],
+    },
+    cvar: Condvar { .. },
+}
+Thread 4 waiting to receive new data
+Thread 0 received data from 1
+Thread 0 merging data from 1
+Thread 2 merging data from 3
+Thread 4 received data from 5
+Thread 4 merging data from 5
+Merging
+Ready_queues Mutex {
+    data: [
+        0,
+    ],
+}
+Merging
+Ready_queues Mutex {
+    data: [
+        4,
+    ],
+}
+Partial_ready_queues Mutex {
+    data: [],
+}
+Partial_ready_queues Mutex {
+    data: [],
+}
+Thread 0 waiting to receive new data
+Thread 2 sending data
+Merging
+Ready_queues Mutex {
+    data: [
+        6,
+    ],
+}
+Partial_ready_queues Mutex {
+    data: [],
+}
+Thread 4 sending data
+Thread 0 received data from 2
+Thread 0 merging data from 2
+Merging
+Ready_queues Mutex {
+    data: [
+        0,
+        4,
+    ],
+}
+Partial_ready_queues Mutex {
+    data: [],
+}
+Thread 0 waiting to receive new data
+Thread 0 received data from 4
+Thread 0 merging data from 4
+Merging
+Ready_queues Mutex {
+    data: [
+        0,
+        4,
+    ],
+}
+Partial_ready_queues Mutex {
+    data: [],
+}
+Thread 0 sending data
+Parallel schedule: ConcurrentSchedule {
+    tx_states: [
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+    ],
+    transactions: {
+        6,
+        2,
+        4,
+        0,
+        3,
+        7,
+        1,
+        5,
+    },
+    total: 8,
+    deps: {
+        4: {},
+        0: {},
+        6: {
+            5: (),
+        },
+        3: {
+            2: (),
+        },
+        7: {
+            6: (),
+        },
+        5: {
+            4: (),
+        },
+        1: {
+            0: (),
+        },
+        2: {
+            1: (),
+        },
+    },
+    dependent_txs: {
+        0: {
+            1,
+        },
+        4: {
+            5,
+        },
+        5: {
+            6,
+        },
+        2: {
+            3,
+        },
+        1: {
+            2,
+        },
+        6: {
+            7,
+        },
+    },
+    partial_ready_tx: {
+        1: {
+            2,
+        },
+        0: {
+            1,
+        },
+        6: {
+            7,
+        },
+        4: {
+            5,
+        },
+        5: {
+            6,
+        },
+        2: {
+            3,
+        },
+    },
+    execution_queues: ConcurrentQueues {
+        executed_txs: Mutex {
+            data: 0,
+        },
+        total_txs: 8,
+        ready_queue: Mutex {
+            data: [
+                0,
+                4,
+            ],
+        },
+        partial_ready_queue: Mutex {
+            data: [],
+        },
+        cvar: Condvar { .. },
+    },
+    schedule: Schedule {
+        schedule: {
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: Commutative,
+                                    tx_block_id: 0,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: Operation {
+                                    operation_type: Write,
+                                    commutativity: Commutative,
+                                    tx_block_id: 0,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: false,
+                                },
+                            },
+                        },
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 3,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: false,
+                                },
+                                prev: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 3,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                next: None,
+                            },
+                        },
+                    },
+                },
+            },
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: Commutative,
+                                    tx_block_id: 4,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: Operation {
+                                    operation_type: Write,
+                                    commutativity: Commutative,
+                                    tx_block_id: 4,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: false,
+                                },
+                            },
+                        },
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 7,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: false,
+                                },
+                                prev: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 7,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                next: None,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        last_non_commutative_write: {
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 3,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: false,
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 3,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            next: None,
+                        },
+                    },
+                },
+            },
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 7,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: false,
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 7,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            next: None,
+                        },
+                    },
+                },
+            },
+        },
+        last_commutative_write: {
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: Commutative,
+                                tx_block_id: 2,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: false,
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: Commutative,
+                                tx_block_id: 2,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            next: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 3,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                        },
+                    },
+                },
+            },
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: Commutative,
+                                tx_block_id: 6,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: false,
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: Commutative,
+                                tx_block_id: 6,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            next: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 7,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+Sequential schedule ConcurrentSchedule {
+    tx_states: [
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+        NotExecuted,
+    ],
+    transactions: {
+        2,
+        4,
+        1,
+        0,
+        7,
+        6,
+        5,
+        3,
+    },
+    total: 8,
+    deps: {
+        6: {
+            5: (),
+        },
+        5: {
+            4: (),
+        },
+        4: {},
+        0: {},
+        1: {
+            0: (),
+        },
+        3: {
+            2: (),
+        },
+        7: {
+            6: (),
+        },
+        2: {
+            1: (),
+        },
+    },
+    dependent_txs: {
+        0: {
+            1,
+        },
+        2: {
+            3,
+        },
+        5: {
+            6,
+        },
+        6: {
+            7,
+        },
+        4: {
+            5,
+        },
+        1: {
+            2,
+        },
+    },
+    partial_ready_tx: {
+        2: {
+            3,
+        },
+        0: {
+            1,
+        },
+        6: {
+            7,
+        },
+        5: {
+            6,
+        },
+        4: {
+            5,
+        },
+        1: {
+            2,
+        },
+    },
+    execution_queues: ConcurrentQueues {
+        executed_txs: Mutex {
+            data: 0,
+        },
+        total_txs: 8,
+        ready_queue: Mutex {
+            data: [
+                0,
+                4,
+            ],
+        },
+        partial_ready_queue: Mutex {
+            data: [],
+        },
+        cvar: Condvar { .. },
+    },
+    schedule: Schedule {
+        schedule: {
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: Commutative,
+                                    tx_block_id: 4,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: Operation {
+                                    operation_type: Write,
+                                    commutativity: Commutative,
+                                    tx_block_id: 4,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: false,
+                                },
+                            },
+                        },
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 7,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: false,
+                                },
+                                prev: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 7,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                next: None,
+                            },
+                        },
+                    },
+                },
+            },
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: LinkedList {
+                    head: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Read,
+                                    commutativity: Commutative,
+                                    tx_block_id: 0,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                prev: None,
+                                next: Operation {
+                                    operation_type: Write,
+                                    commutativity: Commutative,
+                                    tx_block_id: 0,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: false,
+                                },
+                            },
+                        },
+                    },
+                    tail: RwLock {
+                        data: RwLock {
+                            data: DependencyNode {
+                                value: Operation {
+                                    operation_type: Write,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 3,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: false,
+                                },
+                                prev: Operation {
+                                    operation_type: Read,
+                                    commutativity: NonCommutative,
+                                    tx_block_id: 3,
+                                    value: OperationValue {
+                                        value: Mutex {
+                                            data: None,
+                                        },
+                                        condvar: Condvar { .. },
+                                    },
+                                    first_operation: true,
+                                },
+                                next: None,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        last_non_commutative_write: {
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 3,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: false,
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 3,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            next: None,
+                        },
+                    },
+                },
+            },
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: NonCommutative,
+                                tx_block_id: 7,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: false,
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 7,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            next: None,
+                        },
+                    },
+                },
+            },
+        },
+        last_commutative_write: {
+            [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: Commutative,
+                                tx_block_id: 2,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: false,
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: Commutative,
+                                tx_block_id: 2,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            next: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 3,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                        },
+                    },
+                },
+            },
+            [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+            ]: {
+                [
+                    0,
+                    4,
+                    98,
+                    97,
+                    110,
+                    107,
+                    65,
+                    68,
+                    77,
+                    73,
+                    78,
+                ]: RwLock {
+                    data: RwLock {
+                        data: DependencyNode {
+                            value: Operation {
+                                operation_type: Write,
+                                commutativity: Commutative,
+                                tx_block_id: 6,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: false,
+                            },
+                            prev: Operation {
+                                operation_type: Read,
+                                commutativity: Commutative,
+                                tx_block_id: 6,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                            next: Operation {
+                                operation_type: Read,
+                                commutativity: NonCommutative,
+                                tx_block_id: 7,
+                                value: OperationValue {
+                                    value: Mutex {
+                                        data: None,
+                                    },
+                                    condvar: Condvar { .. },
+                                },
+                                first_operation: true,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+Execution Time ------
+Instantiation Calls  Execution: 152.878318ms
+---
+Invocation Calls Total Exec Time: 7.304878ms
+Invocation Calls Schedule Creation: 6.042932ms
+Invocation Calls Schedule Execution: 1.213177ms
+Invocation Calls Schedule Persistence: 48.769µs
+------
+
+
+Total Exec Time: 161.942506ms

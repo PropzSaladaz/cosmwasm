@@ -50,8 +50,9 @@ where
                     
                     if (invocations.len() == self.block_size) || // can fill a block
                         idx == total_size - 1 { // reaches last tx
-                        self.vm_manager.handle_block(invocations).unwrap();
+                        let resps = self.vm_manager.handle_block(invocations).unwrap();
                         invocations = vec![];
+                        // resps.iter().for_each(|resp| println!("{:#?}", resp));
                     }
                 }
             }

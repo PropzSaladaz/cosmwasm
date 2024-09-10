@@ -27,7 +27,7 @@ use super::nodes::*;
 #[grammar = "symb_exec/parser/symb_exec.pest"]
 pub struct SEParser;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct SCProfile {
     pub status: SEStatus,
     pub entry_point: HashMap<EntryPoint, EntryPointProfile>,
@@ -46,6 +46,7 @@ impl SCProfile {
     }
 }
 
+#[derive(Default)]
 pub struct SCProfileParser {
     /// Parser used to parse expressions taking into account
     /// operation associativity
@@ -571,6 +572,30 @@ mod tests {
         Key::Bytes(vec![0u8, 4u8, 98u8, 97u8, 110u8, 107u8, 65u8, 68u8, 77u8, 73u8, 78u8])
     }
 
+
+    #[test]
+    #[ignore]
+    fn sort_and_compute_rws_id() {
+        let profile = SCProfileParser::default();
+        let mut rws = vec![
+            ReadWrite::Read {
+                storage_dependency: Independent,
+                key: key_incr(), 
+                commutativity: Commutativity::Commutative,
+                operation_node: None,
+            },
+            ReadWrite::Write { 
+                storage_dependency: Dependent,
+                key: key_incr(), 
+                commutativity: Commutativity::Commutative,
+                operation_node: None,
+            },
+        ];
+        let hash = profile.sort_and_compute_rws_uid(&mut rws);
+
+        println!("Hash: {:?}", hash);
+    }
+
     #[test]
     fn parse_se_output() {
         let s = String::from("E ----------------------------
@@ -633,7 +658,8 @@ msg: ExecuteMsg
             // => SET(=AARiYW5r= @ _msg.admin): Non-Inc
             pos_branch: Some(Arc::new(RwLock::new(Box::new(PathConditionNode::RWSNode {
                 storage_dependency: Independent,
-                rws_uid: "A".to_owned(),
+                // hash of the sequence of read, write
+                rws_uid: "c4587e12c83ca00b607205acaaf63dcf8324898e7a00fed24266aaafcef7cd0b".to_owned(),
                 rws: vec![
                 ReadWrite::Read {
                     storage_dependency: Independent,
@@ -667,7 +693,7 @@ msg: ExecuteMsg
             }), 
             pos_branch: Some(Arc::new(RwLock::new(Box::new(PathConditionNode::RWSNode {
                 storage_dependency: Independent,
-                rws_uid: "B".to_owned(),
+                rws_uid: "29b5a8b707833e0c14ea0e03621f5cb66f8a91b0c876d78648803c11471cf5ac".to_owned(),
                 rws: vec![
                 
                 // RWS

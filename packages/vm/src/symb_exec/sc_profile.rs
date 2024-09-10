@@ -7,7 +7,7 @@ use super::{evaluator::eval::SEContext, parser::{
     nodes::*, SCProfile
 }, SEStatus};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TxRWS {
     pub storage_dependency: StorageDependency,
     pub profile_status: SEStatus,

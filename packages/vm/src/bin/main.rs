@@ -493,13 +493,13 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
     let sc_manager = Arc::new(RwLock::new(sc_manager));
 
 
-    let mut vm_manager = VMManager::new(
+    let vm_manager = VMManager::new(
         Arc::clone(&sc_manager),
         Arc::new(address_mapper),
         Arc::new(backend_builder),
         Arc::new(concurrent_backend_builder),
-    2,
-    1);
+    4,
+    4);
 
 
     let mut msgs = vec![
@@ -537,6 +537,21 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
                 )
             );
 
+            // msgs.push(
+            //     Message::Invocation(
+            //         VMMessage::Invocation {
+            //             entry_point: InstantiatedEntryPoint::Query,
+            //             contract_address: [i as u8; 32],
+            //             message: br#"{
+            //                 "GetBalance": {
+            //                     "user": "ADMIN"
+            //                 }
+            //             }"#.to_vec(),
+            //             code_id: 0,
+            //         }
+            //     )
+            // );
+
             msgs.push(
                 Message::Invocation(
                     VMMessage::Invocation {
@@ -556,9 +571,20 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
     }
 
     // for i in 0..n_contracts {
-    //     for _ in 0..n_operation_repetitions {
-
-    //     }
+    //     msgs.push(
+    //         Message::Invocation(
+    //             VMMessage::Invocation {
+    //                 entry_point: InstantiatedEntryPoint::Query,
+    //                 contract_address: [i as u8; 32],
+    //                 message: br#"{
+    //                     "GetBalance": {
+    //                         "user": "ADMIN"
+    //                     }
+    //                 }"#.to_vec(),
+    //                 code_id: 0,
+    //             }
+    //         )
+    //     )
     // }
 
     // handle messages
@@ -577,5 +603,5 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
 
 fn main() {
     // run_persistent_vm();
-    run_n_contracts_n_increments(1, 2);
+    run_n_contracts_n_increments(50, 150);
 }

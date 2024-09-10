@@ -283,7 +283,7 @@ impl<'a> DotSchedule<'a> {
             node.data.tx_block_id, 
             node.data.operation_type,
             node.data.commutativity, 
-            node.data.value,
+            node.data.value.get_value(),
             completeness.unwrap(),
             storage_dependency.unwrap(),
             self.node_colors[color].as_str(),

@@ -1,16 +1,17 @@
-use std::{collections::HashMap, fs::{self, File}, io::{ErrorKind, Read, Write}, sync::{Arc, RwLock}};
+use std::{collections::{HashMap, VecDeque}, fs::{self, File}, io::{ErrorKind, Read, Write}, sync::{Arc, RwLock}, thread};
 use std::io::Error;
 
 use cosmwasm_std::{ContractResult, Response};
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 
 use dashmap::DashMap;
 use wasmer::Module;
 
 use crate::{ 
-    backend::ConcurrentBackend, symb_exec::{SEEngine, SEEngineParse}, testing::{mock_backend, ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, StorageWrapper}, BackendApi, Instance, Querier, SCProfile, SCProfileParser, Storage, VmResult};
+    backend::ConcurrentBackend, print_with_thread_id, symb_exec::{SEEngine, SEEngineParse}, testing::{mock_backend, ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, StorageWrapper}, BackendApi, Instance, Querier, SCProfile, SCProfileParser, Storage, VmResult};
 
-use super::concurrent_schedule::ScAddr;
+use super::schedule::{ScAddr, TxId};
+
 
 
 const SMART_CONTRACT_PATH: &'static str = "./wasm_contract_codes";
@@ -135,6 +136,50 @@ where
     }
 }
 
+
+
+struct FairLock<T> {
+    queue: Mutex<VecDeque<usize>>, // Queue of operations
+    condvar: Condvar,
+    resource: Mutex<T>,            // The resource
+}
+
+impl<T> FairLock<T> {
+    fn new(resource: T) -> Self {
+        FairLock {
+            queue: Mutex::new(VecDeque::new()),
+            condvar: Condvar::new(),
+            resource: Mutex::new(resource),
+        }
+    }
+
+    fn lock(&self, tx_id: usize) -> parking_lot::MutexGuard<'_, T> {
+        let mut queue = self.queue.lock();
+        
+        queue.push_back(tx_id);
+
+        while queue.front() != Some(&tx_id) {
+            
+            self.condvar.wait(&mut queue);
+        }
+
+        #[cfg(feature = "debug")]
+        print_with_thread_id!("Finish waiting on VM, starting execution");
+
+        // Get the resource lock
+        let guard = self.resource.lock();
+
+        // Remove the thread from the queue and notify others
+        queue.pop_front();
+        self.condvar.notify_all();
+
+        guard
+    }
+}
+
+
+
+
 pub struct SCInstance<A, S, W, Q> // TEST - should be private 
 where
     A: BackendApi, 
@@ -144,7 +189,7 @@ where
 {
     code_id: u128, // Just to keep track of which code this contract was generated from
     pub state: Arc<PersistentBackend<A, S, Q>>,
-    pub vm_instances: Arc<Vec<Mutex<Instance<A, W, Q>>>>,
+    pub vm_instances: Arc<Vec<FairLock<Instance<A, W, Q>>>>,
 }
 
 impl<A, S, W, Q> SCInstance<A, S, W, Q> 
@@ -154,7 +199,7 @@ where
     W: StorageWrapper, 
     Q: Querier
 {
-    fn new(code_id: u128, state: &Arc<PersistentBackend<A, S, Q>>, instances: Vec<Mutex<Instance<A, W, Q>>>) -> Self {
+    fn new(code_id: u128, state: &Arc<PersistentBackend<A, S, Q>>, instances: Vec<FairLock<Instance<A, W, Q>>>) -> Self {
         Self {
             code_id,
             state: Arc::clone(state),
@@ -224,12 +269,16 @@ where
     }
 
     /// Saves the storage & compiled module that refers to some instantiated SC
-    pub fn save_instance(&self, code_id: u128, address: ScAddr, state: Arc<PersistentBackend<A, S, Q>>, instances: Vec<Mutex<Instance<A, W, Q>>>) {
+    pub fn save_instance(&self, code_id: u128, address: ScAddr, state: Arc<PersistentBackend<A, S, Q>>, instances: Vec<Instance<A, W, Q>>) {
+        let fair_lock_instances: Vec<FairLock<Instance<A, W, Q>>> = instances.into_iter()
+            .map(|i| FairLock::new(i))
+            .collect();
+
         self.sc_storage.insert(address, Arc::new(
             SCInstance::new(
                 code_id,
                 &state,
-                instances)
+                fair_lock_instances)
             ));
         self.static_data.write().unwrap().incr_instantiation(code_id);
     }
@@ -237,24 +286,27 @@ where
     /// Executes something using a mutable reference of a cosmwasm instance.
     /// Tries locking one instance form a set of N instances.
     /// If none is available, then wait for the first one to finish.
-    pub fn execute_instance<F>(&self, address: &ScAddr, concurrent_backend: ConcurrentBackend<A, W, Q>,  work: F) -> std::io::Result<String> 
+    pub fn execute_instance<F>(&self, address: &ScAddr, concurrent_backend: ConcurrentBackend<A, W, Q>,  work_id: TxId, work: F) -> std::io::Result<String> 
     where
         F: FnOnce(&mut Instance<A, W, Q>) -> std::io::Result<String>,
     {
+        // print_with_thread_id!("Inside execute in VM");
+
         match self.sc_storage.get(address) {
             Some(sc_instance) => {
                 let instances = &sc_instance.vm_instances;
-                for instance in &**instances { // dereference &Arc<Vec> + Arc<Vec> to get the Vec. THen reference &Vec as we cannot move it out
-                    if let Some(ref mut instance) = instance.try_lock() {
-                        // println!("SC {:?} - Executing on Free VM", address);
-                        instance.set_concurrent_backend(concurrent_backend);
-                        let res = work(instance);
-                        return Ok(res.unwrap());
-                    }
-                }
-                // println!("SC {:?} - Waiting for VM 0 to be free!", address);
-                let mut forced_vm = instances[0].lock();
-                Ok(format!("{:?}", work(&mut forced_vm)))
+                let vm_to_use = work_id % instances.len();
+                #[cfg(feature = "debug")]
+                print_with_thread_id!("SC {:?} - Waiting for VM {:?} to be free!", address, vm_to_use);
+
+                let mut forced_vm = instances[vm_to_use].lock(work_id);
+                forced_vm.set_concurrent_backend(concurrent_backend);
+                let res = work(&mut forced_vm);
+                
+                #[cfg(feature = "debug")]
+                print_with_thread_id!("SC {:?} - Finished executing on VM", address);
+
+                return Ok(res.unwrap());
             },
             None => Result::Err(Error::new(ErrorKind::Other, "Trying to execute an uninstanciated contract!".to_owned()))
         }
@@ -331,7 +383,7 @@ mod tests {
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT };
         let concurrent_backend = mock_concurrent_backend(&[], concurrent_store);
         let instance = instance_from_module(store, &module, concurrent_backend, much_gas.gas_limit, None).unwrap();
-        let instances = vec![Mutex::new(instance)];
+        let instances = vec![instance];
 
         let sc_manager = Arc::new(RwLock::new(SCManager::new()));
         sc_manager.write().unwrap().save_instance(0, SC_ADDR_A, backend, instances);
@@ -389,8 +441,8 @@ _msg: InstantiateMsg
         sc_static_data.cleanup();
     }
 
-    // #[ignore]
     #[test]
+    #[ignore]
     #[serial]
     fn sc_manager_workflow() {
         let sc_manager = SCManager::new();
@@ -423,7 +475,7 @@ _msg: InstantiateMsg
             Arc::clone(&backend), &SC_ADDR_A, vec![]);
 
             let instance = instance_from_module(store, &module, concurrent_backend, much_gas.gas_limit, None).unwrap();
-            let instances = vec![Mutex::new(instance)];
+            let instances = vec![instance];
 
             // save it to that SC code
             sc_manager.save_instance(
@@ -443,7 +495,7 @@ _msg: InstantiateMsg
     
             // execute instantiate contract
             let msg = br#"{}"#;
-            let resp = sc_manager.execute_instance(&SC_ADDR_A, concurrent_backend, |instance| {
+            let resp = sc_manager.execute_instance(&SC_ADDR_A, concurrent_backend, 0, |instance| {
                 let contract_res = call_instantiate::<_, _, _, Empty>(
                     instance, 
                     &mock_env(), 
@@ -473,7 +525,7 @@ _msg: InstantiateMsg
             let msg = br#"{ 
                 "AddOne": {} 
             }"#;
-            let resp = sc_manager.execute_instance(&SC_ADDR_A, concurrent_backend, |instance| {
+            let resp = sc_manager.execute_instance(&SC_ADDR_A, concurrent_backend, 0, |instance| {
                 let contract_res = call_execute::<_, _, _, Empty>(
                     instance, 
                     &mock_env(), 

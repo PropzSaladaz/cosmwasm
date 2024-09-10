@@ -1,52 +1,19 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque}, fmt, i128, io::{self, Write}, sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, RwLock}, thread
+    collections::{HashMap, HashSet, VecDeque}, sync::{atomic::{AtomicUsize, Ordering}, mpsc, Arc}, thread, time::{Duration, Instant}
 };
 
-use parking_lot::{Mutex, Condvar};
+use rayon::prelude::*;
 
-use dashmap::DashMap;
+use parking_lot::{Mutex, Condvar, RwLock};
 
-use crate::{symb_exec::{Commutativity, Key, ReadWrite}, testing::{ConcurrentStorage, StorageWrapper}, BackendApi, Querier, SCManager, VMMessage};
+use dashmap::{DashMap, DashSet};
 
-use super::vm_manager::RWSContext;
+use crate::{print_with_thread_id, symb_exec::{Commutativity, Key, ReadWrite}, testing::{ConcurrentStorage, StorageWrapper}, vm_manager::schedule::MergeableValue, BackendApi, Querier, SCManager};
+
+use super::{schedule::{DependencyNode, NodeRef, OpType, Operation, SCSchedule, ScAddr, TxId, VecOperation}, serial_schedule::{ScheduleBuilder, SerialQueues}, vm_manager::RWSContext, LastWrites, Schedule};
 
 #[cfg(feature = "debug_graph")]
 use super::dot_schedule::{DotSchedule, NodeColor};
-
-// size of a smart contract address
-pub const ADDR_SIZE: usize = 32; 
-
-pub type ScAddr = [u8; ADDR_SIZE];
-pub type TxId = usize;
-
-// TODO - we are currently assuming all will be signed integers.
-// they may be unsigned - we need to create more conditions to conver to unsigned in cases of overflow of integer
-// We may discard floats, as these are inherently non deterministic types
-fn ascii_encoded_sub(lhs: &Vec<u8>, rhs: &Vec<u8>) -> Vec<u8> {
-    let lhs = String::from_utf8(lhs.clone()).unwrap();
-    let rhs = String::from_utf8(rhs.clone()).unwrap();
-
-    let lhs = lhs.parse::<i128>().unwrap();
-    let rhs = rhs.parse::<i128>().unwrap();
-
-    let res = lhs - rhs;
-
-    res.to_string().into_bytes()
-}
-
-
-fn ascii_encoded_add(lhs: &Vec<u8>, rhs: &Vec<u8>) -> Vec<u8> {
-    let lhs = String::from_utf8(lhs.clone()).unwrap();
-    let rhs = String::from_utf8(rhs.clone()).unwrap();
-
-    let lhs = lhs.parse::<i128>().unwrap();
-    let rhs = rhs.parse::<i128>().unwrap();
-
-    let res = lhs + rhs;
-
-    res.to_string().into_bytes()
-}
-
 
 #[derive(Debug)]
 pub struct ConcurrentQueues {
@@ -61,8 +28,11 @@ pub struct ConcurrentQueues {
 }
 
 impl PartialEq for ConcurrentQueues {
-    fn eq(&self, _other: &Self) -> bool {
-        true
+    fn eq(&self, other: &Self) -> bool {
+        *self.executed_txs.lock() ==  *other.executed_txs.lock() &&
+        self.total_txs == other.total_txs &&
+        *self.ready_queue.lock() == *other.ready_queue.lock() &&
+        *self.partial_ready_queue.lock() == *other.partial_ready_queue.lock()
     }
 }
 
@@ -77,6 +47,49 @@ impl ConcurrentQueues {
             partial_ready_queue: Mutex::new(VecDeque::new()),
         
             cvar: Condvar::new(),
+        }
+    }
+
+    fn from_serial_queues(serial_queues: SerialQueues) -> ConcurrentQueues {
+        ConcurrentQueues {
+            executed_txs: Mutex::new(serial_queues.executed_txs),
+            total_txs: serial_queues.total_txs,
+            ready_queue: Mutex::new(serial_queues.ready_queue),
+            partial_ready_queue: Mutex::new(serial_queues.partial_ready_queue),
+            cvar: Condvar::new(),
+        }
+    }
+
+    /// Merges 2 concurrent queues assuming that the 'other' queue already has an updated
+    /// ready & partial_ready queues accounting for the merged state of both schedules.
+    /// 
+    /// If schedule A has a TxA operation on key 1, then 'other' queue should not have
+    /// any tx with an operation on key 1 placed in the ready_queue (this validation must be done outside this method)
+    fn merge(&mut self, other: ConcurrentQueues) {
+        self.total_txs = self.total_txs + other.total_txs;
+        
+        let ready = other.ready_queue.into_inner();
+        let partial_ready = other.partial_ready_queue.into_inner();
+
+        self.ready_queue.lock().extend(ready);
+        self.partial_ready_queue.lock().extend(partial_ready);
+    }
+
+    /// Removes a txId from ready_queue
+    fn remove_id_from_ready(&self, id: TxId) -> Option<TxId> {
+        let mut ready = self.ready_queue.lock();
+
+        if let Some(pos) = ready.iter().position(|&x| x == id) {
+            ready.remove(pos)
+        } else { None }
+    }
+
+    /// Removes a txId from partial_ready_queue
+    fn remove_id_from_partial_ready(&self, id: TxId) {
+        let mut partial_ready = self.partial_ready_queue.lock();
+
+        if let Some(pos) = partial_ready.iter().position(|&x| x == id) {
+            partial_ready.remove(pos);
         }
     }
 
@@ -145,9 +158,11 @@ impl ConcurrentQueues {
     /// Waits until signaled by another thread pushing a new element, or until no more txs
     /// to execute.
     fn pop(&self) -> Option<TxId> {
+
+        #[cfg(feature = "debug")]
         {
-            println!("Ready queue: {:?}", *self.ready_queue.lock());
-            println!("Partial_Ready queue: {:?}", *self.partial_ready_queue.lock());
+            print_with_thread_id!("Ready queue: {:?}", *self.ready_queue.lock());
+            print_with_thread_id!("Partial_Ready queue: {:?}", *self.partial_ready_queue.lock());
         }
         
         'try_popping: loop {
@@ -166,8 +181,7 @@ impl ConcurrentQueues {
 
 
             let mut lock = self.executed_txs.lock();
-            let has_messages_to_execute = *lock < self.total_txs;
-            while has_messages_to_execute {
+            while *lock < self.total_txs {
                 self.cvar.wait(&mut lock);
                 continue 'try_popping;
             }
@@ -175,529 +189,12 @@ impl ConcurrentQueues {
             break 'try_popping;
         }
 
-        // println!("Terminated");
         return None;
     }
 }
 
-#[derive(Debug)]
-pub struct OperationSignal {
-    lock: Mutex<bool>,
-    cvar: Condvar,
-}
-
-impl PartialEq for OperationSignal {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-impl OperationSignal {
-    fn new() -> OperationSignal {
-        OperationSignal {
-            lock: Mutex::new(false),
-            cvar: Condvar::new(),
-        }
-    }
-
-    pub fn wait(&self) {
-        let mut started = self.lock.lock();
-        while !*started {
-            self.cvar.wait(&mut started);
-        }
-        // we won't set 'started' to false - after an operation is complete,
-        // all dependent txs will read from it. There is never the need 
-        // for a tx to go back to waiting state after an operation is completed
-    }
-
-    pub fn notify_all(&self) {
-        let mut started = self.lock.lock();
-        *started = true;
-        self.cvar.notify_all();
-    }
-}
-
-
-pub trait OperationValue: Clone + Sized {
-    fn compute_delta(&self, old_val: &Self) -> Self;
-    fn merge(&mut self, val: &Self);
-}
-
-impl OperationValue for Vec<u8> {
-    fn compute_delta(&self, other: &Self) -> Self {
-        ascii_encoded_sub(self, other)
-    }
-
-    fn merge(&mut self, other: &Self) {
-        *self = ascii_encoded_add(self, other);
-    }
-}
-
-
-
-#[derive(Debug, PartialEq)]
-pub struct Operation<V: OperationValue> {
-    pub operation_type: OpType,
-    pub commutativity: Commutativity,
-    pub tx_block_id: TxId,
-    // in the future this can be made a generic parameter
-    pub value: Option<V>,
-    pub signal: OperationSignal,
-}
-
-
-impl<V: OperationValue> Operation<V> {
-    pub fn new(operation_type: OpType, tx_block_id: TxId, commutativity: Commutativity) -> Self {
-        Self {
-            operation_type,
-            commutativity,
-            tx_block_id,
-            value: None,
-            signal: OperationSignal::new(),
-        }
-    }
-
-    pub fn set_value(&mut self, new_value: V) {
-        self.value = Some(new_value);
-        self.signal.notify_all();
-    }
-
-    pub fn wait_for_value(&self) -> V {
-        if let Some(val) = &self.value {
-            val.clone() // TODO - Optimization - should we return a clone???
-        }
-        else {
-            self.signal.wait();
-            self.value.as_ref().unwrap().clone()
-        }
-    }
-
-    pub fn is_read(&self) -> bool {
-        return self.operation_type == OpType::Read;
-    }
-
-    pub fn is_write(&self) -> bool {
-        return self.operation_type == OpType::Write;
-    }
-
-    pub fn is_commutative(&self) -> bool {
-        return self.commutativity == Commutativity::Commutative;
-    }
-
-    pub fn is_from_tx(&self, tid: TxId) -> bool {
-        return self.tx_block_id == tid;
-    }
-}
-
-// RwLock is needed since we may need to change the next field at runtime
-pub type NodeRef<T> = Arc<RwLock<DependencyNode<T>>>;
-// we curently only support the data to be vec<u8>.
-// To support other types we would need to have dynamic dispatch, and would
-// require using Box<dyn OperationValue>, which adds a new level of indirection.
-// Would be less efficient, but if needed, we can do it
-pub type VecOperation = Operation<Vec<u8>>;
-
-/// Represents a node in the LinkedList
-pub struct DependencyNode<T> {
-    pub data: T,
-    pub next: Option<NodeRef<T>>,
-    pub prev: Option<NodeRef<T>>,
-    pub dependency: Option<NodeRef<T>>
-}
-
-impl DependencyNode<VecOperation> {
-    pub fn new_ref(operation_type: OpType, tx_block_id: TxId, commutativity: Commutativity) -> NodeRef<VecOperation> {
-        Arc::new(RwLock::new(DependencyNode {
-            data: Operation::new(operation_type, tx_block_id, commutativity),
-            next: None,
-            prev: None,
-            dependency: None
-        }))
-    }
-}
-
-// Need to limit recursion. Else will result in stack overflow
-impl<T: std::fmt::Debug> fmt::Debug for DependencyNode<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut debug_struct = f.debug_struct("DependencyNode");
-
-        debug_struct.field("value", &self.data);
-
-        if let Some(ref prev) = self.prev {
-            let prev_value = &prev.read().unwrap().data;
-            debug_struct.field("prev", prev_value);
-        } else {
-            debug_struct.field("prev", &None::<i32>);
-        }
-
-        if let Some(ref next) = self.next {
-            let next_value = &next.read().unwrap().data;
-            debug_struct.field("next", next_value);
-        } else {
-            debug_struct.field("next", &None::<i32>);
-        }
-
-        debug_struct.finish()
-    }
-}
-
-impl PartialEq for DependencyNode<VecOperation> {
-    fn eq(&self, other: &Self) -> bool {
-        self.data == other.data && 
-        match (&self.next, &other.next) {
-            (Some(a), Some(b)) => {
-                a.read().unwrap().data == b.read().unwrap().data
-            },
-            (Some(_), None) => false,
-            (None, Some(_)) => false,
-            (None, None) => true,
-        } &&
-        match (&self.prev, &other.prev) {
-            (Some(a), Some(b)) => {
-                a.read().unwrap().data == b.read().unwrap().data
-            },
-            (Some(_), None) => false,
-            (None, Some(_)) => false,
-            (None, None) => true,
-        } &&
-        match (&self.dependency, &other.dependency) {
-            (Some(a), Some(b)) => {
-                a.read().unwrap().data == b.read().unwrap().data
-            },
-            (Some(_), None) => false,
-            (None, Some(_)) => false,
-            (None, None) => true,
-        }
-    }
-}
-
-impl<T> DependencyNode<T> {
-    fn new(value: T) -> Self {
-        DependencyNode {
-            data: value,
-            next: None,
-            prev: None,
-            dependency: None,
-        }
-    }
-
-    fn set_next(&mut self, operation_node: Option<NodeRef<T>>) {
-        self.next = operation_node
-    }
-
-
-    fn set_prev(&mut self, operation_node: Option<NodeRef<T>>) {
-        self.prev = operation_node
-    }
-
-    fn set_dependency(&mut self, operation_node: Option<NodeRef<T>>) {
-        self.dependency = operation_node
-    }
-
-}
-
-#[derive(Debug)]
-pub struct LinkedList<T> {
-    pub head: Arc<RwLock<NodeRef<T>>>,
-    pub tail: Arc<RwLock<NodeRef<T>>>,
-}
-
-impl<T: std::fmt::Debug> LinkedList<T> {
-    fn new(item: NodeRef<T>) -> Self {
-        LinkedList {
-            head: Arc::new(RwLock::new(Arc::clone(&item))),
-            tail: Arc::new(RwLock::new(Arc::clone(&item))),
-        }
-    }
-
-    fn append(&self, item: NodeRef<T>) { // TODO - maybe we should keep locks for the entirity of this method - may have concurrency issues
-        // set item.prev = tail
-        {
-            let tail_lock = self.tail.read().unwrap();
-            let tail_item = &(*tail_lock);
-            let tail_item_ref = Arc::clone(tail_item);
-
-            let mut item_lock = item.write().unwrap();
-            item_lock.set_prev(Some(tail_item_ref));
-        }
-        
-
-        // set tail.next = item
-        {
-            let mut tail_lock = self.tail.write().unwrap();
-            {
-                let mut tail_item_lock = tail_lock.write().unwrap();
-                tail_item_lock.set_next(Some(Arc::clone(&item)));
-            }
-            
-            // set new tail
-            *tail_lock = item;
-        }
-    }
-
-    /// Given 2 nodes: [I] and [R]
-    /// This method inserts [I] to the left of [R] in the linked list:
-    /// 
-    /// BEFORE
-    /// [L]->[R]
-    /// 
-    /// AFTER
-    /// [L]->[I]->[R]
-    fn insert_to_left_of(&self, item_to_insert: NodeRef<T>, item_to_right: NodeRef<T>) { // TODO - maybe we should keep locks for the entirity of this method - may have concurrency issues
-        let mut item_right_lock = item_to_right.write().unwrap();
-        // fetch [L] from [R], and set [L]'s next value to [I]
-        let prev_of_item_right = &item_right_lock.prev;
-        match prev_of_item_right {
-            Some(prev) => prev.write().unwrap().set_next(Some(Arc::clone(&item_to_insert))),
-            None => { // we are inserting to the left of head - need to update head
-                let mut head = self.head.write().unwrap();
-                *head = Arc::clone(&item_to_insert);
-            },
-        };
-
-        // set [I]'s prev to [L], and [I]'s next to [R]
-        {
-            let mut node = item_to_insert.write().unwrap();
-            node.set_prev(match prev_of_item_right {
-                Some(prev) => Some(Arc::clone(prev)),
-                None => None,
-            });
-            node.set_next(Some(Arc::clone(&item_to_right)));
-        }
-
-        // set [R]'s prev to [I]
-        item_right_lock.set_prev(Some(item_to_insert));
-
-    }
-
-}
-
-#[derive(PartialEq, Debug, Copy, Clone)]
-pub enum OpType {
-    Read,
-    Write,
-}
-
-
-pub type LinkedListRef = Arc<LinkedList<VecOperation>>;
-pub type SCSchedule = DashMap<Vec<u8>, LinkedListRef>;
-
-type LastWrite = Arc<RwLock<NodeRef<VecOperation>>>;
-type LastWriteMap =  DashMap<ScAddr, DashMap<Vec<u8>, LastWrite>>;
-
-
-struct LastWrites {
-    commutative: Option<NodeRef<VecOperation>>,
-    non_commutative: Option<NodeRef<VecOperation>>
-}
-
-/// Represents a schedule for some execution block:
-/// SC -> key -> Linked list of operations for that item & SC
-#[derive(Debug)]
-struct Schedule {
-
-    /// Stores a schedule, which is map of linked lists, one for each different KEY.
-    /// Each linked list stores the order of operations affecting that item
-    schedule: DashMap<ScAddr, SCSchedule>,
-
-    /// Stores the last non-commutative write operation for each item of each SC
-    /// SC -> key -> Last Write operation
-    last_non_commutative_write: LastWriteMap,
-    last_commutative_write: LastWriteMap
-    // ^^ TODO - We should have a last_write for each tx - then when inserting a new untracked operation
-    // we could directly fetch the last non-commutative write for that tx instead of running over the
-    // entire list searching for it.
-}
-
-impl Schedule {
-    fn new() -> Self {
-        Self {
-            schedule: DashMap::new(),
-            last_non_commutative_write: DashMap::new(),
-            last_commutative_write: DashMap::new(),
-        }
-    }
-
-    /// Sets the entries of the schedule & last_write (there will be 1 last_write for each key in a SC)
-    /// for the chosen SC address
-    fn create_if_not_exists(&mut self, sc_address: ScAddr) {
-        self.schedule.entry(sc_address).or_insert(DashMap::new());
-        self.last_non_commutative_write.entry(sc_address).or_insert(DashMap::new());
-    }
-
-    /// Return at most 2 writes - One Commutative and one Non COmmutative that represent the latest writes of each type
-    /// for some SC and some key.
-    /// 
-    /// Depending on the Read operation comming after each of those writes, we may want to mark a dependency either on
-    /// the Commutative or the Non Commutative write.
-    /// 
-    /// If the Read is Comm -> Mark dependency on the latest Non Commutative write
-    /// If the read is Non COmmutative -> Mark dependency on the latest of both (can be wither Comm or NonCOmm write)
-    pub fn get_last_writes(&self, sc_address: ScAddr, key: &Vec<u8>) -> LastWrites {
-        let non_commutative = match self.last_non_commutative_write.get(&sc_address) {
-            Some(non_comm_writes) => match non_comm_writes.get(key) {
-                Some(last_write) => Some(Arc::clone(&last_write.read().unwrap())),
-                None => None,
-            },
-            None => None,
-        };
-
-        let commutative = match self.last_commutative_write.get(&sc_address) {
-            Some(comm_writes) => match comm_writes.get(key) {
-                Some(last_write) => Some(Arc::clone(&last_write.read().unwrap())),
-                None => None,
-            },
-            None => None,
-        };
-
-        LastWrites { commutative, non_commutative }
-    }
-
-    /// Appends a new operation to the end of the list of the specified KEY in the specified SC.
-    /// If the operation is write - updates last_write
-    fn append(&mut self, sc_address: ScAddr, key: &Vec<u8>, operation_node: NodeRef<VecOperation>, op_type: OpType) {
-        let sc_schedule = self.schedule.get(&sc_address).unwrap();
-        
-        // append node ref to linked list
-        match sc_schedule.get(key) {
-            Some(list) => list.append(Arc::clone(&operation_node)),
-            None => {
-                let new_linked_list = Arc::new(LinkedList::new(Arc::clone(&operation_node)));
-                sc_schedule.insert(key.clone(), new_linked_list);
-            },
-        };
-        self.update_last_write(sc_address, key, operation_node, op_type);
-    }
-
-    /// Given an operation node for some key in some Contract, check if it is a Write. 
-    /// If it is, then:
-    /// 
-    /// - If Commutative -> update the last commutative write tracker. THis is used by Non Commutative reads that may come after a commutative write.
-    /// - If Non Commutative -> update the last non commutative tracker. This is used by either Commutative or Non Commutative reads that may come
-    /// after a Non Commutative write.
-    /// 
-    /// The read operation coming after a write then needs to get the last write from both the Commutative and Non Commutative trackers & pick
-    /// the node with the latest tx id (the most recent operation of those 2).
-    fn update_last_write(&self, sc_address: ScAddr, key: &Vec<u8>, operation_node: NodeRef<VecOperation>, op_type: OpType) {
-
-        // Aux function -> update a last write map (either the commutative or non commutative write map) with the new last write operation
-        // clone the node with an Arc
-        let set_write_if_not_exists = |last_write_tracker: &LastWriteMap, operation_node| {
-            let sc_last_write = last_write_tracker.entry(sc_address.clone()).or_insert(DashMap::new());
-            let operation = sc_last_write.get(key); 
-            match operation  {
-                Some(last_write) => {
-                    let mut last_write = last_write.write().unwrap();
-                    *last_write = Arc::clone(operation_node);
-                },
-                None => {
-                    let last_write = Arc::new(RwLock::new(Arc::clone(operation_node)));
-                    sc_last_write.insert(key.clone(), last_write);
-                },
-            }
-        };
-
-        match op_type {
-            OpType::Read => (),
-            OpType::Write => {
-                let node_read_lock = operation_node.read().unwrap();
-                if node_read_lock.data.is_commutative() {
-                    set_write_if_not_exists(&self.last_commutative_write, &operation_node);
-                }
-                else {
-                    set_write_if_not_exists(&self.last_non_commutative_write, &operation_node);
-                }
-            }
-        };
-    }
-
-    // TODO - We should store references in the DashMap for the sc_address & keys, not the values themselves. Else, we will need to clone the values each time...
-    // TODO - We should keep track of the txs that depend on a tx A. Such that when a untracked operation appears,
-    // we can fetch all txs depending on A, and now make them depend on the new tx (responsible for the new operation) if needed.
-
-    /// Insert an untracked operation in the schedule. Start traversing from the tail of the linked list for the key & contract specified,
-    /// Upon seing a tx with id < our tx_id that has a non-commutative write, we stop searching.
-    /// We set our dependency on that write
-    fn insert_untracked_operation(&self, sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId, operation_node: NodeRef<VecOperation>, op_type: OpType) {
-        let schedule = self.schedule.entry(sc_address).or_insert(DashMap::new());
-        let linked_list = schedule.get(key) ;
-
-        // if there is a linked-list (if there is any, then it must have at least 1 element by default)
-        if let Some(linked_list) = linked_list {
-            // TODO - Optimization!! We should store the last_non_commutative_write per each tx number
-            // and we would only need to check if that last wrtie exists - then mark dependency on it. Else, 
-            // read from storage
-            // TODO - Optimization - We should also have the last operation node from each tx for each SC - avoid searching all operations within a SC
-            // (can be benefitial for long chains - lots of operations for a single key)
-            let mut prev_node: Option<NodeRef<VecOperation>> = None;
-            let mut node_ref = Arc::clone(&linked_list.tail.read().unwrap());
-            let mut tmp_node;
-            let mut highest_non_commutative_write: Option<NodeRef<VecOperation>> = None; 
-
-            loop {
-                {
-                    let node = node_ref.read().unwrap();
-                    // If the new operation is from the same tx, and the item we want to write/read to/from has operations from our tx,
-                    // this new untracked operation will be inserted at the end of all previous operations from this tx.
-                    // This has the side-effect of the next tx depending on this new RWS and not the last one!! This can produce wrong results!!
-                    // the next operation from the next tx will start executing when this new operation we just inserted finished, and not the operation it previously depended on!!
-                    // TODO - WE NEED TO INSERT IT IN THE EXACT SPOT!!
-
-                    // The <= is because the current tx could have a non commutative write that must be read by any other tx
-                    // comming after, including itself
-                    if node.data.tx_block_id <= tx_id {
-                        if !node.data.is_commutative() && node.data.is_write() {
-                            highest_non_commutative_write = Some(Arc::clone(&node_ref));
-                            break;
-                        }
-                    }
-
-                    // depends on state
-                    if node.prev.is_none() { 
-                        break; 
-                    } 
-
-                    tmp_node = Arc::clone(&node.prev.as_ref().unwrap());
-                }
-    
-                prev_node = Some(Arc::clone(&node_ref));
-                node_ref = tmp_node;
-            }
-
-            // Insert the node in the schedule
-            if let Some(prev_node) = prev_node {
-                linked_list.insert_to_left_of(Arc::clone(&operation_node), prev_node);
-            }
-            else {
-                linked_list.append(Arc::clone(&operation_node));
-            }
-
-            // Update the dependencies of the node if it is a read
-            if op_type == OpType::Read {
-                // update dependency if operation is a Read, and we have a highest non commutative write
-                if let Some(write) =  highest_non_commutative_write {
-                    operation_node.write().unwrap().set_dependency(Some(write));
-                }
-            }
-        }
-        // no list of operations for the key -> create a brand new list
-        else {
-            schedule.insert(key.clone(), Arc::new(LinkedList::new(Arc::clone(&operation_node))));
-        }
-
-        // Independently of if the LinkedList already exsited or not, if it is a write, update last non commutative write
-        if op_type == OpType::Write {
-            // update last non commutative write
-            self.update_last_write(sc_address, &key, operation_node, op_type);
-        }
-
-
-
-    }
-}
-
 #[derive(Debug, PartialEq, Clone, Copy)]
-enum TxState {
+pub enum TxState {
     Executing,
     Executed,
     NotExecuted,
@@ -716,8 +213,8 @@ pub struct ConcurrentSchedule {
     /// Total number of txs in the block
     total: TxId,
 
-    /// Stores the number of dependencies for each tx
-    deps: HashMap<TxId, AtomicUsize>,
+    /// Stores the id of txs that are the dependencies of some TxId
+    deps: Vec<Option<DashSet<TxId>>>,
 
     /// stores the txs that depend on some tx
     /// Tx -> Set of txs depending on it
@@ -728,10 +225,19 @@ pub struct ConcurrentSchedule {
     partial_ready_tx: DashMap<TxId, HashSet<TxId>>,
 
     /// Signal used when any tx is pushed either to READY or PARTIAL_READY queue
-    execution_queues: ConcurrentQueues,
+    pub execution_queues: ConcurrentQueues,
 
     /// mapping of SC_address -> key -> linked list of operations
     schedule: Schedule,
+
+    #[cfg(feature="exec_time")]
+    node_dependency_timer: Option<Instant>,
+    #[cfg(feature="exec_time")]
+    node_dependency_time: Duration,
+    #[cfg(feature="exec_time")]
+    node_creation_timer: Option<Instant>,
+    #[cfg(feature="exec_time")]
+    node_creation_time: Duration,
 }
 
 /// Iterator that allows iterating over each schdule/contract address
@@ -758,6 +264,67 @@ impl<'a> Iterator for ConcurrentScheduleIter<'a> {
     }
 }
 
+impl PartialEq for ConcurrentSchedule {
+    fn eq(&self, other: &ConcurrentSchedule) -> bool {
+        self.tx_states == other.tx_states &&
+        self.transactions == other.transactions &&
+        self.total == other.total &&
+        self.compare_deps(other) &&
+        self.compare_dependent_txs(other) &&
+        self.compare_partial_ready_tx(other) &&
+        self.execution_queues == other.execution_queues &&
+        self.schedule == other.schedule
+    }
+}
+
+impl ConcurrentSchedule {
+    fn compare_deps(&self, other: &ConcurrentSchedule) -> bool {
+        if self.deps.len() != other.deps.len() { return false; }
+        
+        // self.deps.iter().all(|ref_multi| {
+        //     let (key, set1) = ref_multi.pair();
+        //     match other.deps.get(key) {
+        //         Some(set2) => {
+        //             set1.len() == set2.len() && 
+        //             set1.iter().all(|item| set2.contains(item.key()))
+        //         },
+        //         None => false,
+        //     }
+        // })
+        true
+    }
+
+    fn compare_dependent_txs(&self, other: &ConcurrentSchedule) -> bool {
+        if self.dependent_txs.len() != other.dependent_txs.len() { return false; }
+        
+        self.dependent_txs.iter().all(|ref_multi| {
+            let (key, set1) = ref_multi.pair();
+            match other.dependent_txs.get(key) {
+                Some(set2) => {
+                    set1.len() == set2.len() && 
+                    set1.iter().all(|item| set2.contains(item))
+                },
+                None => false,
+            }
+        })
+    }
+
+    fn compare_partial_ready_tx(&self, other: &ConcurrentSchedule) -> bool {
+        if self.partial_ready_tx.len() != other.partial_ready_tx.len() { return false; }
+        
+        self.partial_ready_tx.iter().all(|ref_multi| {
+            let (key, set1) = ref_multi.pair();
+            match other.partial_ready_tx.get(key) {
+                Some(set2) => {
+                    set1.len() == set2.len() && 
+                    set1.iter().all(|item| set2.contains(item))
+                },
+                None => false,
+            }
+        })
+    }
+}
+
 impl ConcurrentSchedule {
     pub fn new() -> Self {
         ConcurrentSchedule {
@@ -766,7 +333,7 @@ impl ConcurrentSchedule {
 
             transactions: HashSet::new(),
 
-            deps: HashMap::new(),
+            deps: Vec::new(),
 
             execution_queues: ConcurrentQueues::new(),
             
@@ -775,7 +342,116 @@ impl ConcurrentSchedule {
             dependent_txs: DashMap::new(),
 
             partial_ready_tx: DashMap::new(),
+
+            #[cfg(feature = "exec_time")]
+            node_dependency_timer: None,
+            #[cfg(feature = "exec_time")]
+            node_dependency_time: Duration::ZERO,
+            #[cfg(feature = "exec_time")]
+            node_creation_timer: None,
+            #[cfg(feature = "exec_time")]
+            node_creation_time: Duration::ZERO,
         }
+    }
+
+    pub fn from_schedule_builder(mut schedule: ScheduleBuilder, n_threads: u16) -> ConcurrentSchedule {
+
+        let mut keys: Vec<TxId> = schedule.deps.keys().cloned().collect();
+        let mut total_keys = keys.len() as u16;
+
+        
+        // do not launch more threads than tx in the block
+        let n_threads = if total_keys < n_threads { total_keys } 
+        else { n_threads };
+        let min_keys_per_thread = total_keys / n_threads;
+        
+        let deps_hash_sets: Arc<Vec<Option<DashSet<usize>>>> = Arc::new(vec![None; total_keys as usize]);
+
+
+        let mut handles = vec![];
+        for i in 0..n_threads {
+            let deps_hash_sets_shared = Arc::clone(&deps_hash_sets);
+
+            let keys_for_current_thread = if total_keys % (n_threads - i) != 0 { min_keys_per_thread + 1 }
+            else { min_keys_per_thread };
+            total_keys -= keys_for_current_thread;
+
+            // extract txs from the block for current thread
+            let key_subset: Vec<TxId> = keys.drain(0..(keys_for_current_thread as usize)).collect();
+            
+            let mut dependencies_to_push = Vec::with_capacity(key_subset.len());
+            for k in &key_subset {
+                dependencies_to_push.push(schedule.deps.remove(&k).unwrap());
+            } 
+
+            let handle = thread::spawn(move || {
+                for k in key_subset {
+                    let ptr = deps_hash_sets_shared.as_ptr() as *mut Option<DashSet<usize>>;
+                    unsafe { *ptr.offset(k as isize) = Some(DashSet::from_iter(dependencies_to_push.remove(0).into_iter())) };
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        let execution_queues = ConcurrentQueues::from_serial_queues(schedule.execution_queues);
+        let dependent_txs = DashMap::from_iter(schedule.dependent_txs.into_iter());
+        let partial_ready_tx = DashMap::from_iter(schedule.partial_ready_tx.into_iter());
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let deps = Arc::into_inner(deps_hash_sets).unwrap();
+
+
+        ConcurrentSchedule {
+            tx_states: schedule.tx_states,
+            total: schedule.total,
+
+            transactions: schedule.transactions,
+
+            deps: deps,
+
+            execution_queues,
+            
+            schedule: schedule.schedule,
+            
+            dependent_txs,
+
+            partial_ready_tx,
+
+            #[cfg(feature = "exec_time")]
+            node_dependency_timer: None,
+            #[cfg(feature = "exec_time")]
+            node_dependency_time: Duration::ZERO,
+            #[cfg(feature = "exec_time")]
+            node_creation_timer: None,
+            #[cfg(feature = "exec_time")]
+            node_creation_time: Duration::ZERO,
+        }
+    }
+
+    #[cfg(feature = "exec_time")]
+    fn start_node_dependency_timer(&mut self) {
+        self.node_dependency_timer = Some(Instant::now());
+    }
+
+    #[cfg(feature = "exec_time")]
+    fn stop_node_dependency_timer(&mut self) {
+        let elapsed = self.node_dependency_timer.unwrap().elapsed();
+        self.node_dependency_time += elapsed;
+    }
+
+    #[cfg(feature = "exec_time")]
+    fn start_node_creation_timer(&mut self) {
+        self.node_creation_timer = Some(Instant::now());
+    }
+
+    #[cfg(feature = "exec_time")]
+    fn stop_node_creation_timer(&mut self) {
+        let elapsed = self.node_creation_timer.unwrap().elapsed();
+        self.node_creation_time += elapsed;
     }
 
     /// Updates the execution state of a transaction.
@@ -802,11 +478,12 @@ impl ConcurrentSchedule {
         // if tx has dependent txs
         if let Some(dependent_txs) = self.dependent_txs.get(&tx_id) {
             for dependent_tx in dependent_txs.iter() {
-                let dependencies = self.deps.get(&dependent_tx).unwrap();
-                dependencies.fetch_sub(1, Ordering::SeqCst);
+                
+                let dependencies = self.deps[*dependent_tx].as_ref().unwrap();
+                dependencies.remove(&tx_id);
     
                 let tx_status = self.tx_states[*dependent_tx];
-                if dependencies.load(Ordering::SeqCst) == 0 && (tx_status == TxState::NotExecuted) {
+                if dependencies.is_empty() && (tx_status == TxState::NotExecuted) {
 
                     ready_txs.push(*dependent_tx);
                     
@@ -842,6 +519,16 @@ impl ConcurrentSchedule {
 
         self.execution_queues.set_total_txs(self.total);
         self.tx_states = vec![TxState::NotExecuted ; self.total];
+        // pre allocate initial space
+        self.transactions = HashSet::with_capacity(self.total);
+        self.dependent_txs = DashMap::with_capacity(self.total);
+        
+        self.deps = Vec::with_capacity(self.total);
+
+        for i in 0..self.total {
+            self.deps.push(Some(DashSet::new()));
+        }
+
 
         for tx in block {
 
@@ -887,18 +574,58 @@ impl ConcurrentSchedule {
                 }
             }
 
-            if self.deps.entry(tx_id).or_insert(AtomicUsize::new(0)).load(Ordering::SeqCst) == 0 { // no dependencies
-                println!("Pushing to ready queue - BUILD FROM RWS");
+            if self.deps[tx_id].as_ref().unwrap().is_empty() { // no dependencies
                 self.execution_queues.push_ready(tx_id);
                 self.execution_queues.remove_partial_ready(tx_id);
             }
         }
     }
 
+    /// Merge the state from 2 sequential partial schedules. The 'other' schedule is assumed to come after
+    /// the 'self' schedule.
+    /// 
+    /// Set the dependencies of the first operations from the 'other' schedule as the last writes from the 
+    /// 'self' schedule, update the 'prev' and 'next' fields of the nodes & update the ready & partial ready queues.
+    // pub fn merge(&mut self, other: ConcurrentSchedule) {
+    //     self.total = self.total + other.total;
+
+    //     self.tx_states = vec![TxState::NotExecuted ; self.total];
+    //     self.deps.extend(other.deps);
+    //     self.dependent_txs.extend(other.dependent_txs);
+    //     self.partial_ready_tx.extend(other.partial_ready_tx);
+    //     self.transactions.extend(other.transactions);
+
+    //     self.schedule.merge(other.schedule, &mut | node_self: NodeRef<VecOperation>, node_other: NodeRef<VecOperation>| {
+    //         let node_other_tx_id = node_other.read().data.tx_block_id;
+    //         let node_self_tx_id = node_self.read().data.tx_block_id; 
+            
+    //         self.deps[node_other_tx_id].insert(node_self_tx_id);
+    //         self.dependent_txs.entry(node_self_tx_id).or_insert(HashSet::new()).insert(node_other_tx_id);
+            
+    //         let ready_tx = other.execution_queues.remove_id_from_ready(node_other_tx_id);
+
+    //         // if is first operation of some tx from 'other' schedule, then remove it the 'other's from partial_ready_queue &
+    //         // add it to the partial ready of the tx from the 'self' schedule  
+    //         if node_other.read().data.first_operation {
+    //             other.execution_queues.remove_id_from_partial_ready(node_other_tx_id);
+    //             self.partial_ready_tx.entry(node_self_tx_id).or_insert(HashSet::new()).insert(node_other_tx_id);
+    //         }
+    //         // Was not first operation && was still in ready 
+    //         // (meaning no other previous operation had a dependency) - inisert in partial_ready 
+    //         else if let Some(tx) = ready_tx {
+    //             self.execution_queues.push_partial_ready(tx);
+    //         }
+    //     });
+
+    //     self.execution_queues.merge(other.execution_queues);
+
+    // }
+
     pub fn insert_untracked_operation(&self, sc_address: ScAddr, key: &Vec<u8>, operation_node: NodeRef<VecOperation>) {
-        let node_lock = operation_node.read().unwrap();
+        let node_lock = operation_node.read();
         let op_type = node_lock.data.operation_type;
         let tx_id = node_lock.data.tx_block_id;
+        let commutativity = node_lock.data.commutativity;
         drop(node_lock);
 
         if !self.transactions.contains(&tx_id) { 
@@ -908,14 +635,11 @@ impl ConcurrentSchedule {
             );
         }
 
-        self.schedule.insert_untracked_operation(sc_address, key, tx_id, operation_node, op_type);
+        self.schedule.insert_untracked_operation(sc_address, key, tx_id, operation_node, op_type, commutativity);
         
-        if let Some(dep) = self.deps.get(&tx_id) {
-            if dep.load(Ordering::SeqCst) == 0 {
-                // If tx has no dependencies, push to ready queue
-                println!("Pushing to ready queue - UNTRACKED OP");
-                self.execution_queues.push_ready(tx_id);
-            }
+        if self.deps[tx_id].as_ref().unwrap().is_empty() {
+            // If tx has no dependencies, push to ready queue
+            self.execution_queues.push_ready(tx_id);
         }
     }
 
@@ -925,28 +649,40 @@ impl ConcurrentSchedule {
     /// This method also pushes the current tx into the partial_ready_queue if this is the first operation, or to the dependency's patial ready
     /// if this is the first operation of this tx & depends on another tx.
     fn set_node_dependency(&mut self, dependent_node: &mut DependencyNode<VecOperation>, dependency_node: Option<NodeRef<VecOperation>>, tid: TxId, first_operation: bool) {
+       
         match dependency_node {
             Some(write) => {
+                
                 // set new operation's dependency on previous write
                 dependent_node.set_dependency(Some(Arc::clone(&write)));
 
-                let last_write_op = write.read().unwrap();
+                let last_write_op = write.read();
                 let last_write_tx_id = last_write_op.data.tx_block_id; 
+                let last_write_is_from_this_tx =  last_write_op.data.is_from_tx(tid);
+                drop(last_write_op);
 
                 // Last write was made by another tx
-                if !last_write_op.data.is_from_tx(tid) {
+                if !last_write_is_from_this_tx {
                     // set our tid as a dependent tx of the tx responsible for the write we need to wait for
-                    let mut dependent_txs = self.dependent_txs.entry(last_write_tx_id).or_insert(HashSet::new());
+                    if !self.dependent_txs.contains_key(&last_write_tx_id) {
+                        self.dependent_txs.insert(last_write_tx_id, HashSet::new());
+                    }
+                    let mut dependent_txs = self.dependent_txs.get_mut(&last_write_tx_id).unwrap();
                     dependent_txs.insert(tid);
 
                     if first_operation {
-                        let mut partial_ready = self.partial_ready_tx.entry(last_write_tx_id).or_insert(HashSet::new());
+
+                        if !self.partial_ready_tx.contains_key(&last_write_tx_id) {
+                            self.partial_ready_tx.insert(last_write_tx_id, HashSet::new());
+                        }
+                        let mut partial_ready = self.partial_ready_tx.get_mut(&last_write_tx_id).unwrap();
+
                         partial_ready.insert(tid); 
                     }
 
                     // Increase dependency count
-                    let tx_dependencies = self.deps.entry(tid).or_insert(AtomicUsize::new(0));
-                    tx_dependencies.fetch_add(1, Ordering::SeqCst);
+                    let tx_dependencies = self.deps[tid].as_ref().unwrap();
+                    tx_dependencies.insert(last_write_tx_id);
                 }
             },
             // No previous write
@@ -956,7 +692,6 @@ impl ConcurrentSchedule {
                 }
             }
         }
-
 
     }
 
@@ -970,15 +705,15 @@ impl ConcurrentSchedule {
         contract: ScAddr, key_bytes: &Vec<u8>, commutativity: Commutativity) -> NodeRef<VecOperation> {
 
         // create a new operation node
-        let operation = Operation::new(OpType::Read, tx_id, commutativity);
+        let operation = Operation::new(OpType::Read, tx_id, commutativity, first_operation);
         let mut op_node = DependencyNode::new(operation);
 
         // create empty schedule for this SC
         self.schedule.create_if_not_exists(contract);
 
-        let LastWrites { commutative, non_commutative  } = self.schedule.get_last_writes(contract, &key_bytes);
+        let LastWrites { commutative, non_commutative  } = self.schedule.get_last_writes(&contract, &key_bytes);
 
-        match commutativity {
+        match commutativity { // TODO refactor this to use the method from LasrWrites
             // If read is commutative -> It can only depend on non commutative writes.
             // There is no conflict between Commutative operations.
             Commutativity::Commutative => {
@@ -989,8 +724,8 @@ impl ConcurrentSchedule {
                 match (&commutative, &non_commutative) {
                     // If there are both a commutative & non commutative writes, pick the operation from the latest tx.
                     (Some(comm), Some(non_comm)) => {
-                        let comm_id = comm.read().unwrap().data.tx_block_id;
-                        let non_comm_id = non_comm.read().unwrap().data.tx_block_id;
+                        let comm_id = comm.read().data.tx_block_id;
+                        let non_comm_id = non_comm.read().data.tx_block_id;
 
                         let dependency = if comm_id > non_comm_id { commutative }
                         else { non_commutative };
@@ -1017,25 +752,28 @@ impl ConcurrentSchedule {
         };
 
         let concurrent_op_node = Arc::new(RwLock::new(op_node));
-        self.schedule.append(contract, key_bytes, Arc::clone(&concurrent_op_node), OpType::Read);
+        self.schedule.append(contract, key_bytes, Arc::clone(&concurrent_op_node), OpType::Read, commutativity);
         concurrent_op_node
 
     }
 
     fn update_schedule_on_write_operation(&mut self, first_operation: bool, tx_id: TxId, 
         contract: ScAddr, key_bytes: &Vec<u8>, commutativity: Commutativity) -> NodeRef<VecOperation> {
+
         // create a new operation node
-        let operation = Operation::new(OpType::Write, tx_id, commutativity);
+        let operation = Operation::new(OpType::Write, tx_id, commutativity, first_operation);
         let op_node = DependencyNode::new(operation);
 
         // create empty schedule for this SC
         self.schedule.create_if_not_exists(contract);
+
         // append to schedule
         let concurrent_op_node = Arc::new(RwLock::new(op_node));
-        self.schedule.append(contract, key_bytes, Arc::clone(&concurrent_op_node), OpType::Write);
+        self.schedule.append(contract, key_bytes, Arc::clone(&concurrent_op_node), OpType::Write, commutativity);
         if first_operation {
             self.execution_queues.push_partial_ready(tx_id);
         }
+
         concurrent_op_node
     }
 
@@ -1056,21 +794,22 @@ impl ConcurrentSchedule {
             // run over all keys of each SC
             for operations_per_key in schedule.value() {
                 let key = operations_per_key.key();
-                let LastWrites { commutative, non_commutative } = self.schedule.get_last_writes(sc_address, key);
+                let LastWrites { commutative, non_commutative } = self.schedule.get_last_writes(&sc_address, key);
 
                 // persist last write - If it is commutative, then merge the deltas
                 match (commutative, non_commutative) {
+                    // TODO - refactor this to use the method from LastWrites
                     (Some(comm), Some(non_comm)) => {
-                        let comm_id = comm.read().unwrap().data.tx_block_id;
-                        let non_comm_id = non_comm.read().unwrap().data.tx_block_id;
+                        let comm_id = comm.read().data.tx_block_id;
+                        let non_comm_id = non_comm.read().data.tx_block_id;
 
                         if comm_id > non_comm_id { 
                             let node_val = self.merge_commutative_chain(&comm, &sc_storage, key);
                             sc_storage.set(key, node_val.as_slice()).0.unwrap();
                         }
                         else {
-                            let node_val = &non_comm.read().unwrap().data.value;
-                            let node_val = node_val.as_ref().expect("Persisting schedule: Last non commutative write should have its value set.");
+                            let node_val = &non_comm.read().data.value;
+                            let node_val = node_val.wait_for_value();
                             sc_storage.set(key, node_val.as_slice()).0.unwrap();
                         }
                     },
@@ -1081,8 +820,8 @@ impl ConcurrentSchedule {
                     },
 
                     (None, Some(non_comm)) => {
-                        let node_val = &non_comm.read().unwrap().data.value;
-                        let node_val = node_val.as_ref().expect("Persisting schedule: Last non commutative write should have its value set.");
+                        let node_val = &non_comm.read().data.value;
+                        let node_val = node_val.wait_for_value();
                         sc_storage.set(key, node_val.as_slice()).0.unwrap();
                     },
                     (None, None) => ()
@@ -1093,12 +832,12 @@ impl ConcurrentSchedule {
 
     /// Searches for the previous commutative read associated to the passed commutative write node
     fn get_prev_incr_read(node: &NodeRef<VecOperation>) -> NodeRef<VecOperation> {
-        let node_read_lock = node.read().unwrap();
+        let node_read_lock = node.read();
         let tx_id = node_read_lock.data.tx_block_id;
         let mut previous_op = Arc::clone(node_read_lock.prev.as_ref().unwrap());
 
         return loop {
-            let node_lock = previous_op.read().unwrap();
+            let node_lock = previous_op.read();
 
             // If we found the Commutative read -> return it
             if node_lock.data.is_commutative() && 
@@ -1129,7 +868,7 @@ impl ConcurrentSchedule {
     pub fn set_value(node: &NodeRef<VecOperation>, value: &[u8]) {
         
         // fetch node info
-        let node_read_lock = node.read().unwrap();
+        let node_read_lock = node.read();
         let op_type = node_read_lock.data.operation_type;
         let commutativity = node_read_lock.data.commutativity;
         drop(node_read_lock);
@@ -1138,7 +877,7 @@ impl ConcurrentSchedule {
             OpType::Read => {
                 match commutativity {
                     Commutativity::Commutative => {
-                        let mut node = node.write().unwrap();
+                        let node = node.read();
                         node.data.set_value(value.to_vec());
                     },
                     Commutativity::NonCommutative => {} // no need to write the read value to the node
@@ -1147,17 +886,30 @@ impl ConcurrentSchedule {
              OpType::Write => {
                 match commutativity {
                     Commutativity::Commutative => {
+
+                        #[cfg(feature = "debug")]
+                        print_with_thread_id!("Setting commutative val");
+                        
                         let prev_incr_read = ConcurrentSchedule::get_prev_incr_read(node);
-                        let prev_incr_read_val = prev_incr_read.read().unwrap().data.value.as_ref().unwrap().clone();
+                        let prev_incr_read_val = prev_incr_read.read().data.value.get_value().unwrap();
+                        
+                        #[cfg(feature = "debug")]
+                        print_with_thread_id!("Prev incr read {:?}", prev_incr_read_val);
+
                         let val = value.to_vec();
                         let delta = val.compute_delta(&prev_incr_read_val);
 
-                        let mut node_write_lock = node.write().unwrap();
+                        #[cfg(feature = "debug")]
+                        print_with_thread_id!("Writing to commutative node");
+                        let node_write_lock = node.read();
                         node_write_lock.data.set_value(delta);
+
+                        #[cfg(feature = "debug")]
+                        print_with_thread_id!("Finished setting commutative value");
 
                     },
                     Commutativity::NonCommutative => {
-                        let mut node = node.write().unwrap();
+                        let node = node.read();
                         node.data.set_value(value.to_vec());
                     }
                 }
@@ -1183,49 +935,50 @@ impl ConcurrentSchedule {
         let mut starting_node = Arc::clone(node);
         let mut accumulated_deltas =  vec![];
 
+        // auxilliary function
         let mut merge_accumulated_delta = |delta: Vec<u8>| {
             if accumulated_deltas.is_empty() {
                 accumulated_deltas = delta;
             }
             else {
-                // println!("Accumulated deltas before: {:?}", accumulated_deltas);
-                // println!("Value to add: {:?}", delta);
                 accumulated_deltas.merge(&delta);
-                // println!("Accumulated deltas after: {:?}", accumulated_deltas);
             }
         };
 
-        loop {
-            let node_lock = starting_node.read().unwrap();
-            
-            // println!("Node OpType: {:?}", node_lock.data.operation_type);
-            // println!("Node Commutativity {:?}", node_lock.data.commutativity);
+        #[cfg(feature = "debug")]
+        print_with_thread_id!("Mergind deltas");
 
+        loop {
+            let node_lock = starting_node.read();
             // Commutative writes -> merge deltas
             if node_lock.data.is_write() {
+
+                #[cfg(feature = "debug")]
+                print_with_thread_id!("Waiting for value on write of tx {:?}", node_lock.data.tx_block_id);
+                
                 let value = node_lock.data.wait_for_value();
-                // println!("Value from node: {:?}", value);
+                
+                #[cfg(feature = "debug")]
+                print_with_thread_id!("Finished waiting on write of tx {:?}", node_lock.data.tx_block_id);
+
                 merge_accumulated_delta(value);
 
                 // This is a sufficient condition to stop. The first NonCommutative Write (of any tx tx) after a chain of 
                 // commutative operations will always be the 'barrier' of all subsequent commutative operations.
                 // They will always depend on this write.
                 if !node_lock.data.is_commutative() {
-                    // println!("Breaking out");
                     break accumulated_deltas;
                 }
             }
 
             // Current node has a previous node
             if let Some(prev)  = &node_lock.prev {
-                // println!("Going left");
                 let tmp = Arc::clone(prev);
 
                 drop(node_lock); // since node_lock borrows from previous_op. Needed for below assignment 
                 starting_node = tmp;
             } 
             else { // We reached the head without finding any non commutative write -> merge deltas to storage value
-                // println!("No Comm Write found");
                 let val = storage.get_uncharged(key).unwrap();
                 merge_accumulated_delta(val);
                 break accumulated_deltas;
@@ -1254,13 +1007,13 @@ impl ConcurrentSchedule {
     pub fn get_value(&self, read_node: &NodeRef<VecOperation>, concurrent_storage: &Arc<dyn ConcurrentStorage>, 
         sc_address: &ScAddr, key: &[u8]) -> Option<Vec<u8>> {
         // fetch node info
-        let node_read_lock = read_node.read().unwrap();
+        let node_read_lock = read_node.read();
 
         if node_read_lock.data.is_read() {
             if node_read_lock.data.is_commutative() {
 
                 let dependency_val = if let Some(dependency) = &node_read_lock.dependency {
-                    let node_lock = dependency.read().unwrap();
+                    let node_lock = dependency.read();
                     // println!("Comm Read depnded on: {:?}", node_lock.data);
                     Some(node_lock.data.wait_for_value())
                 }
@@ -1269,27 +1022,28 @@ impl ConcurrentSchedule {
                 };
 
                 let val: Vec<u8> = dependency_val.as_ref().unwrap().clone();
-                drop(node_read_lock);
 
-                read_node.write().unwrap().data.set_value(val);
-                // println!("Commutative read value: {:?}", dependency_val);
+                node_read_lock.data.set_value(val);
                 dependency_val
             }
             else {
                 if let Some(dependency) = &node_read_lock.dependency {
-                    // println!("Node has dependencies");
-                    let node_lock = dependency.read().unwrap(); 
+                    let node_lock = dependency.read(); 
 
                     if node_lock.data.is_commutative() {
-                        // println!("Merging commutative chain");
-                        drop(node_lock);
 
+                        #[cfg(feature = "debug")]
+                        print_with_thread_id!("Getting a non commutative value depending on a commutative node");
+                        
+                        drop(node_lock);
                         let merged_deltas = self.merge_commutative_chain(dependency, concurrent_storage, key);
-                        // println!("Merged Val: {:?}", merged_deltas);
+                        
+                        #[cfg(feature = "debug")]
+                        print_with_thread_id!("Finished getting the dependent value");
+
                         Some(merged_deltas)
                     }
                     else {
-                        // println!("Res: {:?}", node_lock.data.wait_for_value());
                         Some(node_lock.data.wait_for_value())
                     }
                 }
@@ -1318,27 +1072,21 @@ impl ConcurrentSchedule {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{atomic::Ordering, Arc, RwLock};
+    use std::sync::{atomic::Ordering, Arc};
 
-    use parking_lot::lock_api::Mutex;
+    use serial_test::serial;
     use wasmer::Store;
 
     use crate::{
-        internals::instance_from_module, 
-        symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS}, 
-        testing::{
+        internals::instance_from_module, symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS}, testing::{
             mock_concurrent_backend, mock_persistent_backend, mock_tx_operation, 
             ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper
-        }, 
-        vm_manager::{
-            concurrent_schedule::{ascii_encoded_add, ascii_encoded_sub, LastWrite, LastWrites}, 
-            vm_manager::{InstantiatedEntryPoint, RWSContext, VMMessage}
-        }, 
-        wasm_backend::{compile, make_compiling_engine}, 
-        ConcurrentSchedule, InstanceOptions, SCManager, SEStatus, ScAddr, Size
+        }, vm_manager::{
+            concurrent_schedule::LastWrites, schedule::{OperationValue, ScAddr}, vm_manager::{InstantiatedEntryPoint, RWSContext, VMMessage}
+        }, wasm_backend::{compile, make_compiling_engine}, ConcurrentSchedule, InstanceOptions, SCManager, SEStatus, Size
     };
 
-    use super::{DependencyNode, LinkedList, NodeRef, OpType, Operation, Schedule, VecOperation};
+    use super::{DependencyNode, NodeRef, OpType, VecOperation};
 
     const CONTRACT: &[u8] = include_bytes!("../../custom_contracts/empty-contract/target/wasm32-unknown-unknown/release/contract.wasm");
     const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1346,28 +1094,28 @@ mod tests {
     const DEFAULT_MEMORY_LIMIT: Size = Size::mebi(64);
 
     fn assert_node_next(node: &NodeRef<VecOperation>, node_next: &NodeRef<VecOperation>) {
-        let node = node.read().unwrap();
-        let next = node.next.as_ref().unwrap().read().unwrap();
+        let node = node.read();
+        let next = node.next.as_ref().unwrap().read();
 
-        let node_next = node_next.read().unwrap();
+        let node_next = node_next.read();
 
         assert_eq!(*next, *node_next);
     }
 
     fn assert_node_prev(node: &NodeRef<VecOperation>, node_prev: &NodeRef<VecOperation>) {
-        let node = node.read().unwrap();
-        let next = node.prev.as_ref().unwrap().read().unwrap();
+        let node = node.read();
+        let next = node.prev.as_ref().unwrap().read();
 
-        let node_prev = node_prev.read().unwrap();
+        let node_prev = node_prev.read();
 
         assert_eq!(*next, *node_prev);
     }
 
     fn assert_node_dependency(node: &NodeRef<VecOperation>, node_dep: &NodeRef<VecOperation>) {
-        let node = node.read().unwrap();
-        let next = node.dependency.as_ref().unwrap().read().unwrap();
+        let node = node.read();
+        let next = node.dependency.as_ref().unwrap().read();
 
-        let node_dep = node_dep.read().unwrap();
+        let node_dep = node_dep.read();
 
         assert_eq!(*next, *node_dep);
     }
@@ -1390,7 +1138,7 @@ mod tests {
         let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT };
         let concurrent_backend = mock_concurrent_backend(&[], concurrent_store);
         let instance = instance_from_module(store, &module, concurrent_backend, much_gas.gas_limit, None).unwrap();
-        let instances = vec![Mutex::new(instance)];
+        let instances = vec![instance];
 
 
         state_manager.save_instance(0, sc_address, backend, instances);
@@ -1399,151 +1147,7 @@ mod tests {
     }
 
     #[test]
-    fn ascii_add() {
-        let lhs = String::from("145").into_bytes();
-        let rhs = String::from("66").into_bytes();
-        let res = ascii_encoded_add(&lhs, &rhs);
-        assert_eq!(res, String::from("211").into_bytes());
-
-        let lhs = String::from("35").into_bytes();
-        let rhs = String::from("-40").into_bytes();
-        let res = ascii_encoded_add(&lhs, &rhs);
-        assert_eq!(res, String::from("-5").into_bytes());
-    }
-
-    #[test]
-    fn ascii_sub() {
-        let lhs = String::from("100").into_bytes();
-        let rhs = String::from("45").into_bytes();
-        let res = ascii_encoded_sub(&lhs, &rhs);
-        assert_eq!(res, String::from("55").into_bytes());
-
-        let lhs = String::from("50").into_bytes();
-        let rhs = String::from("100").into_bytes();
-        let res = ascii_encoded_sub(&lhs, &rhs);
-        assert_eq!(res, String::from("-50").into_bytes());
-    }
-
-    #[test]
-    fn linked_list_append() {
-        let operation = Operation::new(OpType::Read, 1, Commutativity::NonCommutative);
-        let node = Arc::new(RwLock::new(DependencyNode::new(operation)));
-        let linked_list = LinkedList::new(Arc::clone(&node));
-
-        assert_eq!(*linked_list.head.read().unwrap().read().unwrap(), *node.read().unwrap());
-        assert_eq!(*linked_list.tail.read().unwrap().read().unwrap(), *node.read().unwrap());
-
-        let operation2 = Operation::new(OpType::Write, 2, Commutativity::NonCommutative);
-        let node2 = Arc::new(RwLock::new(DependencyNode::new(operation2)));
-        linked_list.append(Arc::clone(&node2));
-
-        assert_eq!(*linked_list.head.read().unwrap().read().unwrap(), *node.read().unwrap());
-        assert_eq!(*linked_list.tail.read().unwrap().read().unwrap(), *node2.read().unwrap());
-
-        assert_node_next(&node, &node2);
-        assert_node_prev(&node2, &node);
-    }
-
-    #[test]
-    fn linked_list_insert() {
-        // setup linked list with 2 elements
-        let operation = Operation::new(OpType::Read, 1, Commutativity::NonCommutative);
-        let node = Arc::new(RwLock::new(DependencyNode::new(operation)));
-        let linked_list = LinkedList::new(Arc::clone(&node));
-
-        let operation2 = Operation::new(OpType::Write, 2, Commutativity::NonCommutative);
-        let node2 = Arc::new(RwLock::new(DependencyNode::new(operation2)));
-        linked_list.append(Arc::clone(&node2));
-
-        // create new operation
-        let operation3 = Operation::new(OpType::Write, 3, Commutativity::NonCommutative);
-        let node3 = Arc::new(RwLock::new(DependencyNode::new(operation3)));
-
-        linked_list.insert_to_left_of(Arc::clone(&node3), Arc::clone(&node));
-
-        assert_eq!(*linked_list.head.read().unwrap().read().unwrap(), *node3.read().unwrap());
-        assert_eq!(*linked_list.tail.read().unwrap().read().unwrap(), *node2.read().unwrap());
-
-        assert_node_next(&node3, &node);
-        assert_node_next(&node, &node2);
-
-        assert_node_prev(&node, &node3);
-        assert_node_prev(&node2, &node);
-
-        // create new operation
-        let operation4 = Operation::new(OpType::Write, 4, Commutativity::NonCommutative);
-        let node4 = Arc::new(RwLock::new(DependencyNode::new(operation4)));
-
-        linked_list.insert_to_left_of(Arc::clone(&node4), Arc::clone(&node2));
-
-        assert_eq!(*linked_list.head.read().unwrap().read().unwrap(), *node3.read().unwrap());
-        assert_eq!(*linked_list.tail.read().unwrap().read().unwrap(), *node2.read().unwrap());
-
-        assert_node_next(&node3, &node);
-        assert_node_next(&node, &node4);
-        assert_node_next(&node4, &node2);
-
-        assert_node_prev(&node, &node3);
-        assert_node_prev(&node4, &node);
-        assert_node_prev(&node2, &node4);
-    }
-
-    #[test]
-    fn schedule_append() {
-        let mut schedule = Schedule::new();
-        let key_bytes = vec![1u8];
-
-        schedule.create_if_not_exists(SC_ADDR_A);
-
-        // create a read
-        let operation = Operation::new(OpType::Read, 1, Commutativity::NonCommutative);
-        let node = Arc::new(RwLock::new(DependencyNode::new(operation)));
-
-        schedule.append(SC_ADDR_A, &key_bytes, Arc::clone(&node), OpType::Read);
-
-        // 1 contract
-        assert_eq!(schedule.schedule.len(), 1);
-        {                                                                       // because of this mutable borrow :(
-            // 1 key
-            let created_contract_schedule = schedule.schedule.get(&SC_ADDR_A).unwrap();
-            assert_eq!(created_contract_schedule.len(), 1);
-        }
-
-        // since we added a read, last_write should return None
-        let LastWrites {commutative, non_commutative} = schedule.get_last_writes(SC_ADDR_A, &key_bytes);
-        match (commutative, non_commutative) {
-            (Some(_), Some(_)) | (Some(_), None) | (None, Some(_)) => assert!(false),
-            (None, None) => assert!(true),
-        }
-
-        // create a write
-        let operation2 = Operation::new(OpType::Write, 2, Commutativity::NonCommutative);
-        let node2 = Arc::new(RwLock::new(DependencyNode::new(operation2)));
-
-        schedule.append(SC_ADDR_A, &key_bytes, Arc::clone(&node2), OpType::Write);
-
-        // 1 sc
-        assert_eq!(schedule.schedule.len(), 1);
-        // 1 key
-        let created_contract_schedule = schedule.schedule.get(&SC_ADDR_A).unwrap();
-        assert_eq!(created_contract_schedule.len(), 1);
-
-        let LastWrites {commutative, non_commutative} = schedule.get_last_writes(SC_ADDR_A, &key_bytes); 
-        match (commutative, non_commutative) {
-            (Some(_), Some(non_comm)) | (None, Some(non_comm)) => {
-                assert_eq!(*node2.read().unwrap(), *non_comm.read().unwrap());
-            },
-            (_, _) => assert!(false),
-        };
-
-        // run over linked list
-        let linked_list = created_contract_schedule.get(&key_bytes).unwrap();
-        let node_head = Arc::clone(&*linked_list.head.read().unwrap());
-        assert_eq!(*node_head.read().unwrap(), *node.read().unwrap());
-        assert_eq!(*node_head.read().unwrap().next.as_ref().unwrap().read().unwrap(), *node2.read().unwrap());
-    }
-
-    #[test]
+    #[serial]
     fn concurrent_schedule_build() {
         let mut concurrent_schedule = ConcurrentSchedule::new();
         let mut block = vec![
@@ -1554,7 +1158,7 @@ mod tests {
 
         let deps = concurrent_schedule.deps;
         // tx_block_id should have 0 dependencies
-        assert_eq!(deps.get(&1).unwrap().load(Ordering::SeqCst), 0);
+        assert_eq!(deps[1].as_ref().unwrap().len(), 0);
         
         // pop only available tx - tx with id 1
         let ready_q = concurrent_schedule.execution_queues.ready_queue;
@@ -1572,10 +1176,10 @@ mod tests {
                 assert!(operation_node.is_some());
             }
         }
-
     }
 
     #[test]
+    #[serial]
     fn concurrent_schedule_build_complex_ex() {
         let key_a = vec![1u8];
         let key_b = vec![2u8];
@@ -1824,12 +1428,12 @@ mod tests {
         // println!("{:#?}", concurrent_schedule);
 
         let deps = concurrent_schedule.deps;
-        assert_eq!(deps.get(&tx1).unwrap().load(Ordering::SeqCst), 0);
-        assert_eq!(deps.get(&tx2).unwrap().load(Ordering::SeqCst), 1);
-        assert_eq!(deps.get(&tx3).unwrap().load(Ordering::SeqCst), 1);
-        assert_eq!(deps.get(&tx4).unwrap().load(Ordering::SeqCst), 1);
-        assert_eq!(deps.get(&tx5).unwrap().load(Ordering::SeqCst), 1);
-        assert_eq!(deps.get(&tx6).unwrap().load(Ordering::SeqCst), 0);
+        assert_eq!(deps[tx1].as_ref().unwrap().len(), 0);
+        assert_eq!(deps[tx2].as_ref().unwrap().len(), 1);
+        assert_eq!(deps[tx3].as_ref().unwrap().len(), 1);
+        assert_eq!(deps[tx4].as_ref().unwrap().len(), 1);
+        assert_eq!(deps[tx5].as_ref().unwrap().len(), 1);
+        assert_eq!(deps[tx6].as_ref().unwrap().len(), 0);
         
         // READY: { Tx1, Tx6 }
         let ready_q = concurrent_schedule.execution_queues.ready_queue;
@@ -1865,6 +1469,7 @@ mod tests {
 
     // Storage | <- [Non Comm Read]
     #[test]
+    #[serial]
     fn get_value_non_commutative_depends_on_storage() {
         let key = vec![0u8];
         let val = "100".as_bytes().to_vec();
@@ -1890,12 +1495,13 @@ mod tests {
 
         assert_eq!(read_val, Some(val));
         // Read
-        assert_eq!(node.read().unwrap().data.value, None);
+        assert_eq!(node.read().data.value, OperationValue::new());
     }
 
     // Storage | <- [Comm Read]
     // Should update the value read in the node
     #[test]
+    #[serial]
     fn get_value_commutative_depends_on_storage() {
         let key = vec![0u8];
         let val = "100".as_bytes().to_vec();
@@ -1920,12 +1526,13 @@ mod tests {
         let read_val = concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A, &key);
 
         assert_eq!(read_val, Some(val.clone()));
-        assert_eq!(node.read().unwrap().data.value, Some(val));
+        assert_eq!(node.read().data.value.get_value(), Some(val));
     }
 
     // Storage | <- [Comm Read] <- [Comm Write]
     // Should update the value read in the node
     #[test]
+    #[serial]
     fn set_value_commutative_depends_on_commutative_read() {
         let key = vec![0u8];
         let val = "100".as_bytes().to_vec();
@@ -1960,11 +1567,12 @@ mod tests {
         ConcurrentSchedule::set_value(node, "105".as_bytes());
 
         // write commutative node should end up having the delta -> 105 - 100 = 5
-        assert_eq!(node.read().unwrap().data.value, Some("5".as_bytes().to_vec()));
+        assert_eq!(node.read().data.value.get_value(), Some("5".as_bytes().to_vec()));
     }
 
     // Storage | [Non Comm Write] <- [Non Comm Read]
     #[test]
+    #[serial]
     fn get_value_non_commutative_depends_on_non_commutative_write() {
         let key = vec![0u8];
         let val = "100".as_bytes().to_vec();
@@ -2000,6 +1608,7 @@ mod tests {
 
     // Storage | <- [Comm Read] <- [Comm write] <- [Non Comm Read]
     #[test]
+    #[serial]
     fn get_value_non_commutative_depends_on_commutative_write_depending_on_storage() {
         let key = vec![0u8];
         let val = "100".as_bytes().to_vec();
@@ -2035,7 +1644,7 @@ mod tests {
             _ => unreachable!("")
         };
         ConcurrentSchedule::set_value(write_node, &comm_write);
-        assert_eq!(write_node.read().unwrap().data.value, Some(delta));
+        assert_eq!(write_node.read().data.value.get_value(), Some(delta));
 
         // NonComm read -> read X + Z = Y
         let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap();
@@ -2051,6 +1660,7 @@ mod tests {
 
     // Storage | <- [Non Comm Write] <- [Comm Read] <- [Comm write] <- [Non Comm Read]
     #[test]
+    #[serial]
     fn get_value_non_commutative_depends_on_commutative_write_depending_on_non_comm_write() {
         let key = vec![0u8];
         let val = "100".as_bytes().to_vec();
@@ -2077,7 +1687,7 @@ mod tests {
             _ => unreachable!("")
         };
         ConcurrentSchedule::set_value(write_node, val.as_slice());
-        assert_eq!(write_node.read().unwrap().data.value, Some(val.clone()));
+        assert_eq!(write_node.read().data.value.get_value(), Some(val.clone()));
 
         // Comm read -> read X
         let read_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
@@ -2095,7 +1705,7 @@ mod tests {
             _ => unreachable!("")
         };
         ConcurrentSchedule::set_value(write_node, &comm_write);
-        assert_eq!(write_node.read().unwrap().data.value, Some(delta));
+        assert_eq!(write_node.read().data.value.get_value(), Some(delta));
 
         // NonComm read -> read X + Z = Y
         let read_operation = rws.get(3).unwrap().rws.rws.get(0).unwrap();
@@ -2112,6 +1722,7 @@ mod tests {
     // Storage | <- [Comm Read] <- [Comm write] <- [Comm Read] <- [Comm write] <- [Non Comm Read]
     // last non commutative read should see the sum of the previous two deltas over the value in storage
     #[test]
+    #[serial]
     fn get_value_non_commutative_depends_on_two_commutative_operations() {
         let key = vec![0u8];
         let val = "100".as_bytes().to_vec();
@@ -2151,7 +1762,7 @@ mod tests {
             _ => unreachable!("")
         };
         ConcurrentSchedule::set_value(write_node, &comm_write1);
-        assert_eq!(write_node.read().unwrap().data.value, Some(delta1));
+        assert_eq!(write_node.read().data.value.get_value(), Some(delta1));
 
         // Comm read2
         let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap();
@@ -2169,7 +1780,7 @@ mod tests {
             _ => unreachable!("")
         };
         ConcurrentSchedule::set_value(write_node, &comm_write2);
-        assert_eq!(write_node.read().unwrap().data.value, Some(delta2));
+        assert_eq!(write_node.read().data.value.get_value(), Some(delta2));
 
         // NonComm read
         let read_operation = rws.get(4).unwrap().rws.rws.get(0).unwrap();
@@ -2184,6 +1795,7 @@ mod tests {
 
 
     #[test]
+    #[serial]
     fn untracked_write_no_dependencies() {
         let sc_address = SC_ADDR_A;
         let key = vec![1u8];
@@ -2194,12 +1806,12 @@ mod tests {
         ]);
         
         // insert untracked write
-        let op_node = DependencyNode::new_ref(OpType::Write, 1, Commutativity::NonCommutative);
+        let op_node = DependencyNode::new_ref(OpType::Write, 1, Commutativity::NonCommutative, true);
         concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node));
 
         // tx1 has no dependencies
         let deps = concurrent_schedule.deps;
-        assert_eq!(deps.get(&1).unwrap().load(Ordering::SeqCst), 0);
+        assert_eq!(deps[1].as_ref().unwrap().len(), 0);
 
         // added to ready queue
         let ready_q = concurrent_schedule.execution_queues.ready_queue;
@@ -2212,18 +1824,18 @@ mod tests {
         // schedule head is the write node
         let sc_schedule = concurrent_schedule.schedule.schedule.get(&sc_address).unwrap();
         let head = &sc_schedule.get(&key).unwrap().head;
-        assert_eq!(*head.read().unwrap().read().unwrap(), *op_node.read().unwrap());
+        assert_eq!(*head.read().read(), *op_node.read());
 
         // schedule tail is the write node
         let tail = &sc_schedule.get(&key).unwrap().tail;
-        assert_eq!(*tail.read().unwrap().read().unwrap(), *op_node.read().unwrap());
+        assert_eq!(*tail.read().read(), *op_node.read());
 
         // schedule last_non_commutative write is the write node
-        let LastWrites {commutative, non_commutative } = concurrent_schedule.schedule.get_last_writes(sc_address, &key);
+        let LastWrites {commutative, non_commutative } = concurrent_schedule.schedule.get_last_writes(&sc_address, &key);
 
         match (commutative, non_commutative) {
             (None, Some(non_comm)) => {
-                assert_eq!(*non_comm.read().unwrap(), *op_node.read().unwrap());
+                assert_eq!(*non_comm.read(), *op_node.read());
             },
             _ => assert!(false)
         }
@@ -2231,6 +1843,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn untracked_read_with_dependency_on_write_same_tx() {
         let sc_address = SC_ADDR_A;
         let key = vec![1u8];
@@ -2243,16 +1856,16 @@ mod tests {
         ]);
         
         // insert untracked write
-        let op_node_write = DependencyNode::new_ref(OpType::Write, 1, Commutativity::NonCommutative);
+        let op_node_write = DependencyNode::new_ref(OpType::Write, 1, Commutativity::NonCommutative, true);
         concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_write));
 
         // insert untracked read
-        let op_node_read = DependencyNode::new_ref(OpType::Read, 1, Commutativity::NonCommutative);
+        let op_node_read = DependencyNode::new_ref(OpType::Read, 1, Commutativity::NonCommutative, false);
         concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_read));
 
         // tx has no dependencies
         let deps = concurrent_schedule.deps;
-        assert_eq!(deps.get(&1).unwrap().load(Ordering::SeqCst), 0);
+        assert_eq!(deps[1].as_ref().unwrap().len(), 0);
 
         // tx is in ready queue
         let ready_q = concurrent_schedule.execution_queues.ready_queue;
@@ -2265,11 +1878,11 @@ mod tests {
         // head is the 1st write operation
         let sc_schedule = concurrent_schedule.schedule.schedule.get(&sc_address).unwrap();
         let head = &sc_schedule.get(&key).unwrap().head;
-        assert_eq!(*head.read().unwrap().read().unwrap(), *op_node_write.read().unwrap());
+        assert_eq!(*head.read().read(), *op_node_write.read());
 
         // tail is the last read operation
         let tail = &sc_schedule.get(&key).unwrap().tail;
-        assert_eq!(*tail.read().unwrap().read().unwrap(), *op_node_read.read().unwrap());
+        assert_eq!(*tail.read().read(), *op_node_read.read());
 
         // write operation's next value is the read operation
         assert_node_next(&op_node_write, &op_node_read);
@@ -2283,6 +1896,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn untracked_read_with_dependency_on_write_different_tx() {
         let sc_address = SC_ADDR_A;
         let key = vec![1u8];
@@ -2297,22 +1911,22 @@ mod tests {
         ]);
         
         // insert untracked write
-        let op_node_write = DependencyNode::new_ref(OpType::Write, 1, Commutativity::NonCommutative);
+        let op_node_write = DependencyNode::new_ref(OpType::Write, 1, Commutativity::NonCommutative, true);
         concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_write));
 
         // insert untracked read
-        let op_node_read = DependencyNode::new_ref(OpType::Read, 2, Commutativity::NonCommutative);
+        let op_node_read = DependencyNode::new_ref(OpType::Read, 2, Commutativity::NonCommutative, true);
         concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_read));
 
         // tx1 has no dependencies
         let deps = concurrent_schedule.deps;
-        assert_eq!(deps.get(&1).unwrap().load(Ordering::SeqCst), 0);
+        assert_eq!(deps[1].as_ref().unwrap().len(), 0);
 
         // tx2 has no dependencies - recall we are simulating running time - an untracked operations is only 'tracked' when the tx is
         // executing. And if it started executing, is beacause it was either in READY or PARTIAL_READY queue, so it had no dependencies.
         // Even if it now depends on tx1, the operation itself will need to wait on tx1's operation, but still, tx2 is not marked
         // to have any dependencies since it already started executing.
-        assert_eq!(deps.get(&2).unwrap().load(Ordering::SeqCst), 0);
+        assert_eq!(deps[2].as_ref().unwrap().len(), 0);
 
         // here we are checking only on the original RWS - the tx placement in the queues does not count for untracked RWS
         // tx1 is in ready queue
@@ -2328,11 +1942,11 @@ mod tests {
         // head is the 1st write operation
         let sc_schedule = concurrent_schedule.schedule.schedule.get(&sc_address).unwrap();
         let head = &sc_schedule.get(&key).unwrap().head;
-        assert_eq!(*head.read().unwrap().read().unwrap(), *op_node_write.read().unwrap());
+        assert_eq!(*head.read().read(), *op_node_write.read());
 
         // tail is the last read operation
         let tail = &sc_schedule.get(&key).unwrap().tail;
-        assert_eq!(*tail.read().unwrap().read().unwrap(), *op_node_read.read().unwrap());
+        assert_eq!(*tail.read().read(), *op_node_read.read());
 
         // write operation's next value is the read operation
         assert_node_next(&op_node_write, &op_node_read);
@@ -2346,6 +1960,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn perfect_rws_persist_storage() {
         let write_key = vec![1u8];
         let val = vec![12u8];
@@ -2363,7 +1978,7 @@ mod tests {
         let schedule = &concurrent_schedule.schedule.schedule;
         let sc_schedule = schedule.get(&sc_address).unwrap();
         let linked_list = sc_schedule.get(&write_key).unwrap();
-        let write_operation = linked_list.head.read().unwrap();
+        let write_operation = linked_list.head.read();
 
         // set write node's value
         ConcurrentSchedule::set_value(&*write_operation, val.as_slice());
@@ -2382,6 +1997,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn on_tx_finish_no_dependencies_no_partials() {
         let sc_address = SC_ADDR_A;
         let key = vec![1u8];
@@ -2392,7 +2008,7 @@ mod tests {
         ]);
         
         // insert untracked write
-        let op_node_write = DependencyNode::new_ref(OpType::Write, 1, Commutativity::NonCommutative);
+        let op_node_write = DependencyNode::new_ref(OpType::Write, 1, Commutativity::NonCommutative, true);
         concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_write));
         
         concurrent_schedule.get_next_message_to_execute();
@@ -2409,7 +2025,7 @@ mod tests {
         });
 
         let deps = &concurrent_schedule.deps;
-        assert_eq!(deps.get(&(1 as usize)).unwrap().load(Ordering::SeqCst), 0);
+        assert_eq!(deps[1 as usize].as_ref().unwrap().len(), 0);
     }
 
 }
