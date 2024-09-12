@@ -1052,7 +1052,7 @@ mod tests {
     fn mock_state_manager(sc_address: ScAddr) -> SCManager<MockApi, MockConcurrentStorage, MockStorageWrapper, MockQuerier, SymbolicExecutionEngine> {
         // create a state manager
         let state_manager: SCManager<MockApi, MockConcurrentStorage, MockStorageWrapper, MockQuerier, SymbolicExecutionEngine> = SCManager::new(Arc::new(SymbolicExecutionEngine::new()));
-        state_manager.save_code(CONTRACT).unwrap();
+        state_manager.save_code(CONTRACT, None).unwrap();
 
         assert_eq!(state_manager.get_code(0).unwrap(), CONTRACT);
         
@@ -1132,7 +1132,9 @@ mod tests {
                     entry_point: InstantiatedEntryPoint::Execute,
                     contract_address: SC_ADDR_A,
                     message: br#""#.to_vec(),
-                    code_id: 0,
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
                 },),
                 tx_block_id: tx1,
                 rws: TxRWS {
@@ -1181,7 +1183,9 @@ mod tests {
                     entry_point: InstantiatedEntryPoint::Execute,
                     contract_address: SC_ADDR_A,
                     message: br#""#.to_vec(),
-                    code_id: 0,
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
                 },),
                 tx_block_id: tx2,
                 rws: TxRWS {
@@ -1224,7 +1228,9 @@ mod tests {
                     entry_point: InstantiatedEntryPoint::Execute,
                     contract_address: SC_ADDR_A,
                     message: br#""#.to_vec(),
-                    code_id: 0,
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
                 },),
                 tx_block_id: tx3,
                 rws: TxRWS {
@@ -1255,7 +1261,9 @@ mod tests {
                     entry_point: InstantiatedEntryPoint::Execute,
                     contract_address: SC_ADDR_A,
                     message: br#""#.to_vec(),
-                    code_id: 0,
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
                 },),
                 tx_block_id: tx4,
                 rws: TxRWS {
@@ -1286,7 +1294,9 @@ mod tests {
                     entry_point: InstantiatedEntryPoint::Execute,
                     contract_address: SC_ADDR_A,
                     message: br#""#.to_vec(),
-                    code_id: 0,
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
                 },),
                 tx_block_id: tx5,
                 rws: TxRWS {
@@ -1317,7 +1327,9 @@ mod tests {
                     entry_point: InstantiatedEntryPoint::Execute,
                     contract_address: SC_ADDR_A,
                     message: br#""#.to_vec(),
-                    code_id: 0,
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
                 },),
                 tx_block_id: tx6,
                 rws: TxRWS {

@@ -11,7 +11,7 @@ pub enum Message<'a> {
     Invocation(VMMessage),
     Deployment {
         contract_code: &'a [u8],
-        // code_id: Option<i32>, // used for replay txs
+        code_id: Option<u128>, // used for replay txs
     }
 }
 
@@ -66,8 +66,11 @@ where
         let total_size = messages.len();
         for (idx, message) in messages.into_iter().enumerate() {
             match message {
-                Message::Deployment { contract_code } => {
-                    self.sc_manager.write().unwrap().save_code(contract_code).unwrap();
+                Message::Deployment { 
+                    contract_code,
+                    code_id 
+                } => {
+                    self.sc_manager.write().unwrap().save_code(contract_code, code_id).unwrap();
                 },
                 Message::Invocation (vm_message) => {
                     invocations.push(vm_message);

@@ -3,7 +3,9 @@ use std::{collections::HashMap, sync::{Arc, RwLock}, thread};
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 
-use cosmwasm_std::{Api, Coin, CustomQuery, Empty, QuerierWrapper};
+use cosmwasm_std::{Addr, Api, Binary, Coin, CustomQuery, Empty, IbcAcknowledgement, IbcOrder, IbcTimeout, QuerierWrapper, Reply};
+use rkyv::Archive;
+use serde::{Deserialize, Serialize};
 use wasmer::Store;
 
 use crate::{
@@ -33,31 +35,123 @@ enum VMCall {
     Query,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+pub struct ReplyStruct {
+    reply_on: bool,
+    reply_id: u64,
+    reply_payload: Binary,
+    reply_address: String,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum VMMessage {
     Instantiation {
-        // hash: String,
-        // sender: String,
-        // label: String,
-        // funds: Vec<Coin>,
+        hash: String,
+        sender: String,
+        label: String,
+        funds: Vec<Coin>,
         message: Vec<u8>,
         contract_code_id: u128,
 
-        // reply: Option<ReplyStruct>, // replay txs
+        reply: Option<ReplyStruct>, // replay txs
     },
     Invocation {
-        message: Vec<u8>,
+        hash: String,
+        sender: String,
+        funds: Vec<Coin>,
+
         entry_point: InstantiatedEntryPoint,
+        message: Vec<u8>,
         contract_address: ScAddr,
-        code_id: u128,
     },
+    Reply {
+        message: Reply,
+        contract_address: String,
+    },
+    ChannelOpenInitTx {
+        hash: String,
+        ordering: IbcOrder,
+        port_id: String,
+        channel_id: String,
+        counterparty_port_id: String,
+        counterparty_channel_id: String,
+        connection_id: String,
+        version: String,
+    },
+    ChannelOpenTryTx {
+        hash: String,
+        ordering: IbcOrder,
+        port_id: String,
+        channel_id: String,
+        counterparty_port_id: String,
+        counterparty_channel_id: String,
+        connection_id: String,
+        version: String,
+    },
+    ChannelOpenAckTx {
+        hash: String,
+        port_id: String,
+        channel_id: String,
+        counterparty_port_id: String,
+        counterparty_channel_id: String,
+        connection_id: String,
+    },
+    ChannelOpenConfirmTx {
+        hash: String,
+        port_id: String,
+        channel_id: String,
+        counterparty_port_id: String,
+        counterparty_channel_id: String,
+        connection_id: String,
+    },
+    RecvPacketTx {
+        hash: String,
+        relayer: Addr,
+        data: Binary,
+        port_id: String,
+        channel_id: String,
+        counterparty_port_id: String,
+        counterparty_channel_id: String,
+        sequence: u64,
+        timeout: IbcTimeout
+    },
+    TimeoutTx {
+        hash: String,
+        relayer: Addr,
+        data: Binary,
+        port_id: String,
+        channel_id: String,
+        counterparty_port_id: String,
+        counterparty_channel_id: String,
+        sequence: u64,
+        timeout: IbcTimeout
+    },
+    AckTx {
+        hash: String,
+        acknowledgement: IbcAcknowledgement,
+        relayer: Addr,
+        data: Binary,
+        port_id: String,
+        channel_id: String,
+        counterparty_port_id: String,
+        counterparty_channel_id: String,
+        sequence: u64,
+        timeout: IbcTimeout
+    },
+    NotSupportedTx {
+        hash: String,
+        tx_type: String,
+    },
+    AbortTx {
+        hash: String,
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum InstantiatedEntryPoint {
     Execute,
     Query,
-    Reply
+    Migrate,
 }
 
 
@@ -338,7 +432,6 @@ where
             #[cfg(feature = "exec_time")]
             self.start_schedule_build_timer();
     
-            println!("RWS: {:?}", rws);
             let schedule = ParallelScheduleBuilder::build_from_rws(&mut rws, self.n_threads);
     
             #[cfg(feature = "exec_time")]
@@ -456,6 +549,7 @@ where
                 VMMessage::Instantiation { 
                     ref message, 
                     contract_code_id,
+                    ..
                 } => {
                     // Increase instantiation count for each instantiate for the same code id
                     let instantiation_count = if let Some(count) = instantiation_counts.get_mut(&contract_code_id) {
@@ -478,9 +572,9 @@ where
                     ref message, // ref is used not to move this field. Else, we would not be able to move it into the Some(msg) below
                     ref entry_point,
                     ref contract_address, 
-                    code_id
+                    ..
                 } => {
-                    let profile = self.state_manager.read().unwrap().get_profile(code_id);
+                    let profile = self.state_manager.read().unwrap().get_profile_by_address(contract_address);
                     match &self.state_manager.read().unwrap().get_sc_storage(contract_address) {
                         Some(state) => { 
                             // Build mock depsMut
@@ -493,6 +587,7 @@ where
                         None => panic!("Invoquing execution on a contract that wasn't instantiated yet!")
                     }
                 },
+                _ => todo!()
             };
 
             save_rws(tx);
@@ -556,7 +651,7 @@ where
                     tx_block_id: 0,   // will be set by calling function
                 }
             },
-            InstantiatedEntryPoint::Reply => todo!(),
+            InstantiatedEntryPoint::Migrate => todo!("MIgrate not implemented"),
         }
     }
 
@@ -682,6 +777,7 @@ where
             Some(VMMessage::Instantiation { 
                 message, 
                 contract_code_id,
+                ..
             }) => VMManager::<A, S, W, Q, E>::compile_instantiate_vm(msg.tx_block_id, &msg.address, Arc::clone(&schedule), 
                 &thread_exec_context, *contract_code_id, message.as_slice(), rws).unwrap(),
 
@@ -689,14 +785,16 @@ where
                 message, 
                 entry_point,
                 contract_address, 
-                code_id
+                ..
             }) => match entry_point {
                 InstantiatedEntryPoint::Execute => VMManager::<A, S, W, Q, E>::instantiate_vm(msg.tx_block_id, Arc::clone(&schedule),  
                     &thread_exec_context, contract_address, message.as_slice(), rws, VMCall::Execute ).unwrap(),
                 InstantiatedEntryPoint::Query   => VMManager::<A, S, W, Q, E>::instantiate_vm(msg.tx_block_id, Arc::clone(&schedule), 
                     &thread_exec_context, contract_address, message.as_slice(), rws, VMCall::Query   ).unwrap(),
-                InstantiatedEntryPoint::Reply => String::from(""),
+                // InstantiatedEntryPoint::Reply => String::from(""),
+                InstantiatedEntryPoint::Migrate => todo!("Migrate not implemented"),
             },
+            Some(t) => todo!("VMMessage type not implemented: {:?}", t),
             None => unreachable!("RWSContext doesn't have a message set during block execution!"), // Should never happen
         };
 
@@ -709,8 +807,12 @@ where
     fn compile_instantiate_vm(tx_block_id: TxId, address: &ScAddr, schedule: Arc<ConcurrentSchedule>, thread_exec_context: &ThreadExecutionContext<A, S, W, Q, E>, 
             contract_code_id: u128, msg: &[u8], rws: Vec<ReadWrite>) -> std::io::Result<String> {
 
-        // Create the compiled module
-        let code = thread_exec_context.state_manager.read().unwrap().get_code(contract_code_id)?;
+        // Get SC code by ID & set the mapping address -> code_id for future invocations on it
+        let state_manager_lock = thread_exec_context.state_manager.read().unwrap();
+        let code = state_manager_lock.get_code(contract_code_id)?;
+        state_manager_lock.link_address_to_code(contract_code_id, address);
+        drop(state_manager_lock);
+
         let partitioned_storage = Arc::new(S::new());
         let backend = Arc::new((thread_exec_context.backend_builder)(partitioned_storage));
 
@@ -853,7 +955,7 @@ mod tests {
         let se_engine = Arc::new(SymbolicExecutionEngine::new());
         let state_manager = SCManager::new(Arc::clone(&se_engine));
         // simulate installing a contract
-        state_manager.save_code(CONTRACT).unwrap();
+        state_manager.save_code(CONTRACT, None).unwrap();
 
         let state_manager = Arc::new(RwLock::new(state_manager));
         VMManager::new(
@@ -907,7 +1009,7 @@ mod tests {
     fn vanilla_instantiation_and_execution() {
         // save initial code -> will have code_id = 0
         let state_manager = SCManager::new(Arc::new(SymbolicExecutionEngine::new()));
-        state_manager.save_code(CONTRACT).unwrap();
+        state_manager.save_code(CONTRACT, None).unwrap();
 
         assert_eq!(state_manager.get_code(0).unwrap(), CONTRACT);
         
@@ -1085,6 +1187,11 @@ mod tests {
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#.to_vec(),
+                funds: vec![],
+                sender: "".to_owned(),
+                reply: None,
+                hash: "".to_owned(),
+                label: "".to_owned(),
             },
         ];
 
@@ -1100,7 +1207,9 @@ mod tests {
                     "user": "ADMIN"
                 }
             }"#.to_vec(),
-            code_id: 0,
+            funds: vec![],
+            sender: "".to_owned(),
+            hash: "".to_owned(),
         };
         let msgs = vec![
             vm_message.clone()
@@ -1148,10 +1257,20 @@ mod tests {
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#.to_vec(),
+                funds: vec![],
+                sender: "".to_owned(),
+                reply: None,
+                hash: "".to_owned(),
+                label: "".to_owned(),
             },
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#.to_vec(),
+                funds: vec![],
+                sender: "".to_owned(),
+                reply: None,
+                hash: "".to_owned(),
+                label: "".to_owned(),
             },
         ];
 
@@ -1168,7 +1287,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1178,7 +1299,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1188,7 +1311,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1198,7 +1323,9 @@ mod tests {
                         "admin": "Balelas"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1208,7 +1335,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1218,7 +1347,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1228,7 +1359,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1238,7 +1371,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
 
         ];
@@ -1279,7 +1414,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1289,7 +1426,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1299,7 +1438,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1309,7 +1450,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1319,7 +1462,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1329,7 +1474,9 @@ mod tests {
                         "admin": "Balelas"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1339,7 +1486,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1349,7 +1498,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1359,7 +1510,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1369,7 +1522,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Execute,
@@ -1379,7 +1534,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1389,7 +1546,9 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             VMMessage::Invocation {
                 entry_point: InstantiatedEntryPoint::Query,
@@ -1399,24 +1558,46 @@ mod tests {
                         "user": "ADMIN"
                     }
                 }"#.to_vec(),
-                code_id: 0,
+                funds: vec![],
+                sender: "".to_owned(),
+                hash: "".to_owned(),
             },
             // notice that instantiation order does not matter - we always place all instantiations at the beginning
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#.to_vec(),
+                funds: vec![],
+                sender: "".to_owned(),
+                reply: None,
+                hash: "".to_owned(),
+                label: "".to_owned(),
             },
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#.to_vec(),
+                funds: vec![],
+                sender: "".to_owned(),
+                reply: None,
+                hash: "".to_owned(),
+                label: "".to_owned(),
             },
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#.to_vec(),
+                funds: vec![],
+                sender: "".to_owned(),
+                reply: None,
+                hash: "".to_owned(),
+                label: "".to_owned(),
             },
             VMMessage::Instantiation {
                 contract_code_id: 0,
                 message: br#"{}"#.to_vec(),
+                funds: vec![],
+                sender: "".to_owned(),
+                reply: None,
+                hash: "".to_owned(),
+                label: "".to_owned(),
             },
         ];
 
@@ -1514,6 +1695,11 @@ mod tests {
                 VMMessage::Instantiation {
                     contract_code_id: 0,
                     message: br#"{}"#.to_vec(),
+                    funds: vec![],
+                    sender: "".to_owned(),
+                    reply: None,
+                    hash: "".to_owned(),
+                    label: "".to_owned(),
                 }
             );
         }
@@ -1529,7 +1715,9 @@ mod tests {
                             "user": "ADMIN"
                         }
                     }"#.to_vec(),
-                    code_id: 0,
+                    funds: vec![],
+                    sender: "".to_owned(),
+                    hash: "".to_owned(),
                 }
             );
             msgs.push(
@@ -1541,7 +1729,9 @@ mod tests {
                             "user": "ADMIN"
                         }
                     }"#.to_vec(),
-                    code_id: 0,
+                    funds: vec![],
+                    sender: "".to_owned(),
+                    hash: "".to_owned(),
                 }
             );
         }

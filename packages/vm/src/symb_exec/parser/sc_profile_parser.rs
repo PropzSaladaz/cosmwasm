@@ -592,8 +592,6 @@ mod tests {
             },
         ];
         let hash = profile.sort_and_compute_rws_uid(&mut rws);
-
-        println!("Hash: {:?}", hash);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, VecDeque}, fs::{self, File}, io::{ErrorKind, Read, Write}, sync::{Arc, RwLock}, thread};
+use std::{collections::{HashMap, VecDeque}, fs::{self, File}, hash::Hash, io::{ErrorKind, Read, Write}, sync::{Arc, RwLock}, thread};
 use std::io::Error;
 
 use cosmwasm_std::{ContractResult, Response};
@@ -33,6 +33,8 @@ struct SCStaticData {
     sc_code_id: u128,
     /// Stores SCProfile for each different SC code.
     profiles: HashMap<u128, Arc<SCProfile>>,
+    /// Maps sc_addresses to code ids
+    address_code_id: HashMap<ScAddr, u128>,
     /// Stores number of instantiated SCs per contract_id
     instantiation_count: Arc<Mutex<HashMap<u128, u128>>>,
 }
@@ -42,6 +44,7 @@ impl SCStaticData {
         Self {
             sc_code_id: 0,
             profiles: HashMap::new(),
+            address_code_id: HashMap::new(),
             instantiation_count: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -58,25 +61,38 @@ impl SCStaticData {
         }
     }
 
+    /// Should be called for each instantiation to allow getting SC codes by the address
+    pub fn link_address_to_code(&mut self, code_id: u128, sc_addr: &ScAddr) {
+        self.address_code_id.insert(*sc_addr, code_id);
+    }
+
     /// Saves a SC code. Uses the Symb Engine to produce a RWS profile
     /// for the contract and saves the profile information for this contract.
     /// Sets instantiation count for this new SC code to 1
-    pub fn save<E: ProfileGenerator>(&mut self, sc_code: &[u8], symb_exec: &Arc<E>) -> std::io::Result<u128> {
+    pub fn save<E: ProfileGenerator>(&mut self, sc_code: &[u8], code_id: Option<u128>, symb_exec: &Arc<E>) -> std::io::Result<u128> {
         let curr_dir = std::env::current_dir()?;
         let rel_path = curr_dir.join(contract_path(self.sc_code_id));
         let mut file_writer = File::create(rel_path)?;
         file_writer.write_all(sc_code)?;
 
         let sc_profile = symb_exec.generate_profile(sc_code);
-        self.profiles.insert(self.sc_code_id, Arc::new(sc_profile));
-        
-        self.instantiation_count.lock().insert(self.sc_code_id, 0);
 
-        let id = self.sc_code_id;
-   
-        self.sc_code_id += 1;
+        let code_id = if let Some(code_id) = code_id {
+            // we are replaying, since we already know the code_id in advance
+            self.profiles.insert(code_id, Arc::new(sc_profile));
+            self.instantiation_count.lock().insert(code_id, 0);
+            code_id
+        }
+        else {
+            // we are not replaying - we don't know the code_id
+            self.profiles.insert(self.sc_code_id, Arc::new(sc_profile));        
+            self.instantiation_count.lock().insert(self.sc_code_id, 0);
+            let id = self.sc_code_id;
+            self.sc_code_id += 1;
+            id
+        };
         
-        Ok(id)
+        Ok(code_id)
     }
 
     pub fn get_code(&self, code_id: u128) -> std::io::Result<Vec<u8>> {
@@ -88,11 +104,21 @@ impl SCStaticData {
         Ok(code)
     }
 
-    fn get_profile(&self, code_id: u128) -> Result<Arc<SCProfile>, String> {
+    pub fn get_code_by_address(&self, address: ScAddr) -> std::io::Result<Vec<u8>> {
+        let code_id = self.address_code_id.get(&address).unwrap();
+        self.get_code(*code_id)
+    }
+
+    pub fn get_profile(&self, code_id: u128) -> Result<Arc<SCProfile>, String> {
         match self.profiles.get(&code_id) {
             Some(profile) => Ok(Arc::clone(profile)),
             None => Err("Profile doesn't exist".to_string()) 
         }
+    }
+
+    pub fn get_profile_by_address(&self, sc_addr: &ScAddr) -> Result<Arc<SCProfile>, String> {
+        let code_id = self.address_code_id.get(sc_addr).unwrap();
+        self.get_profile(*code_id)
     }
 
     fn cleanup(&mut self) {
@@ -334,10 +360,19 @@ where
         self.static_data.read().unwrap().get_code(code_id)
     }
 
+    /// Should be called for each instantiation to allow getting SC codes by the address
+    pub fn link_address_to_code(&self, code_id: u128, sc_addr: &ScAddr) {
+        self.static_data.write().unwrap().link_address_to_code(code_id, sc_addr);
+    }
+
+    pub fn get_code_by_address(&self, sc_addr: ScAddr) -> std::io::Result<Vec<u8>> {
+        self.static_data.read().unwrap().get_code_by_address(sc_addr)
+    }
+
     /// Saves SC code in Filsystem & builds the respective Symb. Exec.
     /// tree for the contract
-    pub fn save_code(&self, code: &[u8]) -> std::io::Result<()> {
-        self.static_data.write().unwrap().save(code, &self.symb_exec_engine)?;
+    pub fn save_code(&self, code: &[u8], code_id: Option<u128>) -> std::io::Result<()> {
+        self.static_data.write().unwrap().save(code, code_id, &self.symb_exec_engine)?;
         Ok(())
     }
 
@@ -348,6 +383,10 @@ where
     pub fn get_profile(&self, code_id: u128) -> Arc<SCProfile> {
         self.static_data.read().unwrap().get_profile(code_id).unwrap()
     }
+
+    pub fn get_profile_by_address(&self, sc_addr: &ScAddr) -> Arc<SCProfile> {
+        self.static_data.read().unwrap().get_profile_by_address(sc_addr).unwrap()
+    } 
 
     pub fn cleanup(&self) {
         self.static_data.write().unwrap().cleanup();
@@ -429,7 +468,7 @@ _msg: InstantiateMsg
 <- None"#;
 
         let se_engine = SymbolicExecutionEngine::default();
-        sc_static_data.save(contract.as_slice(), &Arc::new(se_engine)).unwrap();
+        sc_static_data.save(contract.as_slice(), None, &Arc::new(se_engine)).unwrap();
 
         // Try reading saved contract code
         let content = sc_static_data.get_code(0).unwrap();
@@ -465,7 +504,7 @@ _msg: InstantiateMsg
     fn sc_manager_workflow() {
         let sc_manager = SCManager::new(Arc::new(SymbolicExecutionEngine::new()));
         // save code
-        sc_manager.save_code(CONTRACT).unwrap();
+        sc_manager.save_code(CONTRACT, None).unwrap();
 
         let backend;
 

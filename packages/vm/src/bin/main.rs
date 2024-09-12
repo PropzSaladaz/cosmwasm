@@ -47,6 +47,7 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
     let mut msgs = vec![
         Message::Deployment { // deploy the contract before all
             contract_code:  CONTRACT,
+            code_id: None,
         },  
     ];
 
@@ -57,6 +58,11 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
                 VMMessage::Instantiation {
                     contract_code_id: 0,
                     message: br#"{}"#.to_vec(),
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    label: "".to_owned(),
+                    funds: vec![],
+                    reply: None,
                 }
             )
         )
@@ -74,7 +80,9 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
                                 "user": "ADMIN"
                             }
                         }"#.to_vec(),
-                        code_id: 0,
+                        hash: "".to_owned(),
+                        sender: "".to_owned(),
+                        funds: vec![],
                     }
                 )
             );
@@ -90,7 +98,9 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
                                 "val": 10
                             }
                         }"#.to_vec(),
-                        code_id: 0,
+                        hash: "".to_owned(),
+                        sender: "".to_owned(),
+                        funds: vec![],
                     }
                 )
             );
@@ -107,5 +117,5 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
 
 fn main() {
     // run_persistent_vm();
-    run_n_contracts_n_increments(50, 150);
+    run_n_contracts_n_increments(35, 30);
 }

@@ -25,3 +25,11 @@ impl ProfileEvaluator for PerfectRWSEngine {
         todo!()
     }
 }
+
+impl PerfectRWSEngine {
+    pub fn new() -> Self {
+        PerfectRWSEngine { rws_idx: 0 }
+    }
+
+    
+}
