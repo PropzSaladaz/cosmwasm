@@ -8,7 +8,7 @@ mod serial_schedule;
 #[cfg(feature = "debug_graph")]
 mod dot_schedule;
 
-pub use vm_manager::{VMManager, VMMessage, InstantiatedEntryPoint, DepsMut, RWSContext, AddressMapper};
+pub use vm_manager::{VMManager, VMMessage, InstantiatedEntryPoint, DepsMut, RWSContext, AddressMapper, BackendBuilder, ConcurrentBackendBuilder};
 pub use sc_storage::{SCManager, ContractRWS, PersistentBackend};
 pub use concurrent_schedule::{ConcurrentSchedule, TxState};
 pub use schedule::{Schedule, LastWrites, TxId, ScAddr, NodeRef, VecOperation, DependencyNode, OpType};

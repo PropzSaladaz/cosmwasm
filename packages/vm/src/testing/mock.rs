@@ -82,7 +82,6 @@ pub fn mock_tx_operation(sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId,
                         operation_node: None,
                     },
                 }
-
             ]
         }
     }

@@ -10,7 +10,7 @@ use super::super::parser::nodes::Key;
 /// Whenever there is an indentifier - ```var1``` or ```var1.field1```, we look
 /// into all fields of SEContext to find a match, and get the corresponding
 /// primitive type.
-pub struct SEContext<'a, 'b> {
+pub struct SEContext<'a/*,'b*/> {
     // stores the full custom msg, the input variable names
     pub custom_msg: Value,
     
@@ -18,17 +18,17 @@ pub struct SEContext<'a, 'b> {
     pub arg_types: &'a ArgTypes,
 
     // stores the actual dynamic inputs of the entry call, passed by the VM
-    pub cosmwasm_types: CosmwasmInputs<'b>
+    // pub cosmwasm_types: CosmwasmInputs<'b>
 }
 
-impl<'a, 'b> SEContext<'a, 'b> {
+impl<'a/* , 'b*/> SEContext<'a/*, 'b*/> {
     pub fn default(arg_types: &'a ArgTypes) -> Self {
-        SEContext { custom_msg: Value::Null, arg_types, cosmwasm_types: CosmwasmInputs::Mock}
+        SEContext { custom_msg: Value::Null, arg_types, /*cosmwasm_types: CosmwasmInputs::Mock*/}
     }
 
-    pub fn new(custom_msg: &[u8], arg_types: &'a ArgTypes, cosmwasm_types: CosmwasmInputs<'b>) -> Self {
+    pub fn new(custom_msg: &[u8], arg_types: &'a ArgTypes/* , cosmwasm_types: CosmwasmInputs<'b>*/) -> Self {
         let val: Value = serde_json::from_slice(custom_msg).expect("Failed to deserialize execute message");
-        SEContext { custom_msg: val , arg_types , cosmwasm_types }
+        SEContext { custom_msg: val , arg_types , /*cosmwasm_types*/ }
     }
 
     pub fn get_var_type(&self, var_name: &String) -> Option<&InputType> {

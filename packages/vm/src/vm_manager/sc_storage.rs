@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use wasmer::Module;
 
 use crate::{ 
-    backend::ConcurrentBackend, print_with_thread_id, symb_exec::{SEEngine, SEEngineParse}, testing::{mock_backend, ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, StorageWrapper}, BackendApi, Instance, Querier, SCProfile, SCProfileParser, Storage, VmResult};
+    backend::ConcurrentBackend, print_with_thread_id, symb_exec::{ProfileEvaluator, ProfileGenerator, SEEngine, SEEngineParse}, testing::{mock_backend, ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, StorageWrapper}, BackendApi, Instance, Querier, SCProfile, SCProfileParser, Storage, VmResult};
 
 use super::schedule::{ScAddr, TxId};
 
@@ -61,15 +61,13 @@ impl SCStaticData {
     /// Saves a SC code. Uses the Symb Engine to produce a RWS profile
     /// for the contract and saves the profile information for this contract.
     /// Sets instantiation count for this new SC code to 1
-    pub fn save(&mut self, sc_code: &[u8]) -> std::io::Result<u128> {
+    pub fn save<E: ProfileGenerator>(&mut self, sc_code: &[u8], symb_exec: &Arc<E>) -> std::io::Result<u128> {
         let curr_dir = std::env::current_dir()?;
         let rel_path = curr_dir.join(contract_path(self.sc_code_id));
         let mut file_writer = File::create(rel_path)?;
         file_writer.write_all(sc_code)?;
 
-        let se_profile = SEEngine::parse_smart_contract(sc_code);
-        let sc_profile = SCProfileParser::from_se_profile(se_profile);
-
+        let sc_profile = symb_exec.generate_profile(sc_code);
         self.profiles.insert(self.sc_code_id, Arc::new(sc_profile));
         
         self.instantiation_count.lock().insert(self.sc_code_id, 0);
@@ -239,32 +237,45 @@ where
 //                 SC address -> SC instantiation
 type SCStorage<A, S, W, Q> = DashMap<ScAddr, Arc<SCInstance<A, S, W, Q>>>;
 
-/// Mocks interface for handling smart contracts.
+/// Entity responsible for managing Smart Contract state
 /// 
 /// This includes both static state - SC code & profile, as well as
-/// "dynamic state" - SC state per each instantiation of a contract
-pub struct SCManager<A, S, W, Q> 
+/// the VM instances & the Storage for each SC.
+/// 
+/// It also keeps a reference of 'part' of the Symbolic execution engine
+/// for generating the profiles. The other part (the Profile Evaluator) is
+/// kepts in the VMManager itself, which is at a higher.
+pub struct SCManager<A, S, W, Q, E> 
 where
     A: BackendApi + 'static,
     S: ConcurrentStorage + 'static,
     W: StorageWrapper + 'static,
-    Q: Querier + 'static
+    Q: Querier + 'static,
+    E: ProfileGenerator
 {
     static_data: Arc<RwLock<SCStaticData>>,
     pub sc_storage: SCStorage<A, S, W, Q>,
+    symb_exec_engine: Arc<E>
 }
 
-impl<A, S, W, Q> SCManager<A, S, W, Q> 
+impl<A, S, W, Q, E> SCManager<A, S, W, Q, E> 
 where
     A: BackendApi, 
     S: ConcurrentStorage, 
     W: StorageWrapper,
-    Q: Querier
+    Q: Querier,
+    E: ProfileGenerator
 {
-    pub fn new() -> SCManager<A, S, W, Q> {
+
+    pub fn get_symb_exec_engine(&self) -> Arc<E> {
+        Arc::clone(&self.symb_exec_engine)
+    }
+
+    pub fn new(symb_exec_engine: Arc<E>) -> SCManager<A, S, W, Q, E> {
         SCManager {
             static_data: Arc::new(RwLock::new(SCStaticData::new())),
             sc_storage: DashMap::new(),
+            symb_exec_engine
         }
     }
 
@@ -326,7 +337,7 @@ where
     /// Saves SC code in Filsystem & builds the respective Symb. Exec.
     /// tree for the contract
     pub fn save_code(&self, code: &[u8]) -> std::io::Result<()> {
-        self.static_data.write().unwrap().save(code)?;
+        self.static_data.write().unwrap().save(code, &self.symb_exec_engine)?;
         Ok(())
     }
 
@@ -361,7 +372,13 @@ mod tests {
     use serial_test::serial;
     use wasmer::Store;
 
-    use crate::{call_execute, call_instantiate, internals::instance_from_module, symb_exec::{Commutativity, EntryPoint, SEStatus}, testing::{mock_concurrent_backend, mock_env, mock_info, mock_persistent_backend, mock_tx_operation, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, ConcurrentSchedule, InstanceOptions, ReadWrite, Size};
+    use crate::{
+        call_execute, call_instantiate, internals::instance_from_module, 
+        symb_exec::{Commutativity, EntryPoint, SEStatus, ProfileGenerator}, 
+        testing::{mock_concurrent_backend, mock_env, mock_info, mock_persistent_backend, mock_tx_operation, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, 
+        wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
+        ConcurrentSchedule, InstanceOptions, ReadWrite, Size, SymbolicExecutionEngine
+    };
 
     use super::*;
 
@@ -385,7 +402,7 @@ mod tests {
         let instance = instance_from_module(store, &module, concurrent_backend, much_gas.gas_limit, None).unwrap();
         let instances = vec![instance];
 
-        let sc_manager = Arc::new(RwLock::new(SCManager::new()));
+        let sc_manager = Arc::new(RwLock::new(SCManager::new(Arc::new(SymbolicExecutionEngine::new()))));
         sc_manager.write().unwrap().save_instance(0, SC_ADDR_A, backend, instances);
 
         sc_manager.write().unwrap().cleanup();
@@ -411,7 +428,8 @@ _msg: InstantiateMsg
 => SET(=AARiYW5rQURNSU4=): Non-Inc
 <- None"#;
 
-        sc_static_data.save(contract.as_slice()).unwrap();
+        let se_engine = SymbolicExecutionEngine::default();
+        sc_static_data.save(contract.as_slice(), &Arc::new(se_engine)).unwrap();
 
         // Try reading saved contract code
         let content = sc_static_data.get_code(0).unwrap();
@@ -445,7 +463,7 @@ _msg: InstantiateMsg
     #[ignore]
     #[serial]
     fn sc_manager_workflow() {
-        let sc_manager = SCManager::new();
+        let sc_manager = SCManager::new(Arc::new(SymbolicExecutionEngine::new()));
         // save code
         sc_manager.save_code(CONTRACT).unwrap();
 

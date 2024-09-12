@@ -112,11 +112,13 @@ pub struct ScheduleBuilder {
     /// mapping of SC_address -> key -> linked list of operations
     pub schedule: Schedule,
 
-    // #[cfg(feature="exec_time")]
+    #[cfg(feature="exec_time")]
     node_dependency_timer: Option<Instant>,
+    #[cfg(feature="exec_time")]
     node_dependency_time: Duration,
-
+    #[cfg(feature="exec_time")]
     node_creation_timer: Option<Instant>,
+    #[cfg(feature="exec_time")]
     node_creation_time: Duration,
 }
 
@@ -219,34 +221,34 @@ impl ScheduleBuilder {
 
             partial_ready_tx: BTreeMap::new(),
 
-            // #[cfg(feature = "exec_time")]
+            #[cfg(feature = "exec_time")]
             node_dependency_timer: None,
-            // #[cfg(feature = "exec_time")]
+            #[cfg(feature = "exec_time")]
             node_dependency_time: Duration::ZERO,
-            // #[cfg(feature = "exec_time")]
+            #[cfg(feature = "exec_time")]
             node_creation_timer: None,
-            // #[cfg(feature = "exec_time")]
+            #[cfg(feature = "exec_time")]
             node_creation_time: Duration::ZERO,
         }
     }
 
-    // #[cfg(feature = "exec_time")]
+    #[cfg(feature = "exec_time")]
     fn start_node_dependency_timer(&mut self) {
         self.node_dependency_timer = Some(Instant::now());
     }
 
-    // #[cfg(feature = "exec_time")]
+    #[cfg(feature = "exec_time")]
     fn stop_node_dependency_timer(&mut self) {
         let elapsed = self.node_dependency_timer.unwrap().elapsed();
         self.node_dependency_time += elapsed;
     }
 
-    // #[cfg(feature = "exec_time")]
+    #[cfg(feature = "exec_time")]
     fn start_node_creation_timer(&mut self) {
         self.node_creation_timer = Some(Instant::now());
     }
 
-    // #[cfg(feature = "exec_time")]
+    #[cfg(feature = "exec_time")]
     fn stop_node_creation_timer(&mut self) {
         let elapsed = self.node_creation_timer.unwrap().elapsed();
         self.node_creation_time += elapsed;
@@ -311,12 +313,12 @@ impl ScheduleBuilder {
             }
         }
 
-        // #[cfg(feature = "exec_time")]
-        // {
-        //     print_with_thread_id!("Schedule Build times -------");
-        //     print_with_thread_id!("Node creation time: {:?}", self.node_creation_time);
-        //     print_with_thread_id!("Node depdency setting time: {:?}", self.node_dependency_time);
-        // }
+        #[cfg(feature = "exec_time")]
+        {
+            print_with_thread_id!("Schedule Build times -------");
+            print_with_thread_id!("Node creation time: {:?}", self.node_creation_time);
+            print_with_thread_id!("Node depdency setting time: {:?}", self.node_dependency_time);
+        }
     }
 
     /// Merge the state from 2 sequential partial schedules. The 'other' schedule is assumed to come after
@@ -365,7 +367,7 @@ impl ScheduleBuilder {
     /// This method also pushes the current tx into the partial_ready_queue if this is the first operation, or to the dependency's patial ready
     /// if this is the first operation of this tx & depends on another tx.
     fn set_node_dependency(&mut self, dependent_node: &mut DependencyNode<VecOperation>, dependency_node: Option<NodeRef<VecOperation>>, tid: TxId, first_operation: bool) {
-        // #[cfg(feature = "exec_time")]
+        #[cfg(feature = "exec_time")]
         self.start_node_dependency_timer();
         
         match dependency_node {
@@ -415,7 +417,7 @@ impl ScheduleBuilder {
             }
         }
 
-        // #[cfg(feature = "exec_time")]
+        #[cfg(feature = "exec_time")]
         self.stop_node_dependency_timer();
 
 
@@ -430,7 +432,7 @@ impl ScheduleBuilder {
     fn update_schedule_on_read_operation(&mut self, first_operation: bool, tx_id: TxId, 
         contract: ScAddr, key_bytes: &Vec<u8>, commutativity: Commutativity) -> NodeRef<VecOperation> {
 
-        // #[cfg(feature = "exec_time")]
+        #[cfg(feature = "exec_time")]
         self.start_node_creation_timer();
 
         // create a new operation node
@@ -442,7 +444,7 @@ impl ScheduleBuilder {
 
         let LastWrites { commutative, non_commutative  } = self.schedule.get_last_writes(&contract, &key_bytes);
 
-        // #[cfg(feature = "exec_time")]
+        #[cfg(feature = "exec_time")]
         self.stop_node_creation_timer();
 
         match commutativity { // TODO refactor this to use the method from LasrWrites
@@ -492,7 +494,7 @@ impl ScheduleBuilder {
     fn update_schedule_on_write_operation(&mut self, first_operation: bool, tx_id: TxId, 
         contract: ScAddr, key_bytes: &Vec<u8>, commutativity: Commutativity) -> NodeRef<VecOperation> {
 
-        // #[cfg(feature = "exec_time")]
+        #[cfg(feature = "exec_time")]
         self.start_node_creation_timer();
 
         // create a new operation node
@@ -509,7 +511,7 @@ impl ScheduleBuilder {
             self.execution_queues.push_partial_ready(tx_id);
         }
 
-        // #[cfg(feature = "exec_time")]
+        #[cfg(feature = "exec_time")]
         self.stop_node_creation_timer();
 
         concurrent_op_node

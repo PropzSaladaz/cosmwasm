@@ -244,7 +244,7 @@ mod tests {
                 }
             }"#,
             &arg_types,
-            CosmwasmInputs::Mock
+            // CosmwasmInputs::Mock
         );
 
         // set storage empty - when we search for "=AARiYW5r @ _msg.admin" - will return Null
@@ -286,7 +286,7 @@ mod tests {
                 }
             }"#,
             &arg_types,
-            CosmwasmInputs::Mock
+            // CosmwasmInputs::Mock
         );
 
         let storage = mock_storage(HashMap::from([
@@ -314,7 +314,7 @@ mod tests {
                 "AddOne": {}
             }"#,
             &arg_types,
-            CosmwasmInputs::Mock
+            // CosmwasmInputs::Mock
         );
 
         let storage = mock_storage(HashMap::from([
@@ -353,7 +353,7 @@ mod tests {
                 "Transfer": {}
             }"#,
             &arg_types,
-            CosmwasmInputs::Mock
+            // CosmwasmInputs::Mock
         );
 
         let storage = mock_storage(HashMap::new());
@@ -372,7 +372,7 @@ mod tests {
                 "blabla": {}
             }"#,
             &arg_types,
-            CosmwasmInputs::Mock
+            // CosmwasmInputs::Mock
         );
 
         let storage = mock_storage(HashMap::new());

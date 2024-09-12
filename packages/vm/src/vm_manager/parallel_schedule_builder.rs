@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 
 use crate::{print_with_thread_id, vm_manager::serial_schedule::ScheduleBuilder, TxId};
 
-use super::{ConcurrentSchedule, RWSContext, Schedule};
+use super::{concurrent_schedule, ConcurrentSchedule, RWSContext, Schedule};
 
 struct ThreadData {
     pub barrier: Barrier,
@@ -52,10 +52,9 @@ impl ParallelScheduleBuilder {
         // avoid thread creation for 0 txs or 1 thread (notice the 'total_txs==1' condition since we
         // would drop the number of threads to 1 if total_txs is 1)
         if total_txs == 0 || n_threads == 1 || total_txs == 1 {
-
-            let mut schedule = ScheduleBuilder::new();
-            schedule.build_from_rws(block);
-            return ConcurrentSchedule::from_schedule_builder(schedule, n_threads);
+            let mut concurrent_schedule = ConcurrentSchedule::new();
+            concurrent_schedule.build_from_rws(block);
+            return concurrent_schedule;
         }
 
         // do not launch more threads than tx in the block
@@ -209,12 +208,12 @@ mod tests {
     const KEY_C: [u8; 1] = [3u8];
     const KEY_D: [u8; 1] = [4u8];
 
-    const TX_1: usize = 1;
-    const TX_2: usize = 2;
-    const TX_3: usize = 3;
-    const TX_4: usize = 4;
-    const TX_5: usize = 5;
-    const TX_6: usize = 6;
+    const TX_1: usize = 0;
+    const TX_2: usize = 1;
+    const TX_3: usize = 2;
+    const TX_4: usize = 3;
+    const TX_5: usize = 4;
+    const TX_6: usize = 5;
 
     fn mock_block() -> Vec<RWSContext> {
 

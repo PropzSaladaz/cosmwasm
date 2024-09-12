@@ -10,6 +10,7 @@ mod storage;
 
 mod storage_partitioned;
 mod storage_wrapper;
+pub mod perfect_rws_engine;
 
 pub use calls::{execute, instantiate, migrate, query, reply, sudo};
 #[cfg(feature = "stargate")]

@@ -199,7 +199,7 @@ impl StorageWrapper for MockStorageWrapper {
         (Ok(()), res)
     }
     
-    fn new<'b>(tx_block_id: TxId, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, sc_address: ScAddr, rws: Vec<ReadWrite>) 
+    fn new(tx_block_id: TxId, storage: Arc<dyn ConcurrentStorage>, concurrent_schedule: Arc<ConcurrentSchedule>, sc_address: ScAddr, rws: Vec<ReadWrite>) 
     -> MockStorageWrapper
     {
         Self {

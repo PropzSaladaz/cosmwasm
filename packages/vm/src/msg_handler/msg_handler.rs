@@ -1,39 +1,63 @@
 use std::sync::{Arc, RwLock};
 
-use crate::{testing::{ConcurrentStorage, StorageWrapper}, vm_manager::{SCManager, VMManager, VMMessage}, BackendApi, Querier, Storage};
+use crate::{
+    symb_exec::{ProfileEvaluator, ProfileGenerator}, 
+    testing::{ConcurrentStorage, StorageWrapper}, 
+    vm_manager::{SCManager, VMManager, VMMessage}, 
+    AddressMapper, BackendApi, BackendBuilder, ConcurrentBackendBuilder, Querier
+};
 
 pub enum Message<'a> {
     Invocation(VMMessage),
     Deployment {
         contract_code: &'a [u8],
+        // code_id: Option<i32>, // used for replay txs
     }
 }
 
-pub struct MessageHandler<A, S, W, Q> 
+pub struct MessageHandler<A, S, W, Q, E> 
 where
-    A: BackendApi        + 'static + Send + Sync,
-    S: ConcurrentStorage + 'static + Send + Sync,
-    W: StorageWrapper    + 'static,
-    Q: Querier           + 'static + Send + Sync,
+    A: BackendApi                           + 'static + Send + Sync,
+    S: ConcurrentStorage                    + 'static + Send + Sync,
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Send + Sync,
+    E: ProfileGenerator + ProfileEvaluator  + 'static + Send + Sync,
 {
-    vm_manager: VMManager<A, S, W, Q>,
-    sc_manager: Arc<RwLock<SCManager<A, S, W, Q>>>,
+    vm_manager: VMManager<A, S, W, Q, E>,
+    sc_manager: Arc<RwLock<SCManager<A, S, W, Q, E>>>,
     block_size: usize,
 }
 
-impl<A, S, W, Q> MessageHandler<A, S, W, Q> 
+impl<A, S, W, Q, E> MessageHandler<A, S, W, Q, E> 
 where
-    A: BackendApi        + Send + Sync, 
-    S: ConcurrentStorage + Send + Sync, 
-    W: StorageWrapper,
-    Q: Querier           + Send + Sync
+    A: BackendApi                           + Send + Sync, 
+    S: ConcurrentStorage                    + Send + Sync, 
+    W: StorageWrapper,                  
+    Q: Querier                              + Send + Sync,
+    E: ProfileGenerator + ProfileEvaluator  + Send + Sync,
 {
 
-    pub fn new(sc_manager: Arc<RwLock<SCManager<A, S, W, Q>>>, vm_manager: VMManager<A, S, W, Q> , block_size: usize)-> Self {
+    pub fn new(
+        sc_manager: Arc<RwLock<SCManager<A, S, W, Q, E>>>, 
+        block_size: usize,
+
+        address_mapper: Arc<AddressMapper>,
+        backend_builder: Arc<BackendBuilder<A, S, Q>>,
+        concurrent_backend_builder: Arc<ConcurrentBackendBuilder<A, S, W, Q>>, 
+        n_threads: u16, 
+        max_concurrent_instances: u16
+    )-> Self {
         MessageHandler {
-            vm_manager,
-            sc_manager,
+            vm_manager: VMManager::new(
+                Arc::clone(&sc_manager), 
+                address_mapper, 
+                backend_builder, 
+                concurrent_backend_builder, 
+                n_threads, 
+                max_concurrent_instances
+            ),
             block_size,
+            sc_manager,
         }
     }
 

@@ -28,7 +28,7 @@ pub fn mock_context(arg_types: &ArgTypes) -> SEContext {
             }
         }"#, 
         arg_types,
-        CosmwasmInputs::Mock
+        // CosmwasmInputs::Mock
     )
 }
 
