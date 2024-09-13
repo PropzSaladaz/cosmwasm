@@ -7,7 +7,7 @@ use cosmwasm_std::Record;
 
 use crate::symb_exec::Key;
 use crate::symb_exec::Commutativity;
-use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, ScAddr, Storage, TxId, VecOperation};
+use crate::{ConcurrentSchedule, DependencyNode, GasInfo, NodeRef, OpType, ScAddr, ScheduleBuilder, Storage, TxId, VecOperation};
 
 use crate::{symb_exec::ReadWrite, BackendResult};
 
@@ -35,12 +35,12 @@ pub struct MockStorageWrapper {
 impl MockStorageWrapper {
     /// Used strictly for testing pruposes
     pub fn default(storage: Arc<MockConcurrentStorage>) -> MockStorageWrapper {
-        let mut schedule = ConcurrentSchedule::new();
+        let mut schedule = ScheduleBuilder::new();
         // all schedules must have at least 1 operation detected by the SE
         schedule.build_from_rws(&mut vec![
             mock_tx_operation(*DEFAULT_CONTRACT, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
-        StorageWrapper::new(0, storage, Arc::new(schedule), *DEFAULT_CONTRACT, vec![])
+        StorageWrapper::new(0, storage, Arc::new(ConcurrentSchedule::from_schedule_builder(schedule, 1)), *DEFAULT_CONTRACT, vec![])
     }
 }
 
@@ -147,11 +147,12 @@ impl StorageWrapper for MockStorageWrapper {
             },
             // operation not tracked by RWS
             None => {
+                unreachable!("RWS should be perfect as of now")
                 // mark new operations as non-commutative by default
-                let concurrent_op = DependencyNode::new_ref(OpType::Read, self.tx_block_id, Commutativity::NonCommutative, false);
+                // let concurrent_op = DependencyNode::new_ref(OpType::Read, self.tx_block_id, Commutativity::NonCommutative, false);
                 // this will modify the dependencies of the node after being inserted
-                self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
-                read_value(&concurrent_op, key)
+                // self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
+                // read_value(&concurrent_op, key)
             }
         };
         res
@@ -185,15 +186,15 @@ impl StorageWrapper for MockStorageWrapper {
             },
 
             None => {
-
+                unreachable!("RWS should be perfect as of now")
                 // mark new operations as non-commutative by default
-                let concurrent_op = DependencyNode::new_ref(OpType::Write, self.tx_block_id, Commutativity::NonCommutative, false);
+                // let concurrent_op = DependencyNode::new_ref(OpType::Write, self.tx_block_id, Commutativity::NonCommutative, false);
                 // this will modify the dependencies of the node after being inserted
-                self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
+                // self.schedule.insert_untracked_operation(self.sc_address, &key.to_vec(), Arc::clone(&concurrent_op));
 
                 // write to the operation node
-                ConcurrentSchedule::set_value(&concurrent_op, value);
-                GasInfo::with_externally_used((key.len() + value.len()) as u64)
+                // ConcurrentSchedule::set_value(&concurrent_op, value);
+                // GasInfo::with_externally_used((key.len() + value.len()) as u64)
             }
         };
         (Ok(()), res)
@@ -257,7 +258,7 @@ mod tests {
         let storage = Arc::new(MockConcurrentStorage::new());
         storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
-        let mut concurrent_schedule = ConcurrentSchedule::new();
+        let mut concurrent_schedule = ScheduleBuilder::new();
         concurrent_schedule.build_from_rws(&mut block);
 
         // We can only fetch the RWS after building the schedule, since this build alters the RWS by setting
@@ -265,7 +266,7 @@ mod tests {
         let rws_tx_0 = block.get(0).unwrap().rws.rws.clone();
         
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx, storage, 
-            Arc::new(concurrent_schedule), SC_ADDR_A, rws_tx_0);
+            Arc::new(ConcurrentSchedule::from_schedule_builder(concurrent_schedule, 1)), SC_ADDR_A, rws_tx_0);
 
         let item = storage_wrapper.get(key.as_slice());
 
@@ -335,9 +336,9 @@ mod tests {
         let storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
         storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
-        let mut concurrent_schedule = ConcurrentSchedule::new();
+        let mut concurrent_schedule = ScheduleBuilder::new();
         concurrent_schedule.build_from_rws(&mut block);
-        let schedule_ref = Arc::new(concurrent_schedule);
+        let schedule_ref = Arc::new(ConcurrentSchedule::from_schedule_builder(concurrent_schedule, 1));
 
         // ** simulate Tx_0 executing - WRITE ** //
         // We can only clone the RWS after building the schedule, since this build alters the RWS by setting
@@ -381,14 +382,14 @@ mod tests {
         let storage = Arc::new(MockConcurrentStorage::new());
         storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
-        let mut concurrent_schedule = ConcurrentSchedule::new();
+        let mut concurrent_schedule = ScheduleBuilder::new();
         concurrent_schedule.build_from_rws(&mut vec![
             mock_tx_operation(SC_ADDR_A, &vec![5u8], tx_idx, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
 
         // storagewrapper will not have any RWS sequence
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx, storage, 
-            Arc::new(concurrent_schedule), SC_ADDR_A, vec![]);
+            Arc::new(ConcurrentSchedule::from_schedule_builder(concurrent_schedule, 1)), SC_ADDR_A, vec![]);
 
         // untracked read
         let item = storage_wrapper.get(key.as_slice());
@@ -418,14 +419,14 @@ mod tests {
         let storage = Arc::new(MockConcurrentStorage::new());
         storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
-        let mut concurrent_schedule = ConcurrentSchedule::new();
+        let mut concurrent_schedule = ScheduleBuilder::new();
         concurrent_schedule.build_from_rws(&mut vec![
             mock_tx_operation(SC_ADDR_A, &vec![5u8], tx_idx, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
 
         // storagewrapper will not have any RWS sequence
         let mut storage_wrapper = MockStorageWrapper::new(tx_idx, storage, 
-            Arc::new(concurrent_schedule), SC_ADDR_A, vec![]);
+            Arc::new(ConcurrentSchedule::from_schedule_builder(concurrent_schedule, 1)), SC_ADDR_A, vec![]);
 
         // untracked write
         storage_wrapper.set(key.as_slice(), val_after.as_slice()).0.unwrap();

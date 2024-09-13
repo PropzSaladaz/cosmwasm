@@ -13,3 +13,4 @@ pub use sc_storage::{SCManager, ContractRWS, PersistentBackend};
 pub use concurrent_schedule::{ConcurrentSchedule, TxState};
 pub use schedule::{Schedule, LastWrites, TxId, ScAddr, NodeRef, VecOperation, DependencyNode, OpType};
 pub use parallel_schedule_builder::ParallelScheduleBuilder;
+pub use serial_schedule::ScheduleBuilder;

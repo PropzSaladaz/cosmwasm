@@ -412,11 +412,7 @@ mod tests {
     use wasmer::Store;
 
     use crate::{
-        call_execute, call_instantiate, internals::instance_from_module, 
-        symb_exec::{Commutativity, EntryPoint, SEStatus, ProfileGenerator}, 
-        testing::{mock_concurrent_backend, mock_env, mock_info, mock_persistent_backend, mock_tx_operation, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, 
-        wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
-        ConcurrentSchedule, InstanceOptions, ReadWrite, Size, SymbolicExecutionEngine
+        call_execute, call_instantiate, internals::instance_from_module, symb_exec::{Commutativity, EntryPoint, ProfileGenerator, SEStatus}, testing::{mock_concurrent_backend, mock_env, mock_info, mock_persistent_backend, mock_tx_operation, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, vm_manager::serial_schedule::ScheduleBuilder, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, ConcurrentSchedule, InstanceOptions, ReadWrite, Size, SymbolicExecutionEngine
     };
 
     use super::*;
@@ -508,11 +504,11 @@ _msg: InstantiateMsg
 
         let backend;
 
-        let mut schedule = ConcurrentSchedule::new();
+        let mut schedule = ScheduleBuilder::new();
         schedule.build_from_rws(&mut vec![
             mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
-        let concurrent_schedule = Arc::new(schedule);
+        let concurrent_schedule = Arc::new(ConcurrentSchedule::from_schedule_builder(schedule, 1));
 
         { // simulate saving instance in a separate context
             // compile code & create storage
@@ -569,7 +565,7 @@ _msg: InstantiateMsg
 
         { // simulate executing in a separate context
             // Execute
-            let mut schedule = ConcurrentSchedule::new();
+            let mut schedule = ScheduleBuilder::new();
             schedule.build_from_rws(&mut vec![
                 mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
             ]);

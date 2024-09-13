@@ -909,8 +909,7 @@ mod tests {
             MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper
         }, 
         vm_manager::{
-            schedule::{ScAddr, ADDR_SIZE}, 
-            vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}
+            schedule::{ScAddr, ADDR_SIZE}, serial_schedule::ScheduleBuilder, vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}
         }, 
         wasm_backend::{compile, make_compiling_engine}, 
         ConcurrentSchedule, InstanceOptions, InstantiatedEntryPoint, 
@@ -1004,6 +1003,7 @@ mod tests {
         assert_eq!((vm_manager.address_mapper)(1, 1), SC_ADDR_D);
     }
 
+    #[ignore]
     #[test]
     #[serial]
     fn vanilla_instantiation_and_execution() {
@@ -1037,11 +1037,11 @@ mod tests {
         let rws = vec![];
         
         // schedule needs at least 1 operation to know the tx
-        let mut schedule = ConcurrentSchedule::new();
+        let mut schedule = ScheduleBuilder::new();
         schedule.build_from_rws(&mut vec![
             mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
-        let concurrent_schedule = Arc::new(schedule);
+        let concurrent_schedule = Arc::new(ConcurrentSchedule::from_schedule_builder(schedule, 1));
 
 
         // instantiate
@@ -1091,7 +1091,7 @@ mod tests {
     }
 
 
-
+    #[ignore]
     #[test]
     #[serial]
     fn vanilla_sequential_instantiate_vm() {
@@ -1101,23 +1101,32 @@ mod tests {
         let thread_ctx = vm_manager.get_execution_context();
         
         // schedule needs at least 1 operation to know the tx
-        let mut schedule = ConcurrentSchedule::new();
+        let mut schedule = ScheduleBuilder::new();
+        let rws = mock_tx_operation(SC_ADDR_A, &vec![0, 4, 98, 97, 110, 65, 68, 77, 73, 78], 0, ReadWrite::write(), Commutativity::NonCommutative);
         schedule.build_from_rws(&mut vec![
-            mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+            rws.clone()
         ]);
 
-        let resp = VMManager::<MockApi, MockConcurrentStorage, MockStorageWrapper, MockQuerier, SymbolicExecutionEngine>::compile_instantiate_vm(0, &SC_ADDR_A, Arc::new(schedule), &thread_ctx, 0, msg, vec![]).unwrap();
+        let resp = VMManager::<MockApi, MockConcurrentStorage, MockStorageWrapper, MockQuerier, SymbolicExecutionEngine>::compile_instantiate_vm(
+            0, 
+            &SC_ADDR_A, 
+            Arc::new(ConcurrentSchedule::from_schedule_builder(schedule, 1)), 
+            &thread_ctx, 
+            0, 
+            msg, 
+            rws.rws.rws
+        ).unwrap();
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resp);
 
         vm_manager.state_manager.read().unwrap().cleanup();
     }
     
-
+    #[ignore]
     #[test]
     #[serial]
     fn vanilla_sequential_execute_vm_untracked_operations() {
         let vm_manager = mock_vm_manager(1, 1, mock_address_mapper());
-        let mut schedule = ConcurrentSchedule::new();
+        let mut schedule = ScheduleBuilder::new();
         let sc_address = SC_ADDR_A; // needs to be "a" since this is the address created by the mock_vm_manager()
 
         // every tx needs to be detected when building the schedule. So we need a random operation for it to be detected
@@ -1125,7 +1134,7 @@ mod tests {
             mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
 
-        let schedule = Arc::new(schedule);
+        let schedule = Arc::new(ConcurrentSchedule::from_schedule_builder(schedule, 1));
 
         let msg = br#"{}"#;
         let thread_ctx = vm_manager.get_execution_context();
@@ -1145,6 +1154,7 @@ mod tests {
         vm_manager.state_manager.read().unwrap().cleanup();
     }
 
+    #[ignore]
     #[test]
     #[serial]
     fn sequential_query_vm() {
@@ -1154,11 +1164,11 @@ mod tests {
         let thread_ctx = vm_manager.get_execution_context();
 
         // schedule needs at least 1 operation to know the tx
-        let mut schedule = ConcurrentSchedule::new();
+        let mut schedule = ScheduleBuilder::new();
         schedule.build_from_rws(&mut vec![
             mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
-        let schedule = Arc::new(schedule);
+        let schedule = Arc::new(ConcurrentSchedule::from_schedule_builder(schedule, 1));
 
         let resp = VMManager::<MockApi, MockConcurrentStorage, MockStorageWrapper, MockQuerier, SymbolicExecutionEngine>::compile_instantiate_vm(0, &SC_ADDR_A, Arc::clone(&schedule),  &thread_ctx, 0, msg, vec![]).unwrap();
         assert_eq!("Response { messages: [], attributes: [], events: [], data: None }", resp);

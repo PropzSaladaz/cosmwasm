@@ -419,8 +419,29 @@ impl ScheduleBuilder {
 
         #[cfg(feature = "exec_time")]
         self.stop_node_dependency_timer();
+    }
 
 
+    pub fn insert_untracked_operation(&mut self, sc_address: ScAddr, key: &Vec<u8>, operation_node: NodeRef<VecOperation>) {
+        let node_lock = operation_node.read();
+        let op_type = node_lock.data.operation_type;
+        let tx_id = node_lock.data.tx_block_id;
+        let commutativity = node_lock.data.commutativity;
+        drop(node_lock);
+
+        if !self.transactions.contains(&tx_id) { 
+            panic!(
+                "Trying to insert a Read/Write operation from an unseen transaction!.
+            Every transaction should have at least one Read/Write operation detected by the Symb Exec engine at the start."
+            );
+        }
+
+        self.schedule.insert_untracked_operation(sc_address, key, tx_id, operation_node, op_type, commutativity);
+        
+        if self.deps[&tx_id].is_empty() {
+            // If tx has no dependencies, push to ready queue
+            self.execution_queues.push_ready(tx_id);
+        }
     }
 
     /// Appends a read operation at the end of the schedule
@@ -525,4 +546,542 @@ impl ScheduleBuilder {
         dot.save_as_png(dot_file, graph_name).unwrap();
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serial_test::serial;
+
+    use crate::{symb_exec::{Commutativity, Key, StorageDependency, TxRWS}, testing::mock_tx_operation, vm_manager::serial_schedule::ScheduleBuilder, DependencyNode, InstantiatedEntryPoint, LastWrites, NodeRef, OpType, RWSContext, ReadWrite, SEStatus, ScAddr, Size, VMMessage, VecOperation};
+
+    const CONTRACT: &[u8] = include_bytes!("../../custom_contracts/empty-contract/target/wasm32-unknown-unknown/release/contract.wasm");
+    const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HIGH_GAS_LIMIT: u64 = 20_000_000_000_000; // ~20s, allows many calls on one instance
+    const DEFAULT_MEMORY_LIMIT: Size = Size::mebi(64);
+
+    fn assert_node_next(node: &NodeRef<VecOperation>, node_next: &NodeRef<VecOperation>) {
+        let node = node.read();
+        let next = node.next.as_ref().unwrap().read();
+
+        let node_next = node_next.read();
+
+        assert_eq!(*next, *node_next);
+    }
+
+    fn assert_node_prev(node: &NodeRef<VecOperation>, node_prev: &NodeRef<VecOperation>) {
+        let node = node.read();
+        let next = node.prev.as_ref().unwrap().read();
+
+        let node_prev = node_prev.read();
+
+        assert_eq!(*next, *node_prev);
+    }
+
+    fn assert_node_dependency(node: &NodeRef<VecOperation>, node_dep: &NodeRef<VecOperation>) {
+        let node = node.read();
+        let next = node.dependency.as_ref().unwrap().read();
+
+        let node_dep = node_dep.read();
+
+        assert_eq!(*next, *node_dep);
+    }
+
+
+    #[test]
+    #[serial]
+    fn concurrent_schedule_build() {
+        let mut concurrent_schedule = ScheduleBuilder::new();
+        let mut block = vec![
+            mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::Commutative),
+        ];
+
+        concurrent_schedule.build_from_rws(&mut block);
+
+        let deps = concurrent_schedule.deps;
+        // tx_block_id should have 0 dependencies
+        assert_eq!(deps[&(0 as usize)].len(), 0);
+        
+        // pop only available tx - tx with id 1
+        let mut ready_q = concurrent_schedule.execution_queues.ready_queue;
+        assert_eq!(ready_q.pop_front().unwrap(), 0);
+
+        let mut partial_ready_q = concurrent_schedule.execution_queues.partial_ready_queue;
+        assert!(partial_ready_q.pop_front().is_none());
+
+        // check if operation node has been set
+        let rws = block.get(0).unwrap().rws.rws.get(0).unwrap(); 
+        match rws {
+            ReadWrite::Read { .. } => assert!(false),
+            ReadWrite::Write { operation_node, .. } => {
+                assert!(operation_node.is_some());
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn concurrent_schedule_build_complex_ex() {
+        let key_a = vec![1u8];
+        let key_b = vec![2u8];
+        let key_c = vec![3u8];
+        let key_d = vec![4u8];
+
+        let tx1 = 0;
+        let tx2 = 1;
+        let tx3 = 2;
+        let tx4 = 3;
+        let tx5 = 4;
+        let tx6 = 5;
+
+        let mut concurrent_schedule = ScheduleBuilder::new();
+        concurrent_schedule.build_from_rws(&mut vec![
+
+            // Tx1: R(A), W(A), W(B), R(C), W(C)
+            RWSContext {
+                address: SC_ADDR_A,
+                tx_message: Some(VMMessage::Invocation {
+                    entry_point: InstantiatedEntryPoint::Execute,
+                    contract_address: SC_ADDR_A,
+                    message: br#""#.to_vec(),
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
+                },),
+                tx_block_id: tx1,
+                rws: TxRWS {
+                    storage_dependency: StorageDependency::Independent,
+                    profile_status: SEStatus::Complete,
+                    rws_uid: "A".to_owned(),
+                    rws: vec![
+                        ReadWrite::Read { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_a.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_a.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_b.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Read { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_c.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_c.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                    ]
+                }
+            },
+
+            // Tx2: R(D), W(A), R(B), W(B)
+            RWSContext {
+                address: SC_ADDR_A,
+                tx_message: Some(VMMessage::Invocation {
+                    entry_point: InstantiatedEntryPoint::Execute,
+                    contract_address: SC_ADDR_A,
+                    message: br#""#.to_vec(),
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
+                },),
+                tx_block_id: tx2,
+                rws: TxRWS {
+                    storage_dependency: StorageDependency::Independent,
+                    profile_status: SEStatus::Complete,
+                    rws_uid: "B".to_owned(),
+                    rws: vec![
+                        ReadWrite::Read { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_d.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_a.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Read { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_b.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_b.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                    ]
+                }
+            },
+
+            // Tx3: R(A), W(A)
+            RWSContext {
+                address: SC_ADDR_A,
+                tx_message: Some(VMMessage::Invocation {
+                    entry_point: InstantiatedEntryPoint::Execute,
+                    contract_address: SC_ADDR_A,
+                    message: br#""#.to_vec(),
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
+                },),
+                tx_block_id: tx3,
+                rws: TxRWS {
+                    storage_dependency: StorageDependency::Independent,
+                    profile_status: SEStatus::Complete,
+                    rws_uid: "C".to_owned(),
+                    rws: vec![
+                        ReadWrite::Read { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_a.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_a.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                    ]
+                }
+            },
+
+            // Tx4: R(C), W(C)
+            RWSContext {
+                address: SC_ADDR_A,
+                tx_message: Some(VMMessage::Invocation {
+                    entry_point: InstantiatedEntryPoint::Execute,
+                    contract_address: SC_ADDR_A,
+                    message: br#""#.to_vec(),
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
+                },),
+                tx_block_id: tx4,
+                rws: TxRWS {
+                    storage_dependency: StorageDependency::Independent,
+                    profile_status: SEStatus::Complete,
+                    rws_uid: "D".to_owned(),
+                    rws: vec![
+                        ReadWrite::Read { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_c.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_c.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                    ]
+                }
+            },
+
+            // Tx5: R(B), W(B)
+            RWSContext {
+                address: SC_ADDR_A,
+                tx_message: Some(VMMessage::Invocation {
+                    entry_point: InstantiatedEntryPoint::Execute,
+                    contract_address: SC_ADDR_A,
+                    message: br#""#.to_vec(),
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
+                },),
+                tx_block_id: tx5,
+                rws: TxRWS {
+                    storage_dependency: StorageDependency::Independent,
+                    profile_status: SEStatus::Complete,
+                    rws_uid: "E".to_owned(),
+                    rws: vec![
+                        ReadWrite::Read { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_b.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_b.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                    ]
+                }
+            },
+
+            // Tx6: R(D), W(D)
+            RWSContext {
+                address: SC_ADDR_A,
+                tx_message: Some(VMMessage::Invocation {
+                    entry_point: InstantiatedEntryPoint::Execute,
+                    contract_address: SC_ADDR_A,
+                    message: br#""#.to_vec(),
+                    hash: "".to_owned(),
+                    sender: "".to_owned(),
+                    funds: vec![],
+                },),
+                tx_block_id: tx6,
+                rws: TxRWS {
+                    storage_dependency: StorageDependency::Independent,
+                    profile_status: SEStatus::Complete,
+                    rws_uid: "F".to_owned(),
+                    rws: vec![
+                        ReadWrite::Read { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_d.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                        ReadWrite::Write { 
+                            storage_dependency: StorageDependency::Independent, 
+                            key: Key::Bytes(key_d.clone()), 
+                            commutativity: Commutativity::NonCommutative,
+                            operation_node: None,
+                        },
+                    ]
+                }
+            },
+        ]);
+
+
+        // Final Expected Schedule:
+
+        //  |<---------------------------|                         
+        // A|<-[T1: R(A)]-[T1: W(A)]    [T2: W(A)]            <- [T3: R(A)]-[T3: W(A)]
+        //  |
+        // B|<-[T1: W(B)]            <- [T2: R(B)]-[T2: W(B)] <- [T5: R(B)]-[T5: W(B)]
+        //  |
+        // C|<-[T1: R(C)]-[T1: W(C)] <- [T4: R(C)]-[T4: W(C)]
+        //  |
+        // D|<-[T2: R(D)]            <- [T6: R(D)]-[T6: W(D)]
+
+        // println!("{:#?}", concurrent_schedule);
+
+        let deps = concurrent_schedule.deps;
+        assert_eq!(deps[&tx1].len(), 0);
+        assert_eq!(deps[&tx2].len(), 1);
+        assert_eq!(deps[&tx3].len(), 1);
+        assert_eq!(deps[&tx4].len(), 1);
+        assert_eq!(deps[&tx5].len(), 1);
+        assert_eq!(deps[&tx6].len(), 0);
+        
+        // READY: { Tx1, Tx6 }
+        let mut ready_q = concurrent_schedule.execution_queues.ready_queue;
+        assert_eq!(ready_q.pop_front().unwrap(), tx1);
+        assert_eq!(ready_q.pop_front().unwrap(), tx6);
+
+        // PARTIAL_READY: { Tx2 }
+        let mut partial_ready_q = concurrent_schedule.execution_queues.partial_ready_queue;
+        assert_eq!(partial_ready_q.pop_front().unwrap(), tx2);
+
+
+        let dependent_txs = concurrent_schedule.dependent_txs;
+        // Tx2 & Tx4 depend on Tx1
+        assert!(dependent_txs.get(&tx1).unwrap().contains(&tx2));
+        assert!(dependent_txs.get(&tx1).unwrap().contains(&tx4));
+        // Tx3 & Tx5 depend on Tx2
+        assert!(dependent_txs.get(&tx2).unwrap().contains(&tx3));
+        assert!(dependent_txs.get(&tx2).unwrap().contains(&tx5));
+        // Tx3-6 have no dependencies
+        assert!(dependent_txs.get(&tx3).is_none());
+        assert!(dependent_txs.get(&tx4).is_none());
+        assert!(dependent_txs.get(&tx5).is_none());
+        assert!(dependent_txs.get(&tx6).is_none());
+
+        let ready_partials = concurrent_schedule.partial_ready_tx;
+        // Tx1 has T4 as ready partial
+        assert!(ready_partials.get(&tx1).unwrap().contains(&tx4));
+        // Tx2 has Tx3 & Tx5 as ready_partial
+        assert!(ready_partials.get(&tx2).unwrap().contains(&tx3));
+        assert!(ready_partials.get(&tx2).unwrap().contains(&tx5));
+    }
+
+    #[test]
+    #[serial]
+    fn untracked_write_no_dependencies() {
+        let sc_address = SC_ADDR_A;
+        let key = vec![1u8];
+
+        let mut concurrent_schedule = ScheduleBuilder::new();
+        concurrent_schedule.build_from_rws(&mut vec![
+            mock_tx_operation(sc_address, &vec![2u8], 0, ReadWrite::write(), Commutativity::NonCommutative),
+        ]);
+        
+        // insert untracked write
+        let op_node = DependencyNode::new_ref(OpType::Write, 0, Commutativity::NonCommutative, true);
+        concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node));
+
+        // tx1 has no dependencies
+        let deps = concurrent_schedule.deps;
+        assert_eq!(deps[&0].len(), 0);
+
+        // added to ready queue
+        let mut ready_q = concurrent_schedule.execution_queues.ready_queue;
+        assert_eq!(ready_q.pop_front().unwrap(), 0);
+
+        // not added to partial_ready
+        let mut partial_ready_q = concurrent_schedule.execution_queues.partial_ready_queue;
+        assert!(partial_ready_q.pop_front().is_none());
+
+        // schedule head is the write node
+        let sc_schedule = concurrent_schedule.schedule.schedule.get(&sc_address).unwrap();
+        let head = &sc_schedule.get(&key).unwrap().head;
+        assert_eq!(*head.read().read(), *op_node.read());
+
+        // schedule tail is the write node
+        let tail = &sc_schedule.get(&key).unwrap().tail;
+        assert_eq!(*tail.read().read(), *op_node.read());
+
+        // schedule last_non_commutative write is the write node
+        let LastWrites {commutative, non_commutative } = concurrent_schedule.schedule.get_last_writes(&sc_address, &key);
+
+        match (commutative, non_commutative) {
+            (None, Some(non_comm)) => {
+                assert_eq!(*non_comm.read(), *op_node.read());
+            },
+            _ => assert!(false)
+        }
+        
+    }
+
+    #[test]
+    #[serial]
+    fn untracked_read_with_dependency_on_write_same_tx() {
+        let sc_address = SC_ADDR_A;
+        let key = vec![1u8];
+
+        let mut concurrent_schedule = ScheduleBuilder::new();
+        
+        // random read write just for the txs to have at least 1 read/write
+        concurrent_schedule.build_from_rws(&mut vec![
+            mock_tx_operation(SC_ADDR_A, &vec![2u8], 0, ReadWrite::write(), Commutativity::NonCommutative),
+        ]);
+        
+        // insert untracked write
+        let op_node_write = DependencyNode::new_ref(OpType::Write, 0, Commutativity::NonCommutative, true);
+        concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_write));
+
+        // insert untracked read
+        let op_node_read = DependencyNode::new_ref(OpType::Read, 0, Commutativity::NonCommutative, false);
+        concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_read));
+
+        // tx has no dependencies
+        let deps = concurrent_schedule.deps;
+        assert_eq!(deps[&0].len(), 0);
+
+        // tx is in ready queue
+        let mut ready_q = concurrent_schedule.execution_queues.ready_queue;
+        assert_eq!(ready_q.pop_front().unwrap(), 0);
+
+        // tx is not in partial_ready
+        let mut partial_ready_q = concurrent_schedule.execution_queues.partial_ready_queue;
+        assert!(partial_ready_q.pop_front().is_none());
+
+        // head is the 1st write operation
+        let sc_schedule = concurrent_schedule.schedule.schedule.get(&sc_address).unwrap();
+        let head = &sc_schedule.get(&key).unwrap().head;
+        assert_eq!(*head.read().read(), *op_node_write.read());
+
+        // tail is the last read operation
+        let tail = &sc_schedule.get(&key).unwrap().tail;
+        assert_eq!(*tail.read().read(), *op_node_read.read());
+
+        // write operation's next value is the read operation
+        assert_node_next(&op_node_write, &op_node_read);
+
+        // read operation's prev value is the read operation
+        assert_node_prev(&op_node_read, &op_node_write);
+
+        // read operation's dependency should be set to the write node
+        assert_node_dependency(&op_node_read, &op_node_write);
+
+    }
+
+    #[test]
+    #[serial]
+    fn untracked_read_with_dependency_on_write_different_tx() {
+        let sc_address = SC_ADDR_A;
+        let key = vec![1u8];
+
+        let mut concurrent_schedule = ScheduleBuilder::new();
+
+        // each tx must have at least 1 RW - inside the schedule we pre-allocate a vector with the size of 
+        // the number of different txs - and we only count txs by their RWS
+        concurrent_schedule.build_from_rws(&mut vec![
+            mock_tx_operation(SC_ADDR_A, &vec![2u8], 0, ReadWrite::write(), Commutativity::NonCommutative),
+            mock_tx_operation(SC_ADDR_A, &vec![3u8], 1, ReadWrite::read(),  Commutativity::NonCommutative),
+        ]);
+        
+        // insert untracked write
+        let op_node_write = DependencyNode::new_ref(OpType::Write, 0, Commutativity::NonCommutative, true);
+        concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_write));
+
+        // insert untracked read
+        let op_node_read = DependencyNode::new_ref(OpType::Read, 1, Commutativity::NonCommutative, true);
+        concurrent_schedule.insert_untracked_operation(sc_address, &key, Arc::clone(&op_node_read));
+
+        // tx1 has no dependencies
+        let deps = concurrent_schedule.deps;
+        assert_eq!(deps[&0].len(), 0);
+
+        // tx2 has no dependencies - recall we are simulating running time - an untracked operations is only 'tracked' when the tx is
+        // executing. And if it started executing, is beacause it was either in READY or PARTIAL_READY queue, so it had no dependencies.
+        // Even if it now depends on tx1, the operation itself will need to wait on tx1's operation, but still, tx2 is not marked
+        // to have any dependencies since it already started executing.
+        assert_eq!(deps[&1].len(), 0);
+
+        // here we are checking only on the original RWS - the tx placement in the queues does not count for untracked RWS
+        // tx1 is in ready queue
+        let mut ready_q = concurrent_schedule.execution_queues.ready_queue;
+        assert_eq!(ready_q.pop_front().unwrap(), 0);
+        // tx2 is in ready queue
+        assert_eq!(ready_q.pop_front().unwrap(), 1);
+
+        // tx1 nor tx2 are in partial_ready
+        let mut partial_ready_q = concurrent_schedule.execution_queues.partial_ready_queue;
+        assert!(partial_ready_q.pop_front().is_none());
+
+        // head is the 1st write operation
+        let sc_schedule = concurrent_schedule.schedule.schedule.get(&sc_address).unwrap();
+        let head = &sc_schedule.get(&key).unwrap().head;
+        assert_eq!(*head.read().read(), *op_node_write.read());
+
+        // tail is the last read operation
+        let tail = &sc_schedule.get(&key).unwrap().tail;
+        assert_eq!(*tail.read().read(), *op_node_read.read());
+
+        // write operation's next value is the read operation
+        assert_node_next(&op_node_write, &op_node_read);
+
+        // read operation's prev value is the read operation
+        assert_node_prev(&op_node_read, &op_node_write);
+
+        // read operation's dependency should be set to the write node
+        assert_node_dependency(&op_node_read, &op_node_write);
+
+    }
 }
