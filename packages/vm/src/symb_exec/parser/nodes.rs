@@ -80,9 +80,11 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Default)]
 pub enum StorageDependency {
     Dependent,
+
+    #[default]
     Independent
 }
 

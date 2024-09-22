@@ -20,8 +20,40 @@ impl ProfileEvaluator for PerfectRWSEngine {
     fn get_rws_execute<'a>    (&self, sc_profile: &SCProfile, deps: &'a crate::DepsMut<'a>, custom: &[u8]) -> TxRWS {
         todo!()
     }
-
-    fn get_rws_query<'a>      (&self, sc_profile: &SCProfile, deps: &'a crate::DepsMut<'a>, custom: &[u8]) -> TxRWS {
+    
+    fn get_rws_reply(&self) -> TxRWS {
+        todo!()
+    }
+    
+    fn get_rws_migrate(&self) -> TxRWS {
+        todo!()
+    }
+    
+    fn get_rws_ibc_init(&self) -> TxRWS {
+        todo!()
+    }
+    
+    fn get_rws_ibc_try(&self) -> TxRWS {
+        todo!()
+    }
+    
+    fn get_rws_ibc_ack(&self) -> TxRWS {
+        todo!()
+    }
+    
+    fn get_rws_ibc_confirm(&self) -> TxRWS {
+        todo!()
+    }
+    
+    fn get_rws_recv_packet(&self) -> TxRWS {
+        todo!()
+    }
+    
+    fn get_rws_timeout(&self) -> TxRWS {
+        todo!()
+    }
+    
+    fn get_rws_ack(&self) -> TxRWS {
         todo!()
     }
 }

@@ -12,14 +12,13 @@ use crate::{
 
 use super::schedule::{ScAddr, TxId};
 
-
+pub type CodeId = u32;
 
 const SMART_CONTRACT_PATH: &'static str = "./wasm_contract_codes";
 
-fn contract_path(id: u128) -> String {
+fn contract_path(id: CodeId) -> String {
     SMART_CONTRACT_PATH.to_string() + "/" + &id.to_string() + ".wasm"
 }
-
 
 /// Represents static data (need only to store 1 for each contract code) 
 /// for each contract.
@@ -30,13 +29,14 @@ fn contract_path(id: u128) -> String {
 /// - Instantiation Count: How many times a SC was instantiated. Also monotonically increasing
 #[derive(Debug)]
 struct SCStaticData {
-    sc_code_id: u128,
+    // useful when we are not replaying the block, meaning we need to increment the current code_id sequentially
+    sc_code_id: CodeId,
     /// Stores SCProfile for each different SC code.
-    profiles: HashMap<u128, Arc<SCProfile>>,
+    profiles: HashMap<CodeId, Arc<SCProfile>>,
     /// Maps sc_addresses to code ids
-    address_code_id: HashMap<ScAddr, u128>,
+    address_code_id: HashMap<ScAddr, CodeId>,
     /// Stores number of instantiated SCs per contract_id
-    instantiation_count: Arc<Mutex<HashMap<u128, u128>>>,
+    instantiation_count: Arc<Mutex<HashMap<CodeId, u128>>>,
 }
 
 impl SCStaticData {
@@ -49,12 +49,12 @@ impl SCStaticData {
         }
     }
 
-    pub fn incr_instantiation(&self, code_id: u128) {
+    pub fn incr_instantiation(&self, code_id: CodeId) {
         self.instantiation_count.lock()
             .entry(code_id).and_modify(|count| *count += 1);
     }
 
-    pub fn get_instantiation_count(&self, code_id: u128) -> u128 {
+    pub fn get_instantiation_count(&self, code_id: CodeId) -> u128 {
         match self.instantiation_count.lock().get(&code_id) {
             Some(count) => *count,
             None => 0,
@@ -62,14 +62,14 @@ impl SCStaticData {
     }
 
     /// Should be called for each instantiation to allow getting SC codes by the address
-    pub fn link_address_to_code(&mut self, code_id: u128, sc_addr: &ScAddr) {
-        self.address_code_id.insert(*sc_addr, code_id);
+    pub fn link_address_to_code(&mut self, code_id: CodeId, sc_addr: &ScAddr) {
+        self.address_code_id.insert(sc_addr.clone(), code_id);
     }
 
     /// Saves a SC code. Uses the Symb Engine to produce a RWS profile
     /// for the contract and saves the profile information for this contract.
     /// Sets instantiation count for this new SC code to 1
-    pub fn save<E: ProfileGenerator>(&mut self, sc_code: &[u8], code_id: Option<u128>, symb_exec: &Arc<E>) -> std::io::Result<u128> {
+    pub fn save<E: ProfileGenerator>(&mut self, sc_code: &[u8], code_id: Option<CodeId>, symb_exec: &Arc<E>) -> std::io::Result<CodeId> {
         let curr_dir = std::env::current_dir()?;
         let rel_path = curr_dir.join(contract_path(self.sc_code_id));
         let mut file_writer = File::create(rel_path)?;
@@ -95,7 +95,7 @@ impl SCStaticData {
         Ok(code_id)
     }
 
-    pub fn get_code(&self, code_id: u128) -> std::io::Result<Vec<u8>> {
+    pub fn get_code(&self, code_id: CodeId) -> std::io::Result<Vec<u8>> {
         let curr_dir = std::env::current_dir()?;
         let rel_path = curr_dir.join(contract_path(code_id));
         let mut f = File::open(rel_path)?;
@@ -109,7 +109,7 @@ impl SCStaticData {
         self.get_code(*code_id)
     }
 
-    pub fn get_profile(&self, code_id: u128) -> Result<Arc<SCProfile>, String> {
+    pub fn get_profile(&self, code_id: CodeId) -> Result<Arc<SCProfile>, String> {
         match self.profiles.get(&code_id) {
             Some(profile) => Ok(Arc::clone(profile)),
             None => Err("Profile doesn't exist".to_string()) 
@@ -119,6 +119,12 @@ impl SCStaticData {
     pub fn get_profile_by_address(&self, sc_addr: &ScAddr) -> Result<Arc<SCProfile>, String> {
         let code_id = self.address_code_id.get(sc_addr).unwrap();
         self.get_profile(*code_id)
+    }
+
+    pub fn migrate<E: ProfileGenerator>(&mut self, sc_address: &ScAddr, new_code: &[u8], new_code_id: CodeId, symb_exec: &Arc<E>) -> std::io::Result<()> {
+        self.save(new_code, Some(new_code_id), symb_exec)?;
+        self.address_code_id.insert(sc_address.clone(), new_code_id);
+        Ok(())
     }
 
     fn cleanup(&mut self) {
@@ -211,7 +217,7 @@ where
     W: StorageWrapper,
     Q: Querier
 {
-    code_id: u128, // Just to keep track of which code this contract was generated from
+    code_id: CodeId, // Just to keep track of which code this contract was generated from
     pub state: Arc<PersistentBackend<A, S, Q>>,
     pub vm_instances: Arc<Vec<FairLock<Instance<A, W, Q>>>>,
 }
@@ -223,7 +229,7 @@ where
     W: StorageWrapper, 
     Q: Querier
 {
-    fn new(code_id: u128, state: &Arc<PersistentBackend<A, S, Q>>, instances: Vec<FairLock<Instance<A, W, Q>>>) -> Self {
+    fn new(code_id: CodeId, state: &Arc<PersistentBackend<A, S, Q>>, instances: Vec<FairLock<Instance<A, W, Q>>>) -> Self {
         Self {
             code_id,
             state: Arc::clone(state),
@@ -306,7 +312,7 @@ where
     }
 
     /// Saves the storage & compiled module that refers to some instantiated SC
-    pub fn save_instance(&self, code_id: u128, address: ScAddr, state: Arc<PersistentBackend<A, S, Q>>, instances: Vec<Instance<A, W, Q>>) {
+    pub fn save_instances(&self, code_id: CodeId, address: ScAddr, state: Arc<PersistentBackend<A, S, Q>>, instances: Vec<Instance<A, W, Q>>) {
         let fair_lock_instances: Vec<FairLock<Instance<A, W, Q>>> = instances.into_iter()
             .map(|i| FairLock::new(i))
             .collect();
@@ -356,12 +362,12 @@ where
         }
     }
 
-    pub fn get_code(&self, code_id: u128) -> std::io::Result<Vec<u8>> {
+    pub fn get_code(&self, code_id: CodeId) -> std::io::Result<Vec<u8>> {
         self.static_data.read().unwrap().get_code(code_id)
     }
 
     /// Should be called for each instantiation to allow getting SC codes by the address
-    pub fn link_address_to_code(&self, code_id: u128, sc_addr: &ScAddr) {
+    pub fn link_address_to_code(&self, code_id: CodeId, sc_addr: &ScAddr) {
         self.static_data.write().unwrap().link_address_to_code(code_id, sc_addr);
     }
 
@@ -371,16 +377,22 @@ where
 
     /// Saves SC code in Filsystem & builds the respective Symb. Exec.
     /// tree for the contract
-    pub fn save_code(&self, code: &[u8], code_id: Option<u128>) -> std::io::Result<()> {
+    pub fn save_code(&self, code: &[u8], code_id: Option<CodeId>) -> std::io::Result<()> {
         self.static_data.write().unwrap().save(code, code_id, &self.symb_exec_engine)?;
         Ok(())
     }
 
-    pub fn get_instantiation_count(&self, code_id: u128) -> u128 {
+    /// Updates the wasm code & code id associated to some smart contract (associated to its address)
+    pub fn migrate(&self, sc_address: &ScAddr, new_code: &[u8], new_code_id: CodeId) -> std::io::Result<()> {
+        self.static_data.write().unwrap().migrate(sc_address, new_code, new_code_id, &self.symb_exec_engine)?;
+        Ok(())
+    }
+
+    pub fn get_instantiation_count(&self, code_id: CodeId) -> u128 {
         self.static_data.read().unwrap().get_instantiation_count(code_id)
     }
 
-    pub fn get_profile(&self, code_id: u128) -> Arc<SCProfile> {
+    pub fn get_profile(&self, code_id: CodeId) -> Arc<SCProfile> {
         self.static_data.read().unwrap().get_profile(code_id).unwrap()
     }
 
@@ -405,14 +417,21 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
-    use cosmwasm_std::{ContractResult, Empty, Response};
+    use std::rc::Rc;
+
+    use cosmwasm_std::Empty;
     use serial_test::serial;
     use wasmer::Store;
 
     use crate::{
-        call_execute, call_instantiate, internals::instance_from_module, symb_exec::{Commutativity, EntryPoint, ProfileGenerator, SEStatus}, testing::{mock_concurrent_backend, mock_env, mock_info, mock_persistent_backend, mock_tx_operation, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, vm_manager::serial_schedule::ScheduleBuilder, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, ConcurrentSchedule, InstanceOptions, ReadWrite, Size, SymbolicExecutionEngine
+        call_execute, call_instantiate, internals::instance_from_module, 
+        symb_exec::{Commutativity, EntryPoint, SEStatus}, 
+        testing::{mock_concurrent_backend, mock_env, mock_info, mock_persistent_backend, mock_tx_operation, 
+            MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper
+        }, 
+        vm_manager::serial_schedule::ScheduleBuilder, wasm_backend::{compile, make_compiling_engine, make_runtime_engine}, 
+        ConcurrentSchedule, InstanceOptions, ReadWrite, Size, SymbolicExecutionEngine
     };
 
     use super::*;
@@ -421,7 +440,7 @@ mod tests {
     const HIGH_GAS_LIMIT: u64 = 20_000_000_000_000; // ~20s, allows many calls on one instance
     const DEFAULT_MEMORY_LIMIT: Size = Size::mebi(64);
 
-    const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SC_ADDR_A: &str = &"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     #[test]
     #[serial]
@@ -438,7 +457,7 @@ mod tests {
         let instances = vec![instance];
 
         let sc_manager = Arc::new(RwLock::new(SCManager::new(Arc::new(SymbolicExecutionEngine::new()))));
-        sc_manager.write().unwrap().save_instance(0, SC_ADDR_A, backend, instances);
+        sc_manager.write().unwrap().save_instances(0, SC_ADDR_A.to_owned(), backend, instances);
 
         sc_manager.write().unwrap().cleanup();
     }
@@ -506,9 +525,9 @@ _msg: InstantiateMsg
 
         let mut schedule = ScheduleBuilder::new();
         schedule.build_from_rws(&mut vec![
-            mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+            mock_tx_operation(SC_ADDR_A.to_owned(), &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
         ]);
-        let concurrent_schedule = Arc::new(ConcurrentSchedule::from_schedule_builder(schedule, 1));
+        let concurrent_schedule = Arc::new(ConcurrentSchedule::from_schedule_builder(schedule));
 
         { // simulate saving instance in a separate context
             // compile code & create storage
@@ -524,16 +543,19 @@ _msg: InstantiateMsg
             let store = Store::new(engine);
             let much_gas: InstanceOptions = InstanceOptions { gas_limit: HIGH_GAS_LIMIT };
             
-            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::clone(&concurrent_schedule),
-            Arc::clone(&backend), &SC_ADDR_A, vec![]);
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
+                0, 
+                Rc::new(Arc::clone(&concurrent_schedule)),
+                Arc::clone(&backend), SC_ADDR_A.to_owned(), vec![]
+            );
 
             let instance = instance_from_module(store, &module, concurrent_backend, much_gas.gas_limit, None).unwrap();
             let instances = vec![instance];
 
             // save it to that SC code
-            sc_manager.save_instance(
+            sc_manager.save_instances(
                 0,
-                SC_ADDR_A, 
+                SC_ADDR_A.to_owned(), 
                 Arc::clone(&backend),
                 instances
             );
@@ -543,12 +565,15 @@ _msg: InstantiateMsg
        
         { // simulate instantiate call in a separate context
             let rws = vec![];
-            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::clone(&concurrent_schedule),
-                Arc::clone(&backend), &SC_ADDR_A, rws);
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
+                0, 
+                Rc::new(Arc::clone(&concurrent_schedule)),
+                Arc::clone(&backend), SC_ADDR_A.to_owned(), rws
+            );
     
             // execute instantiate contract
             let msg = br#"{}"#;
-            let resp = sc_manager.execute_instance(&SC_ADDR_A, concurrent_backend, 0, |instance| {
+            let resp = sc_manager.execute_instance(&SC_ADDR_A.to_owned(), concurrent_backend, 0, |instance| {
                 let contract_res = call_instantiate::<_, _, _, Empty>(
                     instance, 
                     &mock_env(), 
@@ -567,18 +592,21 @@ _msg: InstantiateMsg
             // Execute
             let mut schedule = ScheduleBuilder::new();
             schedule.build_from_rws(&mut vec![
-                mock_tx_operation(SC_ADDR_A, &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
+                mock_tx_operation(SC_ADDR_A.to_owned(), &vec![1u8], 0, ReadWrite::write(), Commutativity::NonCommutative)
             ]);
             
             let rws = vec![];
-            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0, Arc::clone(&concurrent_schedule),
-                Arc::clone(&backend), &SC_ADDR_A, rws);
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
+                0, 
+                Rc::new(Arc::clone(&concurrent_schedule)),
+                Arc::clone(&backend), SC_ADDR_A.to_owned(), rws
+            );
 
             // execute instantiate contract
             let msg = br#"{ 
                 "AddOne": {} 
             }"#;
-            let resp = sc_manager.execute_instance(&SC_ADDR_A, concurrent_backend, 0, |instance| {
+            let resp = sc_manager.execute_instance(&SC_ADDR_A.to_owned(), concurrent_backend, 0, |instance| {
                 let contract_res = call_execute::<_, _, _, Empty>(
                     instance, 
                     &mock_env(), 

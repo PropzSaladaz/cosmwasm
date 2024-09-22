@@ -1,20 +1,23 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque}, sync::{atomic::{AtomicUsize, Ordering}, mpsc, Arc}, thread, time::{Duration, Instant}
+    collections::{HashSet, VecDeque}, sync::{atomic::{AtomicUsize, Ordering}, Arc},
 };
 
-use rayon::prelude::*;
+use parking_lot::{Mutex, Condvar};
 
-use parking_lot::{Mutex, Condvar, RwLock};
+use crate::{
+    symb_exec::{Commutativity, ProfileGenerator}, testing::{ConcurrentStorage, StorageWrapper}, vm_manager::schedule::MergeableValue, BackendApi, Querier, SCManager
+};
 
-use dashmap::{DashMap, DashSet};
-use serde_json::de;
-
-use crate::{print_with_thread_id, symb_exec::{Commutativity, Key, ProfileGenerator, ReadWrite}, testing::{ConcurrentStorage, StorageWrapper}, vm_manager::schedule::MergeableValue, BackendApi, Querier, SCManager};
-
-use super::{schedule::{DependencyNode, NodeRef, OpType, Operation, SCSchedule, ScAddr, TxId, VecOperation}, serial_schedule::{ScheduleBuilder, SerialQueues}, vm_manager::RWSContext, LastWrites, Schedule};
+use super::{
+    schedule::{NodeRef, OpType, SCSchedule, ScAddr, TxId, VecOperation}, serial_schedule::{ScheduleBuilder, SerialQueues}, LastWrites, Schedule
+};
 
 #[cfg(feature = "debug_graph")]
-use super::dot_schedule::{DotSchedule, NodeColor};
+use super::{dot_schedule::{DotSchedule, NodeColor}, RWSContext};
+#[cfg(feature = "exec_time")]
+use std::time::{Duration, Instant};
+#[cfg(feature = "debug")]
+use crate::print_with_thread_id;
 
 #[derive(Debug)]
 pub struct ConcurrentQueues {
@@ -183,9 +186,6 @@ pub struct ConcurrentSchedule {
     /// to filter when to push a tx that has no dependencies & hasn't started executing yet
     tx_states: Vec<TxState>,
 
-    // Set with an Id for each tx in the block
-    transactions: HashSet<TxId>,
-
     /// Total number of txs in the block
     total: TxId,
 
@@ -244,7 +244,6 @@ impl<'a> Iterator for ConcurrentScheduleIter<'a> {
 impl PartialEq for ConcurrentSchedule {
     fn eq(&self, other: &ConcurrentSchedule) -> bool {
         self.tx_states == other.tx_states &&
-        self.transactions == other.transactions &&
         self.total == other.total &&
         self.compare_deps(other) &&
         self.compare_dependent_txs(other) &&
@@ -310,8 +309,6 @@ impl ConcurrentSchedule {
             tx_states: vec![],
             total: 0,
 
-            transactions: HashSet::new(),
-
             deps: Vec::new(),
 
             execution_queues: ConcurrentQueues::new(),
@@ -333,93 +330,33 @@ impl ConcurrentSchedule {
         }
     }
 
-    pub fn from_schedule_builder(mut schedule: ScheduleBuilder, n_threads: u16) -> ConcurrentSchedule {
-
-        let mut keys: Vec<TxId> = schedule.deps.keys().cloned().collect();
-        let mut total_keys = keys.len() as u16;
-
-        
-        // do not launch more threads than tx in the block
-        let n_threads = if total_keys < n_threads && total_keys > 0 { total_keys } 
-        else { n_threads };
-        let min_keys_per_thread = total_keys / n_threads;
-        
+    pub fn from_schedule_builder(mut schedule: ScheduleBuilder) -> ConcurrentSchedule {
+            
         let mut deps_hash_sets = Vec::with_capacity(schedule.total);
-        for i in 0..schedule.total {
+        for _ in 0..schedule.total {
             deps_hash_sets.push(Some(TransactionDependencies::new()))
         }
-        let deps_hash_sets = Arc::new(deps_hash_sets);
-
-
-        let mut handles = vec![];
-        for i in 0..n_threads {
-            let deps_hash_sets_shared = Arc::clone(&deps_hash_sets);
-
-            let keys_for_current_thread = if total_keys % (n_threads - i) != 0 { min_keys_per_thread + 1 }
-            else { min_keys_per_thread };
-            total_keys -= keys_for_current_thread;
-
-            // extract txs from the block for current thread
-            let key_subset: Vec<TxId> = keys.drain(0..(keys_for_current_thread as usize)).collect();
-            
-            let mut dependencies_to_push: Vec<HashSet<TxId>> = Vec::with_capacity(key_subset.len());
-            for k in &key_subset {
-                dependencies_to_push.push(schedule.deps.remove(&k).unwrap());
-            } 
-
-            let handle = thread::spawn(move || {
-                for k in key_subset {
-                    let ptr = deps_hash_sets_shared.as_ptr() as *mut Option<TransactionDependencies>;
-                    unsafe { 
-                        let dependencies = (*ptr.offset(k as isize)).as_mut().unwrap() as &mut TransactionDependencies;
-                        dependencies.set_dependencies(dependencies_to_push.remove(0)) 
-                    };
-                }
-            });
-
-            handles.push(handle);
+        for i in 0..schedule.deps.len() {
+            if let Some(dep) = schedule.deps[i].take() {
+                deps_hash_sets[i].as_mut().unwrap().set_dependencies(dep);
+            }
         }
 
         let execution_queues = ConcurrentQueues::from_serial_queues(schedule.execution_queues);
-
-        let mut dependent_txs = vec![None; schedule.total];
-        // TODO - try avoiding cloning the keys
-        let keys: Vec<TxId> = schedule.dependent_txs.keys().cloned().collect();
-        for k in keys {
-            dependent_txs[k] = Some(schedule.dependent_txs.remove(&k).unwrap());
-        }   
-
-        let mut partial_ready_tx = Vec::with_capacity(schedule.total);
-        for i in 0..schedule.total {
-            partial_ready_tx.push(None);
-        }
-        let keys: Vec<TxId> = schedule.partial_ready_tx.keys().cloned().collect();
-        for k in keys {
-            partial_ready_tx[k] = schedule.partial_ready_tx.remove(&k);
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        let deps = Arc::into_inner(deps_hash_sets).unwrap();
-
 
         ConcurrentSchedule {
             tx_states: schedule.tx_states,
             total: schedule.total,
 
-            transactions: schedule.transactions,
-
-            deps: deps,
+            deps: deps_hash_sets,
 
             execution_queues,
             
             schedule: schedule.schedule,
             
-            dependent_txs,
+            dependent_txs: schedule.dependent_txs,
 
-            partial_ready_tx,
+            partial_ready_tx: schedule.partial_ready_tx,
 
             #[cfg(feature = "exec_time")]
             node_dependency_timer: None,
@@ -523,8 +460,8 @@ impl ConcurrentSchedule {
     {
         // run over each schedule of each SC
         for schedule in &*self {
-            let sc_address = *schedule.key();
-            let sc_storage = state_manager.get_contract_storage(sc_address);
+            let sc_address = schedule.key();
+            let sc_storage = state_manager.get_contract_storage(sc_address.clone());
             // run over all keys of each SC
             for operations_per_key in schedule.value() {
                 let key = operations_per_key.key();
@@ -806,24 +743,24 @@ impl ConcurrentSchedule {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{atomic::Ordering, Arc};
+    use std::sync::Arc;
 
     use serial_test::serial;
     use wasmer::Store;
 
     use crate::{
-        internals::instance_from_module, symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS}, testing::{
+        internals::instance_from_module, symb_exec::{Commutativity, ReadWrite}, testing::{
             mock_concurrent_backend, mock_persistent_backend, mock_tx_operation, 
             ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper
         }, vm_manager::{
-            concurrent_schedule::LastWrites, schedule::{OperationValue, ScAddr}, serial_schedule::ScheduleBuilder, vm_manager::{InstantiatedEntryPoint, RWSContext, VMMessage}
-        }, wasm_backend::{compile, make_compiling_engine}, ConcurrentSchedule, InstanceOptions, SCManager, SEStatus, Size, SymbolicExecutionEngine
+            schedule::{OperationValue, ScAddr}, serial_schedule::ScheduleBuilder,
+        }, wasm_backend::{compile, make_compiling_engine}, ConcurrentSchedule, InstanceOptions, SCManager, Size, SymbolicExecutionEngine
     };
 
-    use super::{DependencyNode, NodeRef, OpType, VecOperation};
+    use super::{NodeRef, VecOperation};
 
     const CONTRACT: &[u8] = include_bytes!("../../custom_contracts/empty-contract/target/wasm32-unknown-unknown/release/contract.wasm");
-    const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SC_ADDR_A: &str = &"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const HIGH_GAS_LIMIT: u64 = 20_000_000_000_000; // ~20s, allows many calls on one instance
     const DEFAULT_MEMORY_LIMIT: Size = Size::mebi(64);
 
@@ -875,7 +812,7 @@ mod tests {
         let instances = vec![instance];
 
 
-        state_manager.save_instance(0, sc_address, backend, instances);
+        state_manager.save_instances(0, sc_address, backend, instances);
         
         state_manager
     }
@@ -888,14 +825,14 @@ mod tests {
         let val = "100".as_bytes().to_vec();
 
         let mut rws = vec![
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::read(), Commutativity::NonCommutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::read(), Commutativity::NonCommutative),
 
         ];
 
         let mut builder = ScheduleBuilder::new();
         builder.build_from_rws(&mut rws);
 
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder, 1);
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
         let operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
         let node = match operation { 
@@ -907,7 +844,7 @@ mod tests {
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap(); 
 
 
-        let read_val = concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         assert_eq!(read_val, Some(val));
         // Read
@@ -923,14 +860,14 @@ mod tests {
         let val = "100".as_bytes().to_vec();
 
         let mut rws = vec![
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::read(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::read(), Commutativity::Commutative),
 
         ];
 
         let mut builder = ScheduleBuilder::new();
         builder.build_from_rws(&mut rws);
 
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder, 1);
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
         let operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
         let node = match operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
@@ -941,7 +878,7 @@ mod tests {
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap(); 
 
 
-        let read_val = concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         assert_eq!(read_val, Some(val.clone()));
         assert_eq!(node.read().data.value.get_value(), Some(val));
@@ -956,15 +893,15 @@ mod tests {
         let val = "100".as_bytes().to_vec();
 
         let mut rws = vec![
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::read(),  Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::write(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::read(),  Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::write(), Commutativity::Commutative),
 
         ];
 
         let mut builder = ScheduleBuilder::new();
         builder.build_from_rws(&mut rws);
 
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder, 1);
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
                 
         let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap();
@@ -975,7 +912,7 @@ mod tests {
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A, &key);
+        concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         // write node
         let operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
@@ -998,14 +935,14 @@ mod tests {
         let val = "100".as_bytes().to_vec();
 
         let mut rws = vec![
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::write(), Commutativity::NonCommutative),
-            mock_tx_operation(SC_ADDR_A, &key, 1, ReadWrite::read(),  Commutativity::NonCommutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::write(), Commutativity::NonCommutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 1, ReadWrite::read(),  Commutativity::NonCommutative),
         ];
 
         let mut builder = ScheduleBuilder::new();
         builder.build_from_rws(&mut rws);
 
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder, 1);
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
         let write_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
         let write_node = match write_operation { 
@@ -1023,7 +960,7 @@ mod tests {
 
         let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
 
-        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         assert_eq!(read_val, Some(val));
     }
@@ -1039,15 +976,15 @@ mod tests {
         let final_val = "109".as_bytes().to_vec();
 
         let mut rws = vec![
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::read(), Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::write(), Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 1, ReadWrite::read(),  Commutativity::NonCommutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::read(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::write(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 1, ReadWrite::read(),  Commutativity::NonCommutative),
         ];
 
         let mut builder = ScheduleBuilder::new();
         builder.build_from_rws(&mut rws);
 
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder, 1);
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
         let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap();
@@ -1058,7 +995,7 @@ mod tests {
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
         assert_eq!(read_val, Some(val));
 
         // Comm write -> write Z = Y - X
@@ -1076,7 +1013,7 @@ mod tests {
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         assert_eq!(read_val, Some(final_val));
     }
@@ -1093,16 +1030,16 @@ mod tests {
         let final_val = "109".as_bytes().to_vec();
 
         let mut rws = vec![
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::write(), Commutativity::NonCommutative),
-            mock_tx_operation(SC_ADDR_A, &key, 1, ReadWrite::read(),  Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 1, ReadWrite::write(), Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 2, ReadWrite::read(),  Commutativity::NonCommutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::write(), Commutativity::NonCommutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 1, ReadWrite::read(),  Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 1, ReadWrite::write(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 2, ReadWrite::read(),  Commutativity::NonCommutative),
         ];
 
         let mut builder = ScheduleBuilder::new();
         builder.build_from_rws(&mut rws);
 
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder, 1);
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
         let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
 
@@ -1121,7 +1058,7 @@ mod tests {
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
         assert_eq!(read_val, Some(val));
 
         // Comm write -> write Z = Y - X
@@ -1139,7 +1076,7 @@ mod tests {
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         assert_eq!(read_val, Some(final_val));
     }
@@ -1159,17 +1096,17 @@ mod tests {
         let final_val = "113".as_bytes().to_vec();
 
         let mut rws = vec![
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::read(),  Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 0, ReadWrite::write(), Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 1, ReadWrite::read(),  Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 1, ReadWrite::write(), Commutativity::Commutative),
-            mock_tx_operation(SC_ADDR_A, &key, 2, ReadWrite::read(),  Commutativity::NonCommutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::read(),  Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 0, ReadWrite::write(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 1, ReadWrite::read(),  Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 1, ReadWrite::write(), Commutativity::Commutative),
+            mock_tx_operation(SC_ADDR_A.to_owned(), &key, 2, ReadWrite::read(),  Commutativity::NonCommutative),
         ];
 
         let mut builder = ScheduleBuilder::new();
         builder.build_from_rws(&mut rws);
 
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder, 1);
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
         let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap();
@@ -1180,7 +1117,7 @@ mod tests {
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
         assert_eq!(read_val, Some(val.clone()));
 
         // Comm write1
@@ -1198,7 +1135,7 @@ mod tests {
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
         assert_eq!(read_val, Some(val));
 
         // Comm write2
@@ -1216,7 +1153,7 @@ mod tests {
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A, &key);
+        let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         assert_eq!(read_val, Some(final_val));
     }
@@ -1226,17 +1163,17 @@ mod tests {
     fn perfect_rws_persist_storage() {
         let write_key = vec![1u8];
         let val = vec![12u8];
-        let sc_address = SC_ADDR_A;
+        let sc_address = SC_ADDR_A.to_owned();
 
         let mut rws = vec![
-            mock_tx_operation(sc_address, &write_key, 0, ReadWrite::write(), Commutativity::NonCommutative),
+            mock_tx_operation(sc_address.clone(), &write_key, 0, ReadWrite::write(), Commutativity::NonCommutative),
         ];
 
         // build schedule
         let mut builder = ScheduleBuilder::new();
         builder.build_from_rws(&mut rws);
 
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder, 1);
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
         // get write node
         let schedule = &concurrent_schedule.schedule.schedule;
@@ -1263,7 +1200,7 @@ mod tests {
     #[test]
     #[serial]
     fn on_tx_finish_no_dependencies_no_partials() {
-        // let sc_address = SC_ADDR_A;
+        // let sc_address = SC_ADDR_A.to_owned();
         // let key = vec![1u8];
 
         // let mut concurrent_schedule = ConcurrentSchedule::new();

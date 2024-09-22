@@ -61,7 +61,7 @@ mod execute {
             match bank {
                 Some(value) => {
                     let mut counter = 0;
-                    for i in 0..300001 {
+                    for i in 0..30_000 {
                         if i % 2 == 0 { counter += 1; }
                         else { counter -= 1; }
                     };

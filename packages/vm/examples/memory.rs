@@ -1,6 +1,7 @@
 // Run with
 // cargo run --features dhat-heap --example memory --release
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tempfile::TempDir;
@@ -147,7 +148,7 @@ fn app() {
                 let partitioned_storage = MockConcurrentStorage::default();
                 let backend = Arc::new(mock_persistent_backend(&[], Arc::new(partitioned_storage)));
                 let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0,
-                    Arc::new(ConcurrentSchedule::new()), backend, &[0u8; 32], vec![]);
+                    Rc::new(Arc::new(ConcurrentSchedule::new())), backend, "a".to_owned(), vec![]);
                 let mut instance = cache
                     .get_instance(&checksums[idx], concurrent_backend, DEFAULT_INSTANCE_OPTIONS)
                     .unwrap();

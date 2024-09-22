@@ -9,11 +9,12 @@ use sha2::{Digest, Sha256};
 
 use super::querier::MockQuerier;
 use super::storage::MockStorage;
-use super::{MockConcurrentStorage, MockStorageWrapper, StorageWrapper};
+use super::{MockConcurrentStorage, MockStorageWrapper};
 use crate::backend::{unwrap_or_return_with_gas, ConcurrentBackend};
 use crate::symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS};
 use crate::vm_manager::PersistentBackend;
-use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, InstantiatedEntryPoint, RWSContext, SEStatus, ScAddr, Storage, TxId, VMMessage};
+use crate::vm_transactions::{ExecuteTx, TransactionEnum};
+use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, RWSContext, ReplayLogs, SEStatus, ScAddr, TxId, VMTransaction};
 
 pub const MOCK_CONTRACT_ADDR: &str = "cosmwasmcontract"; // TODO: use correct address
 const GAS_COST_HUMANIZE: u64 = 44; // TODO: these seem very low
@@ -55,15 +56,18 @@ pub fn mock_tx_operation(sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId,
     let rws_uid = format!("{:?}{:?}", key.to_ascii_lowercase(), commutativity);
     
     RWSContext {
-        address: sc_address,
-        tx_message: Some(VMMessage::Invocation {
-            entry_point: InstantiatedEntryPoint::Execute,
-            contract_address: sc_address,
-            message: br#""#.to_vec(),
-            funds: vec![],
-            sender: "".to_owned(),
-            hash: "".to_owned(),
-        },),
+        address: sc_address.clone(),
+        tx_message: Some(VMTransaction {
+            transaction: TransactionEnum::Execute(ExecuteTx {
+                contract_addr: sc_address,
+                msg: br#""#.to_vec(),
+                hash: "".to_owned(),
+                sender: "".to_owned(),
+                funds: vec![],
+                reply: None,
+            }),
+            replay_logs: ReplayLogs::default(),
+        }),
         tx_block_id: tx_id,
         rws: TxRWS {
             storage_dependency: StorageDependency::Independent,

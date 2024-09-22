@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use std::thread;
 use tempfile::TempDir;
@@ -52,8 +53,12 @@ pub fn main() {
         threads.push(thread::spawn(move || {
             let partitioned_storage = MockConcurrentStorage::default();
             let backend = Arc::new(mock_persistent_backend(&[], Arc::new(partitioned_storage)));
-            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(0,
-                Arc::new(ConcurrentSchedule::new()), backend, &[0u8; 32], vec![]);
+            let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
+                0,
+                Rc::new(Arc::new(ConcurrentSchedule::new())), 
+                backend, 
+                "a".to_owned(), 
+                vec![]);
             let mut instance = cache
                 .get_instance(&checksum, concurrent_backend, DEFAULT_INSTANCE_OPTIONS)
                 .unwrap();

@@ -51,7 +51,7 @@ pub use crate::size::Size;
 
 pub use crate::symb_exec::{SCProfile, SCProfileParser, SEStatus, ReadWrite, SymbolicExecutionEngine};
 pub use crate::msg_handler::{MessageHandler, Message};
-pub use crate::vm_manager::{SCManager, VMMessage, VMManager, InstantiatedEntryPoint, DepsMut, *};
+pub use crate::vm_manager::{SCManager, VMManager, InstantiatedEntryPoint, DepsMut, *};
 
 #[doc(hidden)]
 pub mod internals {

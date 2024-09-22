@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::fmt;
+use std::rc::Rc;
 use std::sync::RwLock;
 use std::{fmt::Debug, sync::Arc};
 use std::ops::AddAssign;
@@ -112,9 +113,9 @@ where
 {
     pub fn new<S2>(
         tx_block_id: TxId,
-        concurrent_schedule: Arc<ConcurrentSchedule>,
+        concurrent_schedule: Rc<Arc<ConcurrentSchedule>>,
         backend: Arc<PersistentBackend<A, S2, Q>>, 
-        sc_address: &ScAddr,
+        sc_address: ScAddr,
         rws: Vec<ReadWrite>, 
     ) -> ConcurrentBackend<A, MockStorageWrapper, Q>
     where
@@ -125,7 +126,7 @@ where
         let storage = Arc::clone(&backend.storage);
         let querier = Arc::clone(&backend.querier);
 
-        let storage_wrapper = MockStorageWrapper::new(tx_block_id, storage, concurrent_schedule, *sc_address, rws);
+        let storage_wrapper = MockStorageWrapper::new(tx_block_id, storage, concurrent_schedule, sc_address, rws);
         
         ConcurrentBackend {
             api: api,

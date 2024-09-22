@@ -55,7 +55,7 @@ impl ParallelScheduleBuilder {
             let mut builder = ScheduleBuilder::new();
             builder.build_from_rws(block);
 
-            return ConcurrentSchedule::from_schedule_builder(builder, 1);
+            return ConcurrentSchedule::from_schedule_builder(builder);
         }
 
         // do not launch more threads than tx in the block
@@ -96,8 +96,6 @@ impl ParallelScheduleBuilder {
 
             // extract txs from the block for current thread
             let tx_subset: Vec<RWSContext> = block.drain(0..(txs_for_current_thread as usize)).collect();
-            // let subset_ids: Vec<TxId> = tx_subset.clone().into_iter().map(|rws| rws.tx_block_id).collect();
-            // print_with_thread_id!("Txs for this thread: {:?}", subset_ids);
             let ordered_senders = ordered_senders_for_thread_id.remove(&i).unwrap();
 
             let shared_states = Arc::clone(&shared_states);
@@ -114,7 +112,8 @@ impl ParallelScheduleBuilder {
         }
         
         let data = shared_states[0].data.lock().take().unwrap();
-        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(data.schedule.unwrap(), n_threads);
+
+        let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(data.schedule.unwrap());
 
         *block = data.txs.unwrap();
         concurrent_schedule
@@ -198,11 +197,11 @@ impl ParallelScheduleBuilder {
 
 #[cfg(test)]
 mod tests {
-    use crate::{symb_exec::{Commutativity, Key, StorageDependency, TxRWS}, testing::mock_tx_operation, vm_manager::serial_schedule::ScheduleBuilder, ConcurrentSchedule, InstantiatedEntryPoint, OpType, RWSContext, ReadWrite, SEStatus, ScAddr, VMMessage};
+    use crate::{
+        symb_exec::{Commutativity, Key, StorageDependency, TxRWS}, vm_manager::vm_manager::VMTransaction, vm_transactions::{ExecuteTx, TransactionEnum}, InstantiatedEntryPoint, OpType, RWSContext, ReadWrite, ReplayLogs, SEStatus, ScAddr
+    };
 
-    use super::ParallelScheduleBuilder;
-
-    const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SC_ADDR_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     const KEY_A: [u8; 1] = [1u8];
     const KEY_B: [u8; 1] = [2u8];
@@ -217,22 +216,21 @@ mod tests {
     const TX_6: usize = 5;
 
     fn mock_block() -> Vec<RWSContext> {
-
-
-
-
         vec![
             // TX_1: R(A), W(A), W(B), R(C), W(C)
             RWSContext {
-                address: SC_ADDR_A,
-                tx_message: Some(VMMessage::Invocation {
-                    entry_point: InstantiatedEntryPoint::Execute,
-                    contract_address: SC_ADDR_A,
-                    message: br#""#.to_vec(),
-                    hash: "".to_owned(),
-                    sender: "".to_owned(),
-                    funds: vec![],
-                },),
+                address: SC_ADDR_A.to_owned(),
+                tx_message: Some(VMTransaction {
+                    transaction: TransactionEnum::Execute(ExecuteTx {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        msg: br#""#.to_vec(),
+                        hash: "".to_owned(),
+                        sender: "".to_owned(),
+                        funds: vec![],
+                        reply: None,
+                    }),
+                    replay_logs: ReplayLogs::default(),
+                }),
                 tx_block_id: TX_1,
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
@@ -275,15 +273,18 @@ mod tests {
 
             // TX_2: R(D), W(A), R(B), W(B)
             RWSContext {
-                address: SC_ADDR_A,
-                tx_message: Some(VMMessage::Invocation {
-                    entry_point: InstantiatedEntryPoint::Execute,
-                    contract_address: SC_ADDR_A,
-                    message: br#""#.to_vec(),
-                    hash: "".to_owned(),
-                    sender: "".to_owned(),
-                    funds: vec![],
-                },),
+                address: SC_ADDR_A.to_owned(),
+                tx_message: Some(VMTransaction {
+                    transaction: TransactionEnum::Execute(ExecuteTx {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        msg: br#""#.to_vec(),
+                        hash: "".to_owned(),
+                        sender: "".to_owned(),
+                        funds: vec![],
+                        reply: None,
+                    }),
+                    replay_logs: ReplayLogs::default(),
+                }),
                 tx_block_id: TX_2,
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
@@ -320,15 +321,18 @@ mod tests {
 
             // TX_3: R(A), W(A)
             RWSContext {
-                address: SC_ADDR_A,
-                tx_message: Some(VMMessage::Invocation {
-                    entry_point: InstantiatedEntryPoint::Execute,
-                    contract_address: SC_ADDR_A,
-                    message: br#""#.to_vec(),
-                    hash: "".to_owned(),
-                    sender: "".to_owned(),
-                    funds: vec![],
-                },),
+                address: SC_ADDR_A.to_owned(),
+                tx_message: Some(VMTransaction {
+                    transaction: TransactionEnum::Execute(ExecuteTx {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        msg: br#""#.to_vec(),
+                        hash: "".to_owned(),
+                        sender: "".to_owned(),
+                        funds: vec![],
+                        reply: None,
+                    }),
+                    replay_logs: ReplayLogs::default(),
+                }),
                 tx_block_id: TX_3,
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
@@ -353,15 +357,18 @@ mod tests {
 
             // TX_4: R(C), W(C)
             RWSContext {
-                address: SC_ADDR_A,
-                tx_message: Some(VMMessage::Invocation {
-                    entry_point: InstantiatedEntryPoint::Execute,
-                    contract_address: SC_ADDR_A,
-                    message: br#""#.to_vec(),
-                    hash: "".to_owned(),
-                    sender: "".to_owned(),
-                    funds: vec![],
-                },),
+                address: SC_ADDR_A.to_owned(),
+                tx_message: Some(VMTransaction {
+                    transaction: TransactionEnum::Execute(ExecuteTx {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        msg: br#""#.to_vec(),
+                        hash: "".to_owned(),
+                        sender: "".to_owned(),
+                        funds: vec![],
+                        reply: None,
+                    }),
+                    replay_logs: ReplayLogs::default(),
+                }),
                 tx_block_id: TX_4,
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
@@ -386,15 +393,18 @@ mod tests {
 
             // TX_5: R(B), W(B)
             RWSContext {
-                address: SC_ADDR_A,
-                tx_message: Some(VMMessage::Invocation {
-                    entry_point: InstantiatedEntryPoint::Execute,
-                    contract_address: SC_ADDR_A,
-                    message: br#""#.to_vec(),
-                    hash: "".to_owned(),
-                    sender: "".to_owned(),
-                    funds: vec![],
-                },),
+                address: SC_ADDR_A.to_owned(),
+                tx_message: Some(VMTransaction {
+                    transaction: TransactionEnum::Execute(ExecuteTx {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        msg: br#""#.to_vec(),
+                        hash: "".to_owned(),
+                        sender: "".to_owned(),
+                        funds: vec![],
+                        reply: None,
+                    }),
+                    replay_logs: ReplayLogs::default(),
+                }),
                 tx_block_id: TX_5,
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
@@ -419,15 +429,18 @@ mod tests {
 
             // TX_6: R(D), W(D)
             RWSContext {
-                address: SC_ADDR_A,
-                tx_message: Some(VMMessage::Invocation {
-                    entry_point: InstantiatedEntryPoint::Execute,
-                    contract_address: SC_ADDR_A,
-                    message: br#""#.to_vec(),
-                    hash: "".to_owned(),
-                    sender: "".to_owned(),
-                    funds: vec![],
-                },),
+                address: SC_ADDR_A.to_owned(),
+                tx_message: Some(VMTransaction {
+                    transaction: TransactionEnum::Execute(ExecuteTx {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        msg: br#""#.to_vec(),
+                        hash: "".to_owned(),
+                        sender: "".to_owned(),
+                        funds: vec![],
+                        reply: None,
+                    }),
+                    replay_logs: ReplayLogs::default(),
+                }),
                 tx_block_id: TX_6,
                 rws: TxRWS {
                     storage_dependency: StorageDependency::Independent,
@@ -454,7 +467,7 @@ mod tests {
 
     #[test]
     fn one_thread_one_tx() {
-        // let tx = mock_tx_operation(SC_ADDR_A, &KEY_A.to_vec(), TX_1, ReadWrite::write(), Commutativity::NonCommutative);
+        // let tx = mock_tx_operation(SC_ADDR_A.to_owned(), &KEY_A.to_vec(), TX_1, ReadWrite::write(), Commutativity::NonCommutative);
         // let mut block = vec![tx];
         // let mut block_2 = block.clone();
 

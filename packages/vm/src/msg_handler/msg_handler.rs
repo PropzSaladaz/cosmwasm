@@ -1,17 +1,14 @@
 use std::sync::{Arc, RwLock};
 
 use crate::{
-    symb_exec::{ProfileEvaluator, ProfileGenerator}, 
-    testing::{ConcurrentStorage, StorageWrapper}, 
-    vm_manager::{SCManager, VMManager, VMMessage}, 
-    AddressMapper, BackendApi, BackendBuilder, ConcurrentBackendBuilder, Querier
+    symb_exec::{ProfileEvaluator, ProfileGenerator}, testing::{ConcurrentStorage, StorageWrapper}, vm_manager::{SCManager, VMManager}, vm_transactions::SerializableTransaction, BackendApi, BackendBuilder, CodeId, ConcurrentBackendBuilder, Querier, ReplayLogs, VMTransaction
 };
 
 pub enum Message<'a> {
-    Invocation(VMMessage),
+    Invocation(SerializableTransaction),
     Deployment {
         contract_code: &'a [u8],
-        code_id: Option<u128>, // used for replay txs
+        code_id: Option<CodeId>, // used for replay txs
     }
 }
 
@@ -41,7 +38,6 @@ where
         sc_manager: Arc<RwLock<SCManager<A, S, W, Q, E>>>, 
         block_size: usize,
 
-        address_mapper: Arc<AddressMapper>,
         backend_builder: Arc<BackendBuilder<A, S, Q>>,
         concurrent_backend_builder: Arc<ConcurrentBackendBuilder<A, S, W, Q>>, 
         n_threads: u16, 
@@ -50,7 +46,6 @@ where
         MessageHandler {
             vm_manager: VMManager::new(
                 Arc::clone(&sc_manager), 
-                address_mapper, 
                 backend_builder, 
                 concurrent_backend_builder, 
                 n_threads, 
@@ -73,7 +68,17 @@ where
                     self.sc_manager.write().unwrap().save_code(contract_code, code_id).unwrap();
                 },
                 Message::Invocation (vm_message) => {
-                    invocations.push(vm_message);
+                    let vm_tx = VMTransaction {
+                        transaction: vm_message.transaction,
+                        replay_logs: ReplayLogs {
+                            log_execute: vm_message.log_execute,
+                            log_instantiate: vm_message.log_instantiate,
+                            log_migrate: vm_message.log_migrate,
+                            log_reply: vm_message.log_reply,
+                        },
+                    };
+
+                    invocations.push(vm_tx);
                     
                     if (invocations.len() == self.block_size) || // can fill a block
                         idx == total_size - 1 { // reaches last tx

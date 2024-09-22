@@ -4,7 +4,7 @@ use graphviz_rust::{cmd::{CommandArg, Format}, exec_dot};
 
 use crate::{ConcurrentSchedule, DependencyNode, OpType, VecOperation, RWSContext, ScAddr, TxId};
 
-use super::concurrent_schedule::{LinkedList, SCSchedule};
+use super::schedule::{LinkedList, SCSchedule};
 
 pub enum NodeColor {
     LightBlue,
@@ -97,7 +97,7 @@ impl<'a> DotSchedule<'a> {
 
         for schedule in schedule {
             let contract_prefix = format!("c{}", contract_id);
-            let contract_address = *schedule.key();
+            let contract_address = schedule.key().clone();
 
             let contract_schedule = schedule.value();
             contracts.push_str(&self.generate_contract(contract_schedule, contract_id, contract_address, &contract_prefix));
@@ -206,7 +206,7 @@ impl<'a> DotSchedule<'a> {
 
                 // run through all nodes until reaching the head - to get the node idx to mark the dependency
                 loop {
-                    let node_lock = track_back_node.read().unwrap();                   
+                    let node_lock = track_back_node.read();                   
                     if let Some(prev_node) = node_lock.prev.clone() {
                         drop(node_lock);
         
@@ -232,11 +232,11 @@ impl<'a> DotSchedule<'a> {
     {
         let mut content = String::new();
         let mut op_idx = 0;
-        let mut node = Arc::clone(&operations.head.read().unwrap());
+        let mut node = Arc::clone(&operations.head.read());
 
         loop {
             let node_id = format!("{}_Op{}", contract_key_prefix, op_idx);
-            let node_lock = node.read().unwrap();
+            let node_lock = node.read();
             
             let string = string_builder(&node_id, &node_lock);
             content.push_str(&format!("{}", string));

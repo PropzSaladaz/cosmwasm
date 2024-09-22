@@ -13,7 +13,7 @@ use super::dot_schedule::{DotSchedule, NodeColor};
 // size of a smart contract address
 pub const ADDR_SIZE: usize = 32; 
 
-pub type ScAddr = [u8; ADDR_SIZE];
+pub type ScAddr = String;
 pub type TxId = usize;
 
 // TODO - we are currently assuming all will be signed integers.
@@ -593,7 +593,7 @@ impl Schedule {
     /// if both maps intersect on some operation, the operation in 'other' prevails over the ones in 'self', as it it
     /// the latest operation.
     fn merge_last_writes(&self, last_writes_self: &LastWriteMap, last_writes_other: LastWriteMap) {
-        let addresses_other: Vec<ScAddr> = last_writes_other.iter().map(|pair| *pair.key()).collect();
+        let addresses_other: Vec<ScAddr> = last_writes_other.iter().map(|pair| pair.key().clone()).collect();
 
         // Add all items from 'other' into 'self'. Overwritte if there are common items in both, since
         // 'other' comes after 'self', the last writes from it prevail
@@ -666,7 +666,7 @@ impl Schedule {
             // just create a reference to the 'other' linked list
             None => {
                 self.schedule
-                    .entry(*sc_address).or_insert(DashMap::new())
+                    .entry(sc_address.clone()).or_insert(DashMap::new())
                     .entry(key.clone()).or_insert(Arc::clone(linked_list_other));
             },
         }
@@ -674,12 +674,12 @@ impl Schedule {
 
     /// Sets the entries of the schedule & last_write (there will be 1 last_write for each key in a SC)
     /// for the chosen SC address
-    pub fn create_if_not_exists(&mut self, sc_address: ScAddr) {
-        if !self.schedule.contains_key(&sc_address) {
-            self.schedule.insert(sc_address, DashMap::new());
+    pub fn create_if_not_exists(&mut self, sc_address: &ScAddr) {
+        if !self.schedule.contains_key(sc_address) {
+            self.schedule.insert(sc_address.clone(), DashMap::new());
         }
-        if !self.last_non_commutative_write.contains_key(&sc_address) {
-            self.last_non_commutative_write.insert(sc_address, DashMap::new());
+        if !self.last_non_commutative_write.contains_key(sc_address) {
+            self.last_non_commutative_write.insert(sc_address.clone(), DashMap::new());
         }
     }
 
@@ -719,8 +719,8 @@ impl Schedule {
 
     /// Appends a new operation to the end of the list of the specified KEY in the specified SC.
     /// If the operation is write - updates last_write
-    pub fn append(&mut self, sc_address: ScAddr, key: &Vec<u8>, operation_node: NodeRef<VecOperation>, op_type: OpType, commutativity: Commutativity) {
-        let sc_schedule = self.schedule.get(&sc_address).unwrap();
+    pub fn append(&mut self, sc_address: &ScAddr, key: &Vec<u8>, operation_node: NodeRef<VecOperation>, op_type: OpType, commutativity: Commutativity) {
+        let sc_schedule = self.schedule.get(sc_address).unwrap();
         
         // append node ref to linked list
         match sc_schedule.get(key) {
@@ -744,15 +744,15 @@ impl Schedule {
     /// the node with the latest tx id (the most recent operation of those 2).
     /// 
     /// Although both op_type and commutativity are already captured in operation_node, we pass it as args to avoid locking the RwLock
-    pub fn update_last_write(&self, sc_address: ScAddr, key: &Vec<u8>, operation_node: NodeRef<VecOperation>, op_type: OpType, commutativity: Commutativity) {
+    pub fn update_last_write(&self, sc_address: &ScAddr, key: &Vec<u8>, operation_node: NodeRef<VecOperation>, op_type: OpType, commutativity: Commutativity) {
 
         // Aux function -> update a last write map (either the commutative or non commutative write map) with the new last write operation
         // clone the node with an Arc
         let set_write_if_not_exists = |last_write_tracker: &LastWriteMap, operation_node| {
-            if !last_write_tracker.contains_key(&sc_address) {
-                last_write_tracker.insert(sc_address, DashMap::new());
+            if !last_write_tracker.contains_key(sc_address) {
+                last_write_tracker.insert(sc_address.clone(), DashMap::new());
             }
-            let sc_last_write = last_write_tracker.get(&sc_address).unwrap();
+            let sc_last_write = last_write_tracker.get(sc_address).unwrap();
             let operation = sc_last_write.get(key); 
             match operation  {
                 Some(last_write) => {
@@ -786,8 +786,8 @@ impl Schedule {
     /// Insert an untracked operation in the schedule. Start traversing from the tail of the linked list for the key & contract specified,
     /// Upon seing a tx with id < our tx_id that has a non-commutative write, we stop searching.
     /// We set our dependency on that write
-    pub fn insert_untracked_operation(&self, sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId, operation_node: NodeRef<VecOperation>, op_type: OpType, commutativity: Commutativity) {
-        let schedule = self.schedule.entry(sc_address).or_insert(DashMap::new());
+    pub fn insert_untracked_operation(&self, sc_address: &ScAddr, key: &Vec<u8>, tx_id: TxId, operation_node: NodeRef<VecOperation>, op_type: OpType, commutativity: Commutativity) {
+        let schedule = self.schedule.entry(sc_address.clone()).or_insert(DashMap::new());
         let linked_list = schedule.get(key) ;
 
         // if there is a linked-list (if there is any, then it must have at least 1 element by default)
@@ -874,7 +874,7 @@ mod tests {
     use super::{NodeRef, ScAddr, VecOperation};
 
     const CONTRACT: &[u8] = include_bytes!("../../custom_contracts/empty-contract/target/wasm32-unknown-unknown/release/contract.wasm");
-    const SC_ADDR_A: ScAddr = *b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SC_ADDR_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 
     fn assert_node_next(node: &NodeRef<VecOperation>, node_next: &NodeRef<VecOperation>) {
@@ -993,24 +993,24 @@ mod tests {
         let mut schedule = Schedule::new();
         let key_bytes = vec![1u8];
 
-        schedule.create_if_not_exists(SC_ADDR_A);
+        schedule.create_if_not_exists(&SC_ADDR_A.to_owned());
 
         // create a read
         let operation = Operation::new(OpType::Read, 1, Commutativity::NonCommutative, true);
         let node = Arc::new(RwLock::new(DependencyNode::new(operation)));
 
-        schedule.append(SC_ADDR_A, &key_bytes, Arc::clone(&node), OpType::Read, Commutativity::NonCommutative);
+        schedule.append(&SC_ADDR_A.to_owned(), &key_bytes, Arc::clone(&node), OpType::Read, Commutativity::NonCommutative);
 
         // 1 contract
         assert_eq!(schedule.schedule.len(), 1);
         {                                                                       // because of this mutable borrow :(
             // 1 key
-            let created_contract_schedule = schedule.schedule.get(&SC_ADDR_A).unwrap();
+            let created_contract_schedule = schedule.schedule.get(&SC_ADDR_A.to_owned()).unwrap();
             assert_eq!(created_contract_schedule.len(), 1);
         }
 
         // since we added a read, last_write should return None
-        let LastWrites {commutative, non_commutative} = schedule.get_last_writes(&SC_ADDR_A, &key_bytes);
+        let LastWrites {commutative, non_commutative} = schedule.get_last_writes(&SC_ADDR_A.to_owned(), &key_bytes);
         match (commutative, non_commutative) {
             (Some(_), Some(_)) | (Some(_), None) | (None, Some(_)) => assert!(false),
             (None, None) => assert!(true),
@@ -1020,15 +1020,15 @@ mod tests {
         let operation2 = Operation::new(OpType::Write, 2, Commutativity::NonCommutative, true);
         let node2 = Arc::new(RwLock::new(DependencyNode::new(operation2)));
 
-        schedule.append(SC_ADDR_A, &key_bytes, Arc::clone(&node2), OpType::Write, Commutativity::NonCommutative);
+        schedule.append(&SC_ADDR_A.to_owned(), &key_bytes, Arc::clone(&node2), OpType::Write, Commutativity::NonCommutative);
 
         // 1 sc
         assert_eq!(schedule.schedule.len(), 1);
         // 1 key
-        let created_contract_schedule = schedule.schedule.get(&SC_ADDR_A).unwrap();
+        let created_contract_schedule = schedule.schedule.get(&SC_ADDR_A.to_owned()).unwrap();
         assert_eq!(created_contract_schedule.len(), 1);
 
-        let LastWrites {commutative, non_commutative} = schedule.get_last_writes(&SC_ADDR_A, &key_bytes); 
+        let LastWrites {commutative, non_commutative} = schedule.get_last_writes(&SC_ADDR_A.to_owned(), &key_bytes); 
         match (commutative, non_commutative) {
             (Some(_), Some(non_comm)) | (None, Some(non_comm)) => {
                 assert_eq!(*node2.read(), *non_comm.read());
