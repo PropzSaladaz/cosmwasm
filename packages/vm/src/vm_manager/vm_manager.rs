@@ -8,16 +8,16 @@ use wasmer::Store;
 use crate::{
     backend::ConcurrentBackend, internals::instance_from_module, 
     symb_exec::{ProfileEvaluator, ProfileGenerator, ReadWrite, SEStatus, StorageDependency, TxRWS}, 
-    testing::{ConcurrentStorage, StorageWrapper}, 
+    testing::{print_storage_wrapper_times, ConcurrentStorage, StorageWrapper}, 
     vm_transactions::{AckTx, ChannelOpenAckTx, ChannelOpenConfirmTx, ChannelOpenInitTx, ChannelOpenTryTx, RecvPacketTx, TimeoutTx, TransactionEnum}, 
     wasm_backend::{compile, make_compiling_engine}, 
     BackendApi, ConcurrentSchedule, Instance, InstanceOptions, Querier, Size
 };
 
 use super::{
-    sc_storage::{CodeId, PersistentBackend, SCManager}, 
+    sc_storage::{CodeId, ConcurrentTimer, PersistentBackend, SCManager}, 
     schedule::{ScAddr, TxId}, 
-    vm_transactions::{ExecuteTx, InstantiateTx, MigrateTx, ReplayLogsMutRef, ReplyTx, SerializableTransaction, Transaction, VMResource}, 
+    vm_transactions::{print_vm_transaction_times, ExecuteTx, InstantiateTx, MigrateTx, ReplayLogsMutRef, ReplyTx, SerializableTransaction, Transaction, VMResource}, 
     ParallelScheduleBuilder
 };
 
@@ -172,6 +172,8 @@ where
     schedule_persistence_timer: Option<Instant>,
     #[cfg(feature = "exec_time")]
     schedule_persistence_time: Duration,
+
+    timer_execute: ConcurrentTimer,
 }
 
 impl<A, S, W, Q, E> VMManager<A, S, W, Q, E> 
@@ -219,6 +221,8 @@ where
             schedule_persistence_timer: None,
             #[cfg(feature = "exec_time")]
             schedule_persistence_time: Duration::ZERO,
+
+            timer_execute: ConcurrentTimer::new(),
         }
     }
 
@@ -336,6 +340,7 @@ where
 
             let batch = if idx == 0 { BatchType::Instantiation } else { BatchType::Invocation };
             self.execute_block(rws, schedule, batch);
+            
         }
 
         #[cfg(feature = "exec_time")]
@@ -346,7 +351,13 @@ where
             println!("Invocation Calls Total Exec Time: {:?}", self.schedule_build_time + self.schedule_execution_time + self.schedule_persistence_time);
             println!("Invocation Calls Schedule Creation: {:?}",                   self.schedule_build_time);
             println!("Invocation Calls Schedule Execution: {:?}",          self.schedule_execution_time);
-            println!("Invocation Calls Schedule Persistence: {:?}\n------\n\n",    self.schedule_persistence_time);
+            println!("Invocation Calls Schedule Persistence: {:?}",    self.schedule_persistence_time);
+            println!("---");
+            self.state_manager.read().unwrap().print_times(self.n_threads);
+            print_vm_transaction_times(self.n_threads);
+            print_storage_wrapper_times(self.n_threads);
+            println!("\n------\n\n");
+
         }
 
         #[cfg(feature = "debug_graph")]
@@ -585,6 +596,7 @@ where
 
                         // let message = rws_ref[*tx_id as usize] as *mut RWSContext;
                         // TODO - below clone should be optimized - no need.. we can pass a reference, or just return the same arc from the method
+                        
                         VMManager::<A, S, W, Q, E>::execute_message(
                             Arc::clone(&schedule_ref), 
                             &*thread_exec_ctx_ref, 
@@ -613,6 +625,9 @@ where
         if batch_type == BatchType::Invocation { self.stop_schedule_execution_timer();  }
         else                                  { self.stop_instantiation_calls_timer(); }
 
+        #[cfg(feature = "exec_time")]
+        schedule.print_times(self.n_threads);
+
 
         #[cfg(feature = "exec_time")]
         self.start_schedule_persistence_timer();
@@ -640,6 +655,8 @@ where
 
     fn execute_message(schedule: Arc<ConcurrentSchedule>, thread_exec_context: &ThreadExecutionContext<A, S, W, Q, E>, 
         msg: RWSContext, tx_id: TxId) {
+
+
         // TODO - try passing a reference here -> we need to change later on the backend and mocksStorage to handle references instead of
         // Vec. Cloning the entire RWS is very innefficient here..
         let rws = msg.rws.rws;

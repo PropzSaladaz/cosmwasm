@@ -28,8 +28,8 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
         (10 * n_contracts * n_operation_repetitions) as usize,
         Arc::new(backend_builder),
         Arc::new(concurrent_backend_builder),
-    2,
-    2);
+    6,
+    6);
 
 
     let mut msgs = vec![
@@ -104,7 +104,19 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
         }
     }
 
-    
+    // for m in &msgs {
+    //     match m {
+    //         Message::Deployment { .. } => println!("SC Deployment"),
+    //         Message::Invocation(tx) => {
+    //             match &tx.transaction {
+    //                 TransactionEnum::Instantiate(InstantiateTx { msg, .. }) => println!("Instantiate: {:?}", String::from_utf8(msg.clone())),
+    //                 TransactionEnum::Execute(ExecuteTx { msg, .. }) => println!("Execute: {:?}", String::from_utf8(msg.clone())),
+    //                 _ => ()
+    //             }
+    //         }
+    //     }
+    // }
+
     let start = Instant::now();
     message_handler.handle_messages(msgs);
     let elapsed = start.elapsed();
@@ -114,5 +126,5 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
 
 fn main() {
     // run_persistent_vm();
-    run_n_contracts_n_increments(2, 2);
+    run_n_contracts_n_increments(30, 35);
 }

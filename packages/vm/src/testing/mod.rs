@@ -33,5 +33,5 @@ pub use storage::MockStorage;
 
 pub use storage_partitioned::{MockConcurrentStorage, ConcurrentStorage, BaseStorage};
 
-pub use storage_wrapper::{MockStorageWrapper, StorageWrapper};
+pub use storage_wrapper::{MockStorageWrapper, StorageWrapper, print_storage_wrapper_times};
 

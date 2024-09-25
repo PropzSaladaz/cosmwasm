@@ -5,14 +5,27 @@ use serde::{Deserialize, Serialize};
 
 use prost::Message;
 use serde_json::de::Read;
+use lazy_static::lazy_static;
 
 use crate::{call_execute, call_instantiate, call_migrate, call_reply, symb_exec::{ProfileEvaluator, ProfileGenerator}, testing::{mock_info, ConcurrentStorage, StorageWrapper}, BackendApi, Instance, Querier, ReadWrite, VMManager};
 
-use super::{sc_storage::CodeId, ConcurrentSchedule, EnvironmentContext, ReplayLogs, ScAddr, TxId};
+use super::{sc_storage::{CodeId, ConcurrentTimer}, ConcurrentSchedule, EnvironmentContext, ReplayLogs, ScAddr, TxId};
 
-/// 
-/// Francisco Rola
-/// 
+// 
+// Francisco Rola
+// 
+
+lazy_static! {
+    // A static timer that tracks the total elapsed time.
+    static ref TIMER: ConcurrentTimer = ConcurrentTimer::new();
+}
+
+pub fn print_vm_transaction_times(n_threads: u16) {
+    println!("VM_TRANSACTIONS ---");
+    println!("execution_timer: ~{:?} per thread", TIMER.get_value() / (n_threads as u32));
+    println!("---");
+}
+
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SerializableTransaction {
@@ -559,9 +572,10 @@ where
         let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
             vm_resource.set_instance(instance);
 
+            let timer = TIMER.create_scoped_timer();
             let contract_result =
                 call_execute::<_, _, _, Empty>(instance, &create_neutron_env(self.contract_addr.clone()), &info, msg).unwrap();
-            // println!("EXECUTE RESULT: {:?}", contract_result);
+            TIMER.add_scoped_timer(timer);
             
             // Remove execute  of current transaction from the execute log as it has been performed
             replay_logs.log_execute.remove(replay_logs.log_execute.iter().position(|x| x == &self.contract_addr.clone()).expect("Failed to remove address from execute_log"));
@@ -625,7 +639,8 @@ where
             Ok(format!("{:?}", res))
         };
 
-        execute_vm(vm_resource, &self.contract_addr, instance_work)      
+        let res = execute_vm(vm_resource, &self.contract_addr, instance_work);
+        res      
     }
 }
 

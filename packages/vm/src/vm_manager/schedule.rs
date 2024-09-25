@@ -5,7 +5,7 @@ use std::{
 use dashmap::DashMap;
 use parking_lot::{Mutex, Condvar, RwLock};
 
-use crate::{symb_exec::Commutativity, testing::{ConcurrentStorage, StorageWrapper}};
+use crate::{print_with_thread_id, symb_exec::Commutativity, testing::{ConcurrentStorage, StorageWrapper}};
 
 #[cfg(feature = "debug_graph")]
 use super::dot_schedule::{DotSchedule, NodeColor};
@@ -84,6 +84,99 @@ impl OperationSignal {
         self.cvar.notify_all();
     }
 }
+
+// TODO -> generic mergeable value trait -> The idea is to deserialize the value, and store that
+// in commutative operation nodes, so that the merging doesn't require serializing/deserializing, and just merges much faster
+// pub trait MergeableValue<T>: Clone + Sized + PartialEq {
+//     fn compute_delta(&self, old_val: &Self) -> Self;
+//     fn deserialize(&self, vec: Vec<u8>) -> T;
+//     fn serialize(&self) -> Vec<u8>;
+//     fn merge(&mut self, val: &Self);
+// }
+
+// impl MergeableValue<i32> for i32 {
+//     fn compute_delta(&self, other: &Self) -> Self {
+//         other - self
+//     }
+
+//     fn merge(&mut self, other: &Self) {
+//         *self = *self + *other
+//     }
+    
+//     fn deserialize(&self, vec: Vec<u8>) -> i32 {
+//         let vec = String::from_utf8(vec.clone()).unwrap();    
+//         vec.parse::<i32>().unwrap()
+//     }
+    
+//     fn serialize(&self) -> Vec<u8> {
+//         self.to_string().into_bytes()
+//     }
+// }
+
+
+// /// Represents an arbitrary value wrapped around a signaling
+// /// primitive, allowing threads to wait for the value to be set
+// /// if it hasnt been set yet.
+// /// When setting a new value, notifies all waiting threads
+// #[derive(Debug)]
+// pub struct OperationValue<V: MergeableValue<V>> {
+//     pub val: Option<V>,
+//     pub lock: Mutex<bool>, // only used for the condvar
+//     pub condvar: Condvar,
+// }
+
+// impl<V: MergeableValue<V>> PartialEq for OperationValue<V> {
+//     fn eq(&self, other: &Self) -> bool {
+//         // we need the clone, since we could be comparing the same operationValue, leading to a deadlock if we
+//         // try locking both at the same time (e.g. inside the == expression)
+//         let val_1 = self.val.clone();
+//         let val_2 = other.val.clone();
+//         val_1 == val_2
+//     }
+// }
+
+// impl<V: MergeableValue<V>> OperationValue<V> {
+//     pub fn new() -> Self {
+//         OperationValue {
+//             val: None,
+//             lock: Mutex::new(true),
+//             condvar: Condvar::new(),
+//         }
+//     }
+
+//     /// waits for the value to be set if it hasn't been set yet
+//     pub fn wait_for_value(&self) -> V {
+//         if let Some(v) = self.val.as_ref() {
+//             v.clone()
+//         }
+//         else {
+//             let mut lock = self.lock.lock();
+        
+//             while self.val.is_none()  {
+//                 self.condvar.wait(&mut lock);
+//             }
+    
+//             self.val.as_ref().unwrap().clone()
+//         }
+//     }
+
+//     /// Used for cases when we know for sure the value has already been set
+//     /// Which is the case for operations within the same tx.
+//     pub fn get_value(&self) -> Option<V> {
+//         self.val.clone()
+//     }
+
+//     /// Sets the value & notifies all waiting threads on this value.
+//     pub fn set_and_notify(&self, value: V) {
+//         // we are guaranteed that only 1 thread sets this value. No concurrency, so no problem
+//         // using unsafe
+//         let pointer = &mut self.val as *mut Option<V>;
+//         unsafe { *pointer = Some(value) };
+//         self.condvar.notify_all();
+//     }
+// }
+
+
 
 
 pub trait MergeableValue: Clone + Sized + PartialEq {
@@ -568,7 +661,7 @@ impl Schedule {
     }
 
     /// Merges 2 schedules together, assuming 'other' contains all consecutive transactions that come after 'self'.
-    /// It then passes the pari of (last_write_SELF, first_operation_OTHER) to the caller as a closure, so that the caller
+    /// It then passes the pair of (last_write_SELF, first_operation_OTHER) to the caller as a closure, so that the caller
     /// can update any structs capturing the dependencies & update them
     pub fn merge<F>(&mut self, other: Schedule, dependent_nodes_work: &mut F)
     where 
@@ -638,27 +731,36 @@ impl Schedule {
                 node_self.set_next(Some(Arc::clone(&first_operation_other)));
 
                 drop(node_self);
+                drop(node_other);
 
                 // update last operation from 'self' linked list
                 let mut tail_self = linked_list_self.tail.write();
                 *tail_self = Arc::clone(&last_operation_other);
 
-                // update node dependency only on reads
-                if node_other.data.is_read() {
-                    // commutative reads can only depend on non-commutative writes
-                    if node_other.data.is_commutative() && last_writes_self.non_commutative.is_some() {
-                        let last_non_comm_write_self = last_writes_self.non_commutative.unwrap();
-                        node_other.dependency = Some(last_non_comm_write_self);
-                        drop(node_other); // drop lock before sending node to closure
-                        dependent_nodes_work(last_operation_self, first_operation_other);
-                    }
-                    // non commutative reads may depend on either commutative or non commutative writes
-                    else if !node_other.data.is_commutative() {
-                        if let Some(last_write) = last_writes_self.get_latest_write() {
-                            node_other.dependency = Some(last_write);
-                            drop(node_other); // drop lock before sending node to closure
-                            dependent_nodes_work(last_operation_self, first_operation_other);
+                let mut node_ref = Arc::clone(&first_operation_other);
+                let mut tmp_node;
+
+                // search for first non commutative read
+                loop {
+                    {
+                        let mut node = node_ref.write();
+                        // set dependency of first non commutative read from 'other' to be last non comm write from 'self'
+                        if node.data.is_read() && !node.data.is_commutative() { 
+                            // print_with_thread_id!("Found node: {:?}", node.data.tx_block_id);
+                            if let Some(last_write) = last_writes_self.non_commutative {
+                                node.dependency = Some(Arc::clone(&last_write));
+                                drop(node); // drop lock before sending node to closure
+                                dependent_nodes_work(last_write, node_ref);
+                            }
+                            break; 
                         }
+                        if let Some(next) = node.next.as_ref() {
+                            tmp_node = Arc::clone(&next);
+                        }
+                        else { break; }
+
+                        drop(node);
+                        node_ref = tmp_node;
                     }
                 }
             },
@@ -858,7 +960,16 @@ impl Schedule {
             // update last non commutative write
             self.update_last_write(sc_address, &key, operation_node, op_type, commutativity);
         }
+    }
 
+    pub fn get_operations_list_head(&self, contract: &ScAddr, key: &[u8]) -> Option<NodeRef<VecOperation>> {
+        if let Some(contract_items) = self.schedule.get(contract) {
+            if let Some(linked_list) = contract_items.get(key) {
+                return Some(Arc::clone(&linked_list.head.read()));
+            }
+            else { None }
+        }
+        else { None }
     }
 }
 

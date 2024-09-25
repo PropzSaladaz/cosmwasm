@@ -356,21 +356,51 @@ impl ScheduleBuilder {
         self.transactions.extend(other.transactions);
 
         self.schedule.merge(other.schedule, &mut | node_self: NodeRef<VecOperation>, node_other: NodeRef<VecOperation>| {
-            let node_other_tx_id = node_other.read().data.tx_block_id;
+            let node_other_lock = node_other.read();
+            let node_other_is_non_comm_read = !node_other_lock.data.is_commutative() && node_other_lock.data.is_read();
+            let node_other_is_first_operation = node_other_lock.data.first_operation;
+            let node_other_tx_id = node_other_lock.data.tx_block_id;
+            drop(node_other_lock);
             let node_self_tx_id = node_self.read().data.tx_block_id; 
+
+            // println!("Dependency between schedules: {:?} depends on {:?}", node_other_tx_id, node_self_tx_id);
 
             let node_other_normalized_idx = node_other_tx_id - self.starting_tx_id;
             let node_self_normalized_idx = node_self_tx_id - self.starting_tx_id;
 
             self.deps[node_other_normalized_idx].get_or_insert(HashSet::new()).insert(node_self_tx_id);
+            self.dependent_txs[node_self_normalized_idx].get_or_insert(HashSet::new()).insert(node_other_tx_id);
 
-            self.dependent_txs[node_other_normalized_idx].get_or_insert(HashSet::new()).insert(node_other_tx_id);
-            
             let ready_tx = other.execution_queues.remove_id_from_ready(node_other_tx_id);
+
+            if node_other_is_non_comm_read {
+
+                let mut tmp_node;
+                let mut node_ref = node_self;
+                // run over all possible commutative writes & update the deps & dependent_txs structs for them
+                loop {
+                    {
+                        let node = node_ref.read();
+                        if node.data.tx_block_id == node_other_tx_id { 
+                            break; 
+                        }
+                        tmp_node = Arc::clone(&node.next.as_ref().unwrap());
+
+                        // if it is a write, and comes after the last non commutative, then it can only be commutative write
+                        if node.data.is_write() {
+                            // println!("Dependency between schedules: {:?} depends on {:?}", node.data.tx_block_id, node_other_tx_id);
+                            let node_self_normalized_idx = node.data.tx_block_id - self.starting_tx_id;
+                            self.deps[node_other_normalized_idx].get_or_insert(HashSet::new()).insert(node.data.tx_block_id);
+                            self.dependent_txs[node_self_normalized_idx].get_or_insert(HashSet::new()).insert(node_other_tx_id);
+                        }
+                    }
+                    node_ref = tmp_node;
+                }
+            }
 
             // if is first operation of some tx from 'other' schedule, then remove it the 'other's from partial_ready_queue &
             // add it to the partial ready of the tx from the 'self' schedule  
-            if node_other.read().data.first_operation {
+            if node_other_is_first_operation {
                 other.execution_queues.remove_id_from_partial_ready(node_other_tx_id);
                 self.partial_ready_tx[node_self_normalized_idx].get_or_insert(HashSet::new()).insert(node_other_tx_id);
             }
@@ -392,7 +422,11 @@ impl ScheduleBuilder {
     /// 
     /// This method also pushes the current tx into the partial_ready_queue if this is the first operation, or to the dependency's patial ready
     /// if this is the first operation of this tx & depends on another tx.
-    fn set_node_dependency(&mut self, dependent_node: &mut DependencyNode<VecOperation>, dependency_node: Option<NodeRef<VecOperation>>, tid: TxId, first_operation: bool) {
+    /// 
+    /// This method may be called only to update dependencies on the structs, and not the depency field itself. This is useful
+    /// when we need to run from the last non comm write over all commutative writes in between - we don't want to set the dependency field
+    fn set_node_dependency(&mut self, dependent_node: &mut DependencyNode<VecOperation>, dependency_node: Option<NodeRef<VecOperation>>, 
+        tid: TxId, first_operation: bool, set_dependency_field: bool) {
         #[cfg(feature = "exec_time")]
         self.start_node_dependency_timer();
         
@@ -400,7 +434,10 @@ impl ScheduleBuilder {
             Some(write) => {
                 
                 // set new operation's dependency on previous write
-                dependent_node.set_dependency(Some(Arc::clone(&write)));
+                if set_dependency_field {
+                    dependent_node.set_dependency(Some(Arc::clone(&write)));
+                }
+                
 
                 let last_write_op = write.read();
                 let last_write_tx_id = last_write_op.data.tx_block_id; 
@@ -482,40 +519,57 @@ impl ScheduleBuilder {
         #[cfg(feature = "exec_time")]
         self.stop_node_creation_timer();
 
-        match commutativity { // TODO refactor this to use the method from LasrWrites
-            // If read is commutative -> It can only depend on non commutative writes.
-            // There is no conflict between Commutative operations.
+        match commutativity {
+            // If read is commutative -> depend on storage
             Commutativity::Commutative => {
                 // println!("Commutative Read from {:?} depending on: {:?}", tx_id, non_commutative);
-                self.set_node_dependency(&mut op_node, non_commutative, tx_id, first_operation);
+                self.set_node_dependency(&mut op_node, None, tx_id, first_operation, true);
             },
-            Commutativity::NonCommutative => {
-                match (&commutative, &non_commutative) {
-                    // If there are both a commutative & non commutative writes, pick the operation from the latest tx.
-                    (Some(comm), Some(non_comm)) => {
-                        let comm_id = comm.read().data.tx_block_id;
-                        let non_comm_id = non_comm.read().data.tx_block_id;
+            Commutativity::NonCommutative => { // run over all commwrites in between & mark all as dependencies
+                let mut tmp_node;
+                let mut last_write_is_from_different_tx = false;
 
-                        let dependency = if comm_id > non_comm_id { commutative }
-                        else { non_commutative };
-
-                        // println!("NonCommutative Read from {:?} depending on: {:?}", tx_id, dependency);
-                        self.set_node_dependency(&mut op_node, dependency, tx_id, first_operation);
-                    },
-                    // If there is either only a commutative or a non commutative write, pick that one
-                    (Some(_), None) => {
-                        // println!("NonCommutative Read from {:?} depending on commutative: {:?}", tx_id, commutative);
-                        self.set_node_dependency(&mut op_node, commutative, tx_id, first_operation);
-                    },
-                    (None, Some(_)) => {
-                        // println!("NonCommutative Read from {:?} depending on non commutative: {:?}", tx_id, non_commutative);
-                        self.set_node_dependency(&mut op_node, non_commutative, tx_id, first_operation);
-                    },
-                    // No dependency
-                    (None, None) => {
-                        // println!("NonCommutative Read from {:?} no dependency", tx_id);
-                        self.set_node_dependency(&mut op_node, None, tx_id, first_operation);
+                // fetch the first dependency -> Mya be either th elast non comm write, OR the head of the linked list.
+                // We still have to check if that node is from a different transaction though!
+                let node_ref = if let Some(last_non_comm_write) = non_commutative.as_ref() {
+                    last_write_is_from_different_tx = last_non_comm_write.read().data.tx_block_id != tx_id;
+                    Some(Arc::clone(last_non_comm_write))
+                } else if let Some(head) = self.schedule.get_operations_list_head(contract, key_bytes.as_slice()) {
+                    //  we may not have a starting node, thus the if let below wrapping the loop
+                    last_write_is_from_different_tx = head.read().data.tx_block_id != tx_id;
+                    Some(head)
+                } else { None };
+                
+                if let Some(mut node_ref) = node_ref {
+                    if last_write_is_from_different_tx {
+                        loop {
+                            {
+                                let node = node_ref.read();
+                                let node_has_no_next = node.next.is_none();
+                                let node_id = node.data.tx_block_id;
+                                // if it is a write, and comes after the last non commutative, then it can only be commutative write (ignoring the starting node)
+                                if node.data.is_write() {
+                                    drop(node);
+                                    self.set_node_dependency(&mut op_node, Some(Arc::clone(&node_ref)), tx_id, first_operation, false);
+                                }
+    
+                                // we can only break after setting the dependency
+                                if node_has_no_next { break; }
+                                tmp_node = Arc::clone(&node_ref.read().next.as_ref().unwrap());
+                            }
+                            node_ref = tmp_node;
+                        }
+    
+                        // If there is a previous non_comm write, then use that as the 'dependency' pointer. Else, don't set node dependencies - all dependencies have already been set
+                        // by the above loop
+                        if let Some(non_commutative) = non_commutative { 
+                            self.set_node_dependency(&mut op_node, Some(non_commutative), tx_id, first_operation, true);
+                        }
                     }
+                } 
+                // No dependencynode in the list of operations -> then will be pushed to partial_ready
+                else {
+                    self.set_node_dependency(&mut op_node, None, tx_id, first_operation, true);
                 }
             }
         };

@@ -4,6 +4,7 @@ use crate::{
     symb_exec::{ProfileEvaluator, ProfileGenerator}, testing::{ConcurrentStorage, StorageWrapper}, vm_manager::{SCManager, VMManager}, vm_transactions::SerializableTransaction, BackendApi, BackendBuilder, CodeId, ConcurrentBackendBuilder, Querier, ReplayLogs, VMTransaction
 };
 
+#[derive(Debug)]
 pub enum Message<'a> {
     Invocation(SerializableTransaction),
     Deployment {

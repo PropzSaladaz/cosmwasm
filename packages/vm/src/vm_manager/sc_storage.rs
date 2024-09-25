@@ -1,6 +1,6 @@
-use std::{collections::{HashMap, VecDeque}, fs::{self, File}, hash::Hash, io::{ErrorKind, Read, Write}, sync::{Arc, RwLock}, thread};
+use std::{collections::{HashMap, VecDeque}, fs::{self, File}, hash::Hash, io::{ErrorKind, Read, Write}, sync::{Arc, RwLock}, thread, time::{Duration, Instant}};
 use std::io::Error;
-
+use crossbeam::queue::ArrayQueue;
 use cosmwasm_std::{ContractResult, Response};
 use parking_lot::{Condvar, Mutex};
 
@@ -18,6 +18,34 @@ const SMART_CONTRACT_PATH: &'static str = "./wasm_contract_codes";
 
 fn contract_path(id: CodeId) -> String {
     SMART_CONTRACT_PATH.to_string() + "/" + &id.to_string() + ".wasm"
+}
+
+#[derive(Debug)]
+pub struct ConcurrentTimer {
+    timer: Option<Instant>,
+    time: Mutex<Duration>
+}
+
+impl ConcurrentTimer {
+    pub fn new() -> Self {
+        Self {
+            timer: None,
+            time: Mutex::new(Duration::ZERO),
+        }
+    }
+
+    pub fn create_scoped_timer(&self) -> Instant {
+        Instant::now()
+    }
+   
+    pub fn add_scoped_timer(&self, timer: Instant) {
+        let mut node_time_lock = self.time.lock();
+        *node_time_lock += timer.elapsed();
+    }
+
+    pub fn get_value(&self) -> Duration {
+        self.time.lock().clone()
+    }
 }
 
 /// Represents static data (need only to store 1 for each contract code) 
@@ -167,49 +195,6 @@ where
 }
 
 
-
-struct FairLock<T> {
-    queue: Mutex<VecDeque<usize>>, // Queue of operations
-    condvar: Condvar,
-    resource: Mutex<T>,            // The resource
-}
-
-impl<T> FairLock<T> {
-    fn new(resource: T) -> Self {
-        FairLock {
-            queue: Mutex::new(VecDeque::new()),
-            condvar: Condvar::new(),
-            resource: Mutex::new(resource),
-        }
-    }
-
-    fn lock(&self, tx_id: usize) -> parking_lot::MutexGuard<'_, T> {
-        let mut queue = self.queue.lock();
-        
-        queue.push_back(tx_id);
-
-        while queue.front() != Some(&tx_id) {
-            
-            self.condvar.wait(&mut queue);
-        }
-
-        #[cfg(feature = "debug")]
-        print_with_thread_id!("Finish waiting on VM, starting execution");
-
-        // Get the resource lock
-        let guard = self.resource.lock();
-
-        // Remove the thread from the queue and notify others
-        queue.pop_front();
-        self.condvar.notify_all();
-
-        guard
-    }
-}
-
-
-
-
 pub struct SCInstance<A, S, W, Q> // TEST - should be private 
 where
     A: BackendApi, 
@@ -219,7 +204,7 @@ where
 {
     code_id: CodeId, // Just to keep track of which code this contract was generated from
     pub state: Arc<PersistentBackend<A, S, Q>>,
-    pub vm_instances: Arc<Vec<FairLock<Instance<A, W, Q>>>>,
+    pub vm_instances: Arc<ArrayQueue<InstanceController<A, W, Q>>>,
 }
 
 impl<A, S, W, Q> SCInstance<A, S, W, Q> 
@@ -229,11 +214,16 @@ where
     W: StorageWrapper, 
     Q: Querier
 {
-    fn new(code_id: CodeId, state: &Arc<PersistentBackend<A, S, Q>>, instances: Vec<FairLock<Instance<A, W, Q>>>) -> Self {
+    fn new(code_id: CodeId, state: &Arc<PersistentBackend<A, S, Q>>, instances: Vec<InstanceController<A, W, Q>>) -> Self {
+        let queue = ArrayQueue::new(instances.len());
+        for instance in instances {
+            queue.push(instance);
+        };
+
         Self {
             code_id,
             state: Arc::clone(state),
-            vm_instances: Arc::new(instances),
+            vm_instances: Arc::new(queue),
         }
     }
 }
@@ -287,7 +277,22 @@ where
 {
     static_data: Arc<RwLock<SCStaticData>>,
     pub sc_storage: SCStorage<A, S, W, Q>,
-    symb_exec_engine: Arc<E>
+    symb_exec_engine: Arc<E>,
+
+    // timers - profiling
+    timer_vm_instances_work: ConcurrentTimer,
+    timer_waiting_for_vm_instance: ConcurrentTimer,
+
+}
+
+struct InstanceController<A, W, Q> 
+where
+    A: BackendApi, 
+    W: StorageWrapper,
+    Q: Querier,
+{
+    instance_id: u16,
+    instance: Instance<A, W, Q>,
 }
 
 impl<A, S, W, Q, E> SCManager<A, S, W, Q, E> 
@@ -307,21 +312,32 @@ where
         SCManager {
             static_data: Arc::new(RwLock::new(SCStaticData::new())),
             sc_storage: DashMap::new(),
-            symb_exec_engine
+            symb_exec_engine,
+
+            timer_vm_instances_work: ConcurrentTimer::new(),
+            timer_waiting_for_vm_instance: ConcurrentTimer::new(),
         }
     }
 
     /// Saves the storage & compiled module that refers to some instantiated SC
     pub fn save_instances(&self, code_id: CodeId, address: ScAddr, state: Arc<PersistentBackend<A, S, Q>>, instances: Vec<Instance<A, W, Q>>) {
-        let fair_lock_instances: Vec<FairLock<Instance<A, W, Q>>> = instances.into_iter()
-            .map(|i| FairLock::new(i))
-            .collect();
+        let mut instance_id = 0;
+        let mut instance_controllers = Vec::with_capacity(instances.len());
+
+        // give a unique ID to each for debugging
+        for inst in instances {
+            instance_controllers.push(InstanceController {
+                instance_id,
+                instance: inst
+            });
+            instance_id+=1;
+        }
 
         self.sc_storage.insert(address, Arc::new(
             SCInstance::new(
                 code_id,
                 &state,
-                fair_lock_instances)
+                instance_controllers)
             ));
         self.static_data.write().unwrap().incr_instantiation(code_id);
     }
@@ -335,24 +351,51 @@ where
     {
         // print_with_thread_id!("Inside execute in VM");
 
-        match self.sc_storage.get(address) {
+        let res = match self.sc_storage.get(address) {
             Some(sc_instance) => {
                 let instances = &sc_instance.vm_instances;
-                let vm_to_use = work_id % instances.len();
                 #[cfg(feature = "debug")]
-                print_with_thread_id!("SC {:?} - Waiting for VM {:?} to be free!", address, vm_to_use);
+                print_with_thread_id!("SC {:?} - Waiting for VM to be free!", address);
 
-                let mut forced_vm = instances[vm_to_use].lock(work_id);
-                forced_vm.set_concurrent_backend(concurrent_backend);
-                let res = work(&mut forced_vm);
+                #[cfg(feature = "exec_time")]
+                let timer = self.timer_waiting_for_vm_instance.create_scoped_timer();
+                let instance_controller = loop { // active waiting - we do not expect lots of contention on the VMs of a same contract
+                    if let Some(vm) = instances.pop() {
+                        break vm;
+                    }
+                };
+
+                let instance_id = instance_controller.instance_id;
+                let mut instance = instance_controller.instance;
                 
+                #[cfg(feature = "debug")]
+                print_with_thread_id!("Starting execution on VM {:?}", instance_id);
+
+                #[cfg(feature = "exec_time")]
+                self.timer_waiting_for_vm_instance.add_scoped_timer(timer);
+
+                #[cfg(feature = "exec_time")]
+                let timer = self.timer_vm_instances_work.create_scoped_timer();
+                instance.set_concurrent_backend(concurrent_backend);
+                let res = work(&mut instance);
+                #[cfg(feature = "exec_time")]
+                self.timer_vm_instances_work.add_scoped_timer(timer);
+
+                // push used instance back to the queue
+                let _ = instances.push(InstanceController {
+                    instance_id,
+                    instance
+                });
+
                 #[cfg(feature = "debug")]
                 print_with_thread_id!("SC {:?} - Finished executing on VM", address);
 
-                return Ok(res.unwrap());
+                Ok(res.unwrap())
             },
             None => Result::Err(Error::new(ErrorKind::Other, "Trying to execute an uninstanciated contract!".to_owned()))
-        }
+        };
+
+        res
     }
 
     pub fn get_sc_storage(&self, address: &ScAddr) -> Option<Arc<PersistentBackend<A, S, Q>>> {
@@ -408,6 +451,13 @@ where
         let sc_storage = self.sc_storage.get(&sc_address).expect("Smart Contract should have been initialized");
         let storage = Arc::clone(&sc_storage.state.storage); // TODO we shouldn't have to clone. this should be done serially
         storage
+    }
+
+    pub fn print_times(&self, n_threads: u16) {
+        println!("SC_MANAGER ---");
+        println!("timer_vm_instances_work: ~{:?} per thread", self.timer_vm_instances_work.get_value() / (n_threads as u32));
+        println!("timer_waiting_for_vm_instance: ~{:?} per thread", self.timer_waiting_for_vm_instance.get_value() / (n_threads as u32));
+        println!("---");
     }
 }
 

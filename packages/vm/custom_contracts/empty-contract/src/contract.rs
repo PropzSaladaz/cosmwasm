@@ -4,6 +4,8 @@ use cosmwasm_std::{
 };
 use crate::state::COINS;
 
+const CONTRACT_DIFFICULTY: i32 = 300_000;
+
 pub fn execute(
     _deps: DepsMut,
     _env: Env,
@@ -61,7 +63,7 @@ mod execute {
             match bank {
                 Some(value) => {
                     let mut counter = 0;
-                    for i in 0..30_000 {
+                    for i in 0..CONTRACT_DIFFICULTY {
                         if i % 2 == 0 { counter += 1; }
                         else { counter -= 1; }
                     };
@@ -77,7 +79,15 @@ mod execute {
     pub fn set_val(deps: DepsMut, user: String, val: u64) -> StdResult<Response> {
         COINS.update(deps.storage, user, |bank: Option<i64>| {
             match bank {
-                Some(_) => Ok(val as i64),
+                Some(_) => {
+                    let mut counter = 0;
+                    for i in 0..CONTRACT_DIFFICULTY {
+                        if i % 2 == 0 { counter += 1; }
+                        else { counter -= 1; }
+                    };
+
+                    Ok(val as i64 + counter as i64)
+                },
                 None => Err(StdError::generic_err("Value doesn't exist")),
             }
         })?;

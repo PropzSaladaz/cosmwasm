@@ -2,8 +2,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use cosmwasm_std::Order;
 use cosmwasm_std::Record;
-
+use lazy_static::lazy_static;
 use crate::symb_exec::Commutativity;
+use crate::ConcurrentTimer;
 use crate::{ConcurrentSchedule, GasInfo, NodeRef, ScAddr, ScheduleBuilder, TxId, VecOperation};
 
 use crate::{symb_exec::ReadWrite, BackendResult};
@@ -12,6 +13,18 @@ use super::storage_partitioned::{BaseStorage, ConcurrentStorage};
 use super::{mock_tx_operation, MockConcurrentStorage};
 
 static DEFAULT_CONTRACT: &str = &"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+lazy_static! {
+    // A static timer that tracks the total elapsed time.
+    static ref TIMER: ConcurrentTimer = ConcurrentTimer::new();
+}
+
+pub fn print_storage_wrapper_times(n_threads: u16) {
+    println!("STORAGE_WRAPPER ---");
+    println!("timer_gets_and_sets: ~{:?} per thread", TIMER.get_value() / (n_threads as u32));
+    println!("---");
+}
+
 
 /// Serves as a wrapper around storage, created when executing a tx
 /// with some specific context, such as the RWS, the address of the sc, and so on.
@@ -121,6 +134,8 @@ impl StorageWrapper for MockStorageWrapper {
     /// When reading a value, if the current read is Commutative, then also update the value read on the node.
     /// This value will be used to compute the delta when the respective Commutative write is performed.
     fn get(&mut self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
+        #[cfg(feature = "exec_time")]
+        let timer = TIMER.create_scoped_timer();
 
         #[cfg(feature = "debug")]
         print_with_thread_id!("Get key: {:?}", key);
@@ -164,14 +179,29 @@ impl StorageWrapper for MockStorageWrapper {
                 // read_value(&concurrent_op, key)
             }
         };
+
+        #[cfg(feature = "exec_time")]
+        TIMER.add_scoped_timer(timer);
+
         res
     }
 
     fn get_immutable(&self, key: &[u8]) -> BackendResult<Option<Vec<u8>>> {
-        ConcurrentStorage::get(&*self.storage, key)
+        #[cfg(feature = "exec_time")]
+        let timer = TIMER.create_scoped_timer();
+
+        let res = ConcurrentStorage::get(&*self.storage, key);
+
+        #[cfg(feature = "exec_time")]
+        TIMER.add_scoped_timer(timer);
+
+        res
     }
 
     fn set(&mut self, key: &[u8], value: &[u8]) -> BackendResult<()> {
+
+        #[cfg(feature = "exec_time")]
+        let timer = TIMER.create_scoped_timer();
 
         #[cfg(feature = "debug")]
         print_with_thread_id!("Set key: {:?}", key);
@@ -185,7 +215,7 @@ impl StorageWrapper for MockStorageWrapper {
                         operation_node ,
                         ..
                     } => {
-                        ConcurrentSchedule::set_value(operation_node.as_ref().unwrap(), value);
+                        self.schedule.set_value(operation_node.as_ref().unwrap(), value);
                         GasInfo::with_externally_used((key.len() + value.len()) as u64)                           
                     },
                     ReadWrite::Read { .. } => {
@@ -206,6 +236,10 @@ impl StorageWrapper for MockStorageWrapper {
                 // GasInfo::with_externally_used((key.len() + value.len()) as u64)
             }
         };
+
+        #[cfg(feature = "exec_time")]
+        TIMER.add_scoped_timer(timer);
+
         (Ok(()), res)
     }
     
