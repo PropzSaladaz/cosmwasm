@@ -15,9 +15,9 @@ use crate::{
 };
 
 use super::{
-    sc_storage::{CodeId, PersistentBackend, SCManager}, 
+    sc_storage::{CodeId, ConcurrentTimer, PersistentBackend, SCManager}, 
     schedule::{ScAddr, TxId}, 
-    vm_transactions::{ExecuteTx, InstantiateTx, MigrateTx, ReplayLogsMutRef, ReplyTx, SerializableTransaction, Transaction, VMResource}, 
+    vm_transactions::{print_vm_transaction_times, ExecuteTx, InstantiateTx, MigrateTx, ReplayLogsMutRef, ReplyTx, SerializableTransaction, Transaction, VMResource}, 
     ParallelScheduleBuilder
 };
 
@@ -172,6 +172,8 @@ where
     schedule_persistence_timer: Option<Instant>,
     #[cfg(feature = "exec_time")]
     schedule_persistence_time: Duration,
+
+    timer_execute: ConcurrentTimer,
 }
 
 impl<A, S, W, Q, E> VMManager<A, S, W, Q, E> 
@@ -219,6 +221,8 @@ where
             schedule_persistence_timer: None,
             #[cfg(feature = "exec_time")]
             schedule_persistence_time: Duration::ZERO,
+
+            timer_execute: ConcurrentTimer::new(),
         }
     }
 
@@ -346,7 +350,13 @@ where
             println!("Invocation Calls Total Exec Time: {:?}", self.schedule_build_time + self.schedule_execution_time + self.schedule_persistence_time);
             println!("Invocation Calls Schedule Creation: {:?}",                   self.schedule_build_time);
             println!("Invocation Calls Schedule Execution: {:?}",          self.schedule_execution_time);
-            println!("Invocation Calls Schedule Persistence: {:?}\n------\n\n",    self.schedule_persistence_time);
+            println!("Invocation Calls Schedule Persistence: {:?}",    self.schedule_persistence_time);
+            println!("---");
+            self.state_manager.read().unwrap().print_times(self.n_threads);
+            print_vm_transaction_times(self.n_threads);
+            // print_storage_wrapper_times(self.n_threads);
+            println!("\n------\n\n");
+
         }
 
         #[cfg(feature = "debug_graph")]
@@ -613,6 +623,8 @@ where
         if batch_type == BatchType::Invocation { self.stop_schedule_execution_timer();  }
         else                                  { self.stop_instantiation_calls_timer(); }
 
+        #[cfg(feature = "exec_time")]
+        schedule.print_times(self.n_threads);
 
         #[cfg(feature = "exec_time")]
         self.start_schedule_persistence_timer();

@@ -185,7 +185,7 @@ impl StorageWrapper for MockStorageWrapper {
                         operation_node ,
                         ..
                     } => {
-                        ConcurrentSchedule::set_value(operation_node.as_ref().unwrap(), value);
+                        self.schedule.set_value(operation_node.as_ref().unwrap(), value);
                         GasInfo::with_externally_used((key.len() + value.len()) as u64)                           
                     },
                     ReadWrite::Read { .. } => {

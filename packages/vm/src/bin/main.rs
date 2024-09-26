@@ -28,8 +28,8 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
         (10 * n_contracts * n_operation_repetitions) as usize,
         Arc::new(backend_builder),
         Arc::new(concurrent_backend_builder),
-    2,
-    2);
+    6,
+    6);
 
 
     let mut msgs = vec![
@@ -61,25 +61,25 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
 
     for i in 0..n_contracts {
         for _ in 0..n_operation_repetitions {
-            msgs.push(
-                Message::Invocation(
-                    SerializableTransaction::with_log_execute(
-                        TransactionEnum::Execute(ExecuteTx {
-                            msg: br#"{
-                                "AddOne": {
-                                    "user": "ADMIN"
-                                }
-                            }"#.to_vec(),
-                            contract_addr: format!("{:?}", i),
-                            hash: "".to_owned(),
-                            sender: "".to_owned(),
-                            funds: vec![],
-                            reply: None,
-                        }),
-                        vec![format!("{:?}", i)]
-                    )
-                )
-            );
+            // msgs.push(
+            //     Message::Invocation(
+            //         SerializableTransaction::with_log_execute(
+            //             TransactionEnum::Execute(ExecuteTx {
+            //                 msg: br#"{
+            //                     "AddOne": {
+            //                         "user": "ADMIN"
+            //                     }
+            //                 }"#.to_vec(),
+            //                 contract_addr: format!("{:?}", i),
+            //                 hash: "".to_owned(),
+            //                 sender: "".to_owned(),
+            //                 funds: vec![],
+            //                 reply: None,
+            //             }),
+            //             vec![format!("{:?}", i)]
+            //         )
+            //     )
+            // );
 
             msgs.push(
                 Message::Invocation(
@@ -114,5 +114,5 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
 
 fn main() {
     // run_persistent_vm();
-    run_n_contracts_n_increments(2, 2);
+    run_n_contracts_n_increments(2, 300);
 }

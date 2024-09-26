@@ -1,18 +1,47 @@
 use std::{collections::HashMap, sync::Arc};
 
-use cosmwasm_std::{Addr, Binary, BlockInfo, Coin, ContractInfo, CosmosMsg, Empty, Env, IbcAcknowledgement, IbcMsg, IbcOrder, IbcTimeout, IbcTimeoutBlock, Reply, ReplyOn, SubMsg, SubMsgResponse, SubMsgResult, Timestamp, TransactionInfo, WasmMsg};
+use cosmwasm_std::{
+    Addr, Binary, BlockInfo, Coin, ContractInfo, CosmosMsg, Empty, Env, IbcAcknowledgement, IbcChannel, IbcChannelConnectMsg, IbcChannelOpenMsg, IbcEndpoint, IbcMsg, IbcOrder, IbcPacket, IbcPacketAckMsg, IbcPacketReceiveMsg, IbcPacketTimeoutMsg, IbcTimeout, IbcTimeoutBlock, Reply, ReplyOn, SubMsg, SubMsgResponse, SubMsgResult, Timestamp, TransactionInfo, WasmMsg
+};
+
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 use prost::Message;
 use serde_json::de::Read;
+use lazy_static::lazy_static;
 
-use crate::{call_execute, call_instantiate, call_migrate, call_reply, symb_exec::{ProfileEvaluator, ProfileGenerator}, testing::{mock_info, ConcurrentStorage, StorageWrapper}, BackendApi, Instance, Querier, ReadWrite, VMManager};
+use crate::{
+    call_execute, call_instantiate, call_migrate, call_reply, 
+    symb_exec::{ProfileEvaluator, ProfileGenerator}, 
+    testing::{mock_info, ConcurrentStorage, StorageWrapper}, 
+    vm_manager::sc_storage::ConcurrentTimer, 
+    BackendApi, Instance, Querier, ReadWrite, VMManager
+};
+
+#[cfg(feature = "stargate")]
+use crate::{
+    call_ibc_channel_open, call_ibc_packet_ack, call_ibc_packet_receive, call_ibc_packet_timeout,
+};
 
 use super::{sc_storage::CodeId, ConcurrentSchedule, EnvironmentContext, ReplayLogs, ScAddr, TxId};
 
-/// 
-/// Francisco Rola
-/// 
+// 
+// Francisco Rola
+// 
+
+lazy_static! {
+    // A static timer that tracks the total elapsed time.
+    static ref TIMER: ConcurrentTimer = ConcurrentTimer::new();
+    static ref IBC_CHANNEL_TO_SETINGS: DashMap<String, (String, IbcOrder)> = DashMap::new();
+}
+
+
+pub fn print_vm_transaction_times(n_threads: u16) {
+    println!("VM_TRANSACTIONS ---");
+    println!("execution_timer: ~{:?} per thread", TIMER.get_value() / (n_threads as u32));
+    println!("---");
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct SerializableTransaction {
@@ -160,19 +189,26 @@ where
         let tx: &mut dyn Transaction<A, S, W, Q, E> = match self {
             TransactionEnum::Instantiate(tx) => tx,
             TransactionEnum::Execute(tx) => tx,
-            // TransactionEnum::Reply(tx) |
-            // TransactionEnum::Migrate(tx) |
-            // TransactionEnum::StoreCode(tx) |
-            // TransactionEnum::ChannelOpenTry(tx) |
-            // TransactionEnum::ChannelOpenAck(tx) |
-            // TransactionEnum::ChannelOpenConfirm(tx) |
-            // TransactionEnum::ChannelOpenInit(tx) |
-            // TransactionEnum::RecvPacket(tx) |
-            // TransactionEnum::Timeout(tx) |
-            // TransactionEnum::Ack(tx) |
-            // TransactionEnum::NotSupported(tx) |
-            // TransactionEnum::Abort(tx) 
-            _ => todo!()
+            TransactionEnum::Reply(tx) => tx,
+            TransactionEnum::Migrate(tx) => tx,
+            #[cfg(feature= "stargate")]
+            TransactionEnum::ChannelOpenTry(tx)  => tx,
+            #[cfg(feature= "stargate")]
+            TransactionEnum::ChannelOpenAck(tx) => tx,
+            #[cfg(feature= "stargate")]
+            TransactionEnum::ChannelOpenConfirm(tx) => tx,
+            #[cfg(feature= "stargate")]
+            TransactionEnum::ChannelOpenInit(tx) => tx,
+            #[cfg(feature= "stargate")]
+            TransactionEnum::RecvPacket(tx) => tx,
+            #[cfg(feature= "stargate")]
+            TransactionEnum::Timeout(tx) => tx,
+            #[cfg(feature= "stargate")]
+            TransactionEnum::Ack(tx) => tx,
+
+            TransactionEnum::NotSupported(tx) => tx,
+            TransactionEnum::Abort(tx) => tx,
+            tx => todo!("Tx type not supported: {:?}", tx)
         };
 
         tx.process(vm_resource, execution_logs)
@@ -338,6 +374,12 @@ struct MsgExecuteContractResponse {
     pub data: Vec<u8>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum OperationType {
+    Read(String),
+    Write(String),
+} 
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct TransactionRWS {
     read_set: HashMap<String, Vec<String>>,
@@ -402,11 +444,21 @@ fn create_neutron_env(contract_addr: String) -> Env {
 }
 
 
+enum VMManagerCall<'a> {
+    ExecuteVM {
+        contract_addr: &'a ScAddr,
+    },
+    MigrateVM {
+        contract_addr: &'a ScAddr,
+        new_code_id: CodeId,
+    }
+}
+
 /// If an instance is passed, then execute the instance_work on that instance. Else,
 /// fetch a free VM from the VMManager and execute the instance_work using that instance
 fn execute_vm<A, S, W, Q, E, F>(
+    vm_manager_call: VMManagerCall,
     vm_resource: &mut VMResource<A, S, W, Q, E>, 
-    contract_address: &ScAddr, 
     instance_work: F) -> std::io::Result<String>
 where
     A: BackendApi                           + 'static + Sync + Send, 
@@ -423,7 +475,21 @@ where
     }
     // grab one free instance from the newly instanciated VMs for the new contract address & use it
     else {
-        VMManager::execute_vm(vm_resource.environment.mut_clone(), contract_address, |instance| instance_work(instance, vm_resource))
+        match vm_manager_call {
+            VMManagerCall::ExecuteVM { contract_addr } => 
+                VMManager::execute_vm(
+                    vm_resource.environment.mut_clone(), 
+                    contract_addr, 
+                    |instance| instance_work(instance, vm_resource)
+                ),
+            VMManagerCall::MigrateVM { contract_addr, new_code_id } => 
+                VMManager::migrate_vm(
+                    vm_resource.environment.mut_clone(), 
+                    contract_addr, 
+                    new_code_id, 
+                    |instance| instance_work(instance, vm_resource)
+                ),
+        }
     }
 }
 
@@ -532,7 +598,11 @@ where
             Ok(format!("{:?}", res))
         };
 
-        execute_vm(vm_resource, &contract_addr, instance_work)
+        execute_vm(
+            VMManagerCall::ExecuteVM { contract_addr: &contract_addr }, 
+            vm_resource, 
+            instance_work
+        )
 
     }
 }
@@ -559,9 +629,11 @@ where
         let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
             vm_resource.set_instance(instance);
 
+
+            let timer = TIMER.create_scoped_timer();
             let contract_result =
                 call_execute::<_, _, _, Empty>(instance, &create_neutron_env(self.contract_addr.clone()), &info, msg).unwrap();
-            // println!("EXECUTE RESULT: {:?}", contract_result);
+                TIMER.add_scoped_timer(timer);
             
             // Remove execute  of current transaction from the execute log as it has been performed
             replay_logs.log_execute.remove(replay_logs.log_execute.iter().position(|x| x == &self.contract_addr.clone()).expect("Failed to remove address from execute_log"));
@@ -625,7 +697,11 @@ where
             Ok(format!("{:?}", res))
         };
 
-        execute_vm(vm_resource, &self.contract_addr, instance_work)      
+        execute_vm(
+            VMManagerCall::ExecuteVM { contract_addr: &self.contract_addr }, 
+            vm_resource, 
+            instance_work
+        )     
     }
 }
 
@@ -672,7 +748,11 @@ where
             Ok(format!("{:?}", res))
         };
 
-        execute_vm(vm_resource, &self.contract_addr, instance_work)
+        execute_vm(
+            VMManagerCall::ExecuteVM { contract_addr: &self.contract_addr }, 
+            vm_resource, 
+            instance_work
+        )
     }
 }
 
@@ -692,7 +772,7 @@ where
         // Convert the msg to a byte vector
         let msg: &[u8] = self.msg.as_slice();
 
-        let instance_work = |instance: &mut Instance<A, W, Q>| {
+        let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
             vm_resource.set_instance(instance);
         
             // Run execute transaction
@@ -766,12 +846,413 @@ where
             // Ok(format!("{:?}", res))
         };
 
-        todo!()
-        // VMManager::migrate_vm(vm_resource.environment, &self.contract_addr, self.code_id, instance_work)
+        execute_vm(
+            VMManagerCall::MigrateVM { contract_addr: &self.contract_addr, new_code_id: self.code_id }, 
+            vm_resource, 
+            instance_work
+        )
     }
 }
 
 
+#[cfg(feature = "stargate")]
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for ChannelOpenTryTx 
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, vm_resource: &mut VMResource<A, S, W, Q, E>, replay_logs: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        // Update port id to remove prefix wasm.
+        let contract_addr = &self.port_id.clone().trim_start_matches("wasm.").to_string();
+
+        let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
+            vm_resource.set_instance(instance);
+
+            // Create a placeholder for the contract res
+            let contract_result;
+
+            // Build a channel open try msg
+            let ibc_endpoint = IbcEndpoint {
+                port_id: self.port_id.clone(),
+                channel_id: self.channel_id.clone(),
+            };
+            let ibc_cp_endpoint = IbcEndpoint {
+                port_id: self.counterparty_port_id.clone(),
+                channel_id: self.counterparty_channel_id.clone(),
+            };
+
+            let ibc_channel = IbcChannel::new(ibc_endpoint, ibc_cp_endpoint, self.ordering.clone(), self.version.clone(), self.connection_id.clone());
+
+            let channel_open_init_msg = IbcChannelOpenMsg::new_try(ibc_channel, self.version.clone());
+
+            // Run the transaction
+            contract_result =
+                call_ibc_channel_open::<_, _, _>(&mut instance, &create_neutron_env(contract_addr.clone()), &channel_open_init_msg).unwrap();
+            println!("CHANNEL TRY RESULT: {:?}", contract_result);
+
+            // Insert the ordering of the channel in the global structure for further ACK/Confirm
+            IBC_CHANNEL_TO_SETINGS.insert(self.channel_id.clone(), (self.version.clone(), self.ordering.clone()));
+
+            Ok(format!("{:?}", contract_result.unwrap()))
+        };
+
+        execute_vm(vm_resource, &contract_addr, instance_work)
+    }
+}
+
+
+#[cfg(feature = "stargate")]
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for ChannelOpenAckTx 
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, vm_resource: &mut VMResource<A, S, W, Q, E>, replay_logs: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        // Update port id to remove prefix wasm.
+        let contract_addr = &self.port_id.clone().trim_start_matches("wasm.").to_string();
+
+        let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
+            vm_resource.set_instance(instance);
+
+            // Create a placeholder for the contract res
+            let contract_result;
+
+            // Build a channel open ack msg
+            let ibc_endpoint = IbcEndpoint {
+                port_id: self.port_id.clone(),
+                channel_id: self.channel_id.clone(),
+            };
+            let ibc_cp_endpoint = IbcEndpoint {
+                port_id: self.counterparty_port_id.clone(),
+                channel_id: self.counterparty_channel_id.clone(),
+            };
+
+            let channel_settings = IBC_CHANNEL_TO_SETINGS.get(&self.channel_id.clone());
+            let version = channel_settings.as_deref().unwrap().0.clone();
+            let ordering = channel_settings.as_deref().unwrap().1.clone();
+
+            let ibc_channel = IbcChannel::new(ibc_endpoint, ibc_cp_endpoint, ordering.clone(), version.clone(), self.connection_id.clone());
+
+            // TODO counterparty version should be in the fields, tracer was missing info
+            let channel_open_ack_msg = IbcChannelConnectMsg::new_ack(ibc_channel, version.clone());
+
+            // Run the transaction
+            contract_result =
+                call_ibc_channel_connect::<_, _, _, Empty>(&mut instance, &create_neutron_env(contract_addr.clone()), &channel_open_ack_msg).unwrap();
+            println!("CHANNEL ACK RESULT: {:?}", contract_result);
+
+            let res = contract_result.unwrap();
+
+            if !res.messages.is_empty() {
+                handle_result_json(res.messages.clone(), vm_resource, replay_logs, contract_addr.clone());
+            }
+
+
+            Ok(format!("{:?}", contract_result.unwrap()))
+        };
+
+        execute_vm(vm_resource, &contract_addr, instance_work)
+    }
+}
+
+
+#[cfg(feature = "stargate")]
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for ChannelOpenConfirmTx
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, vm_resource: &mut VMResource<A, S, W, Q, E>, replay_logs: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        // Update port id to remove prefix wasm.
+        let contract_addr = &self.port_id.clone().trim_start_matches("wasm.").to_string();
+
+        let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
+            vm_resource.set_instance(instance);
+
+            // Create a placeholder for the contract res
+            let contract_result;
+
+            // Build a channel open confirm msg
+            let ibc_endpoint = IbcEndpoint {
+                port_id: self.port_id.clone(),
+                channel_id: self.channel_id.clone(),
+            };
+            let ibc_cp_endpoint = IbcEndpoint {
+                port_id: self.counterparty_port_id.clone(),
+                channel_id: self.counterparty_channel_id.clone(),
+            };
+
+            let channel_settings = IBC_CHANNEL_TO_SETINGS.get(&self.channel_id.clone());
+            let version = channel_settings.as_deref().unwrap().0.clone();
+            let ordering = channel_settings.as_deref().unwrap().1.clone();
+
+            let ibc_channel = IbcChannel::new(ibc_endpoint, ibc_cp_endpoint, ordering.clone(), version.clone(), self.connection_id.clone());
+
+            let channel_open_ack_msg = IbcChannelConnectMsg::new_confirm(ibc_channel);
+
+            // Run the transaction
+            contract_result =
+                call_ibc_channel_connect::<_, _, _, Empty>(&mut instance, &create_neutron_env(contract_addr.clone()), &channel_open_ack_msg).unwrap();
+            println!("CHANNEL CONFIRM RESULT: {:?}", contract_result);
+
+            let res = contract_result.unwrap();
+
+            if !res.messages.is_empty() {
+                handle_result_json(res.messages.clone(), vm_resource, replay_logs, contract_addr.clone());
+            }
+
+            Ok(format!("{:?}", res))
+        };
+
+        execute_vm(vm_resource, &contract_addr, instance_work)
+    }
+}
+
+
+#[cfg(feature = "stargate")]
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for ChannelOpenInitTx
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, vm_resource: &mut VMResource<A, S, W, Q, E>, replay_logs: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        // Update port id to remove prefix wasm.
+        let contract_addr = &self.port_id.clone().trim_start_matches("wasm.").to_string();
+
+        let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
+            vm_resource.set_instance(instance);
+
+            // Create a placeholder for the contract res
+            let contract_result;
+
+            // Build a channel open init msg
+            let ibc_endpoint = IbcEndpoint {
+                port_id: self.port_id.clone(),
+                channel_id: self.channel_id.clone(),
+            };
+            let ibc_cp_endpoint = IbcEndpoint {
+                port_id: self.counterparty_port_id.clone(),
+                channel_id: self.counterparty_channel_id.clone(),
+            };
+
+            let ibc_channel = IbcChannel::new(ibc_endpoint, ibc_cp_endpoint, self.ordering.clone(), self.version.clone(), self.connection_id.clone());
+
+            let channel_open_init_msg = IbcChannelOpenMsg::new_init(ibc_channel);
+
+            // Run the transaction
+            contract_result =
+                call_ibc_channel_open::<_, _, _>(&mut instance, &create_neutron_env(contract_addr.clone()), &channel_open_init_msg).unwrap();
+            println!("CHANNEL INIT RESULT: {:?}", contract_result);
+
+            
+
+            // Insert the ordering of the channel in the global structure for further ACK
+            IBC_CHANNEL_TO_SETINGS.insert(self.channel_id.clone(), (self.version.clone(), self.ordering.clone()));
+
+            Ok(format!("{:?}", contract_result.unwrap()))
+        };
+
+        execute_vm(vm_resource, &contract_addr, instance_work)
+    }
+}
+
+#[cfg(feature = "stargate")]
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for RecvPacketTx
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, vm_resource: &mut VMResource<A, S, W, Q, E>, replay_logs: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        // Update port id to remove prefix wasm.
+        let contract_addr = &self.counterparty_port_id.clone().trim_start_matches("wasm.").to_string();
+
+        let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
+            vm_resource.set_instance(instance);
+
+        
+            // Create a placeholder for the contract res
+            let contract_result;
+
+            // Build an ibc packet
+            let ibc_endpoint = IbcEndpoint {
+                port_id: self.port_id.clone(),
+                channel_id: self.channel_id.clone(),
+            };
+            let ibc_cp_endpoint = IbcEndpoint {
+                port_id: self.counterparty_port_id.clone(),
+                channel_id: self.counterparty_channel_id.clone(),
+            };
+
+            let ibc_packet = IbcPacket::new(self.data.clone(), ibc_endpoint.clone(), ibc_cp_endpoint.clone(), self.sequence.clone(), self.timeout.clone());
+
+            let ibc_packet_recv_msg = IbcPacketReceiveMsg::new(ibc_packet, self.relayer.clone());
+
+            // Run the transaction
+            contract_result =
+                call_ibc_packet_receive::<_, _, _, Empty>(&mut instance, &create_neutron_env(contract_addr.clone()), &ibc_packet_recv_msg).unwrap();
+            println!("IBC PACKET RECV RESULT: {:?}", contract_result);
+
+            // Grab the result and handle it, potentially dealing with sub messages
+            let res = contract_result.unwrap();
+
+            if !res.messages.is_empty() {
+                handle_result_json(res.messages.clone(), vm_resource, replay_logs, contract_addr.clone());
+            }
+
+            Ok(format!("{:?}", res))
+        };
+
+        execute_vm(vm_resource, &contract_addr, instance_work)
+    }
+}
+
+#[cfg(feature = "stargate")]
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for TimeoutTx
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, vm_resource: &mut VMResource<A, S, W, Q, E>, replay_logs: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        // Update port id to remove prefix wasm.
+        let contract_addr = &self.port_id.clone().trim_start_matches("wasm.").to_string();
+
+        let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
+            vm_resource.set_instance(instance);
+
+            // Create a placeholder for the contract res
+            let contract_result;
+
+            // Build an ibc packet
+            let ibc_endpoint = IbcEndpoint {
+                port_id: self.port_id.clone(),
+                channel_id: self.channel_id.clone(),
+            };
+            let ibc_cp_endpoint = IbcEndpoint {
+                port_id: self.counterparty_port_id.clone(),
+                channel_id: self.counterparty_channel_id.clone(),
+            };
+
+            let ibc_packet = IbcPacket::new(self.data.clone(), ibc_endpoint.clone(), ibc_cp_endpoint.clone(), self.sequence.clone(), self.timeout.clone());
+
+            let ibc_packet_timeout_msg = IbcPacketTimeoutMsg::new(ibc_packet, self.relayer.clone());
+
+            // Run the transaction
+            contract_result =
+                call_ibc_packet_timeout::<_, _, _, Empty>(&mut instance, &create_neutron_env(contract_addr.clone()), &ibc_packet_timeout_msg).unwrap();
+            println!("IBC PACKET TIMEOUT RESULT: {:?}", contract_result);
+
+            // Grab the result and handle it, potentially dealing with sub messages
+            let res = contract_result.unwrap();
+
+            if !res.messages.is_empty() {
+                handle_result_json(res.messages.clone(), vm_resource, replay_logs, contract_addr.clone());
+            }
+
+            Ok(format!("{:?}", res))
+        };
+
+        execute_vm(vm_resource, &contract_addr, instance_work)
+    }
+}
+
+#[cfg(feature = "stargate")]
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for AckTx
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, vm_resource: &mut VMResource<A, S, W, Q, E>, replay_logs: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        // Update port id to remove prefix wasm.
+        let contract_addr = &self.port_id.clone().trim_start_matches("wasm.").to_string();
+
+        let instance_work = |instance: &mut Instance<A, W, Q>, vm_resource: &mut VMResource<A, S, W, Q, E>| {
+            vm_resource.set_instance(instance);
+
+            // Create a placeholder for the contract res
+            let contract_result;
+
+            // Build an ibc packet
+            let ibc_endpoint = IbcEndpoint {
+                port_id: self.port_id.clone(),
+                channel_id: self.channel_id.clone(),
+            };
+            let ibc_cp_endpoint = IbcEndpoint {
+                port_id: self.counterparty_port_id.clone(),
+                channel_id: self.counterparty_channel_id.clone(),
+            };
+
+            let ibc_packet = IbcPacket::new(self.data.clone(), ibc_endpoint.clone(), ibc_cp_endpoint.clone(), self.sequence.clone(), self.timeout.clone());
+
+            let ibc_packet_ack_msg = IbcPacketAckMsg::new(self.acknowledgement.clone(),ibc_packet, self.relayer.clone());
+
+            // Run the transaction
+            contract_result =
+                call_ibc_packet_ack::<_, _, _, Empty>(&mut instance, &create_neutron_env(contract_addr.clone()), &ibc_packet_ack_msg).unwrap();
+            println!("IBC PACKET ACK RESULT: {:?}", contract_result);
+
+            // Grab the result and handle it, potentially dealing with sub messages
+            let res = contract_result.unwrap();
+
+            if !res.messages.is_empty() {
+                handle_result_json(res.messages.clone(), vm_resource, replay_logs, contract_addr.clone());
+            }
+
+            Ok(format!("{:?}", res))
+        };
+
+        execute_vm(vm_resource, &contract_addr, instance_work)
+    }
+}
+
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for NotSupportedTx
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, _: &mut VMResource<A, S, W, Q, E>, _: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        // DO NOTHING
+        Ok("Not Supported".to_owned())
+    }
+}
+
+
+impl<A, S, W, Q, E> Transaction<A, S, W, Q, E> for AbortTx
+where
+    A: BackendApi                           + 'static + Sync + Send, 
+    S: ConcurrentStorage                    + 'static + Sync + Send, 
+    W: StorageWrapper                       + 'static,
+    Q: Querier                              + 'static + Sync + Send,
+    E: ProfileEvaluator + ProfileGenerator  + 'static + Sync + Send,
+{
+    fn process(&mut self, _: &mut VMResource<A, S, W, Q, E>, _: &mut ReplayLogsMutRef) -> std::io::Result<String> {
+        println!("ABORTED TX: {}", self.hash);
+        Ok(format!("Aborted tx {:?}", self.hash))
+    }
+}
 
 /// Handles the nested sub messages vector
 fn handle_result_json<A, S, W, Q, E>(messages: Vec<SubMsg>, vm_resource: &mut VMResource<A, S, W, Q, E>, replay_logs: &mut ReplayLogsMutRef, sender: String) 

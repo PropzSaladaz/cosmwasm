@@ -1,5 +1,5 @@
 use std::{
-    fmt, i128, io::Write, sync::{Arc}
+    fmt, i128, io::Write, ptr, sync::{atomic::{AtomicBool, AtomicPtr, Ordering}, Arc}
 };
 
 use dashmap::DashMap;
@@ -108,49 +108,58 @@ impl MergeableValue for Vec<u8> {
 /// When setting a new value, notifies all waiting threads
 #[derive(Debug)]
 pub struct OperationValue<V: MergeableValue> {
-    pub value: Mutex<Option<V>>,
-    pub condvar: Condvar,
+    pub value: AtomicPtr<V>,
+    lock: Mutex<bool>,
+    condvar: Condvar,
 }
 
 impl<V: MergeableValue> PartialEq for OperationValue<V> {
     fn eq(&self, other: &Self) -> bool {
-        // we need the clone, since we could be comparing the same operationValue, leading to a deadlock if we
-        // try locking both at the same time (e.g. inside the == expression)
-        let val_1 = self.value.lock().clone();
-        let val_2 = other.value.lock().clone();
-        val_1 == val_2
+        self.value.load(Ordering::Acquire) == other.value.load(Ordering::Acquire)
     }
 }
 
 impl<V: MergeableValue> OperationValue<V> {
     pub fn new() -> Self {
         OperationValue {
-            value: Mutex::new(None),
+            value: AtomicPtr::new(ptr::null_mut()),
+            lock: Mutex::new(true),
             condvar: Condvar::new(),
         }
     }
 
     /// waits for the value to be set if it hasn't been set yet
-    pub fn wait_for_value(&self) -> V {
-        let mut val = self.value.lock();
-        
-        while val.is_none()  {
-            self.condvar.wait(&mut val);
+    pub fn wait_for_value(&self) -> &V {
+        let mut ptr = self.value.load(Ordering::Acquire);
+        if !ptr.is_null() {
+            unsafe { &*ptr }
+        } else {
+            let mut lock = self.lock.lock();
+            while ptr.is_null()  {
+                self.condvar.wait(&mut lock);
+                ptr = self.value.load(Ordering::Acquire);
+            }
+    
+            unsafe { &*ptr }
         }
-
-        val.as_ref().unwrap().clone()
     }
 
     /// Used for cases when we know for sure the value has already been set
     /// Which is the case for operations within the same tx.
-    pub fn get_value(&self) -> Option<V> {
-        self.value.lock().clone()
+    pub fn get_value(&self) -> Option<&V> {
+        let ptr = self.value.load(Ordering::Acquire);
+        if !ptr.is_null() {
+            Some(unsafe { &*ptr })
+        } else {
+            None
+        }
     }
 
     /// Sets the value & notifies all waiting threads on this value.
     pub fn set_and_notify(&self, value: V) {
-        let mut val = self.value.lock();
-        *val = Some(value);
+        let boxed_value = Box::into_raw(Box::new(value));
+        self.value.store(boxed_value, Ordering::SeqCst);
+        // no need to drop old value, as it was null
         self.condvar.notify_all();
     }
 }
@@ -184,7 +193,7 @@ impl<V: MergeableValue> Operation<V> {
         self.value.set_and_notify(new_value)
     }
 
-    pub fn wait_for_value(&self) -> V {
+    pub fn wait_for_value(&self) -> &V {
         self.value.wait_for_value()
     }
 

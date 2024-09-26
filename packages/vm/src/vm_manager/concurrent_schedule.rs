@@ -2,6 +2,7 @@ use std::{
     collections::{HashSet, VecDeque}, sync::{atomic::{AtomicUsize, Ordering}, Arc},
 };
 
+use dashmap::DashSet;
 use parking_lot::{Mutex, Condvar};
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
 };
 
 use super::{
-    schedule::{NodeRef, OpType, SCSchedule, ScAddr, TxId, VecOperation}, serial_schedule::{ScheduleBuilder, SerialQueues}, LastWrites, Schedule
+    sc_storage::ConcurrentTimer, schedule::{NodeRef, OpType, SCSchedule, ScAddr, TxId, VecOperation}, serial_schedule::{ScheduleBuilder, SerialQueues}, LastWrites, Schedule
 };
 
 #[cfg(feature = "debug_graph")]
@@ -25,8 +26,8 @@ pub struct ConcurrentQueues {
 
     total_txs: TxId,
 
-    ready_queue: Mutex<VecDeque<TxId>>,
-    partial_ready_queue: Mutex<VecDeque<TxId>>,
+    ready_queue: DashSet<TxId>,
+    partial_ready_queue: DashSet<TxId>,
 
     cvar: Condvar,
 }
@@ -34,9 +35,9 @@ pub struct ConcurrentQueues {
 impl PartialEq for ConcurrentQueues {
     fn eq(&self, other: &Self) -> bool {
         *self.executed_txs.lock() ==  *other.executed_txs.lock() &&
-        self.total_txs == other.total_txs &&
-        *self.ready_queue.lock() == *other.ready_queue.lock() &&
-        *self.partial_ready_queue.lock() == *other.partial_ready_queue.lock()
+        self.total_txs == other.total_txs //&&
+        // *self.ready_queue.lock() == *other.ready_queue.lock() &&
+        // *self.partial_ready_queue.lock() == *other.partial_ready_queue.lock()
     }
 }
 
@@ -47,8 +48,8 @@ impl ConcurrentQueues {
 
             total_txs: 0,
 
-            ready_queue: Mutex::new(VecDeque::new()),
-            partial_ready_queue: Mutex::new(VecDeque::new()),
+            ready_queue: DashSet::new(),
+            partial_ready_queue: DashSet::new(),
         
             cvar: Condvar::new(),
         }
@@ -58,8 +59,8 @@ impl ConcurrentQueues {
         ConcurrentQueues {
             executed_txs: Mutex::new(serial_queues.executed_txs),
             total_txs: serial_queues.total_txs,
-            ready_queue: Mutex::new(serial_queues.ready_queue),
-            partial_ready_queue: Mutex::new(serial_queues.partial_ready_queue),
+            ready_queue: DashSet::from_iter(serial_queues.ready_queue.into_iter()),
+            partial_ready_queue: DashSet::from_iter(serial_queues.partial_ready_queue.into_iter()),
             cvar: Condvar::new(),
         }
     }
@@ -68,18 +69,23 @@ impl ConcurrentQueues {
     /// Should only be called after the tx has finished execution, as this method
     /// increases an internal counter that tracks the number of executed txs
     fn push_and_signal(&self, ready: Vec<TxId>, partial_ready: Vec<TxId>) {
-        let total_txs = ready.len() + partial_ready.len();
+        // let total_txs = ready.len() + partial_ready.len();
 
-        if ready.len() > 0 {
-            let mut queue = self.ready_queue.lock();
-            queue.extend(ready);
-            drop(queue);
+        let mut total_txs = 0;
+
+        for tx in ready {
+            // if self.tx_states[tx] == TxState::NotExecuted {
+                total_txs += 1;
+                self.ready_queue.insert(tx);
+                self.partial_ready_queue.remove(&tx);
+            // }
         }
-
-        if partial_ready.len() > 0 {
-            let mut queue = self.partial_ready_queue.lock();
-            queue.extend(partial_ready);
-            drop(queue);
+        
+        for tx in partial_ready {
+            // if self.tx_states[tx] == TxState::NotExecuted {
+                total_txs += 1;
+                self.partial_ready_queue.insert(tx);
+            // }
         }
 
         let mut lock = self.executed_txs.lock();
@@ -111,17 +117,27 @@ impl ConcurrentQueues {
         
         'try_popping: loop {
 
-            let mut ready_lock = self.ready_queue.lock();
-            if let Some(ready) = ready_lock.pop_front() {
+            // try fetching some tx from ready
+            let ready_tx = if let Some(ready) = self.ready_queue.iter().next() {
+                Some(*ready)
+            } else { None };
+
+            if let Some(ready) = ready_tx {
+                self.ready_queue.remove(&ready);
+                // self.set_tx_status(ready, TxState::Executing);
                 return Some(ready);
             }
-            drop(ready_lock);
 
-            let mut partial_ready_lock = self.partial_ready_queue.lock();
-            if let Some(partial_ready) = partial_ready_lock.pop_front() {
+            // try fetching some tx from partial_ready
+            let partial_ready_tx = if let Some(partial_ready) = self.partial_ready_queue.iter().next() {
+                Some(*partial_ready)
+            } else { None };
+
+            if let Some(partial_ready) = partial_ready_tx {
+                self.partial_ready_queue.remove(&partial_ready);
+                // self.set_tx_status(partial_ready, TxState::Executing);
                 return Some(partial_ready);
             }
-            drop(partial_ready_lock);
 
 
             let mut lock = self.executed_txs.lock();
@@ -215,6 +231,12 @@ pub struct ConcurrentSchedule {
     node_creation_timer: Option<Instant>,
     #[cfg(feature="exec_time")]
     node_creation_time: Duration,
+
+    timer_get: ConcurrentTimer,
+    timer_set: ConcurrentTimer,
+    timer_merge_comm_chain: ConcurrentTimer,
+    timer_wait_for_msgs_from_queue: ConcurrentTimer,
+    timer_update_execution_queues_on_tx_finish: ConcurrentTimer,
 }
 
 /// Iterator that allows iterating over each schdule/contract address
@@ -327,6 +349,12 @@ impl ConcurrentSchedule {
             node_creation_timer: None,
             #[cfg(feature = "exec_time")]
             node_creation_time: Duration::ZERO,
+
+            timer_get: ConcurrentTimer::new(),
+            timer_set: ConcurrentTimer::new(),
+            timer_merge_comm_chain: ConcurrentTimer::new(),
+            timer_wait_for_msgs_from_queue: ConcurrentTimer::new(),
+            timer_update_execution_queues_on_tx_finish: ConcurrentTimer::new(),
         }
     }
 
@@ -366,6 +394,12 @@ impl ConcurrentSchedule {
             node_creation_timer: None,
             #[cfg(feature = "exec_time")]
             node_creation_time: Duration::ZERO,
+
+            timer_get: ConcurrentTimer::new(),
+            timer_set: ConcurrentTimer::new(),
+            timer_merge_comm_chain: ConcurrentTimer::new(),
+            timer_wait_for_msgs_from_queue: ConcurrentTimer::new(),
+            timer_update_execution_queues_on_tx_finish: ConcurrentTimer::new(),
         }
     }
 
@@ -407,6 +441,9 @@ impl ConcurrentSchedule {
     /// At the end, push all partial_ready into PARTIAL_READY_QUEUE
     /// If is an instantiation, also mark the instantiation dependency as complete.
     pub fn on_tx_finish(&self, tx_id: TxId) {
+        #[cfg(feature = "exec_time")]
+        let timer = self.timer_update_execution_queues_on_tx_finish.create_scoped_timer();
+
         let mut ready_txs = vec![];
         let mut partial_ready_txs = vec![];
 
@@ -441,10 +478,21 @@ impl ConcurrentSchedule {
 
         self.execution_queues.push_and_signal(ready_txs, partial_ready_txs);
 
+        #[cfg(feature = "exec_time")]
+        self.timer_update_execution_queues_on_tx_finish.add_scoped_timer(timer);
+
     }
 
     pub fn get_next_message_to_execute(&self) -> Option<TxId> {
-        self.execution_queues.pop()
+        #[cfg(feature= "exec_time")]
+        let timer = self.timer_wait_for_msgs_from_queue.create_scoped_timer();
+
+        let tx = self.execution_queues.pop();
+        
+        #[cfg(feature= "exec_time")]
+        self.timer_wait_for_msgs_from_queue.add_scoped_timer(timer);
+
+        tx
     }
 
     /// Given a state manager (a struct that keeps info about the state of each SC),
@@ -536,8 +584,11 @@ impl ConcurrentSchedule {
     /// 
     /// If the node is Commutative, then the actual value set for the node is a Delta, computed
     /// using both the preceding Commutative Read and the passed value to this function.
-    pub fn set_value(node: &NodeRef<VecOperation>, value: &[u8]) {
+    pub fn set_value(&self, node: &NodeRef<VecOperation>, value: &[u8]) {
         
+        #[cfg(feature = "exec_time")]
+        let timer = self.timer_set.create_scoped_timer();
+
         // fetch node info
         let node_read_lock = node.read();
         let op_type = node_read_lock.data.operation_type;
@@ -562,13 +613,16 @@ impl ConcurrentSchedule {
                         print_with_thread_id!("Setting commutative val");
                         
                         let prev_incr_read = ConcurrentSchedule::get_prev_incr_read(node);
-                        let prev_incr_read_val = prev_incr_read.read().data.value.get_value().unwrap();
+
+                        let read_lock = prev_incr_read.read();
+                        let prev_incr_read_val = read_lock.data.value.get_value().unwrap();
                         
                         #[cfg(feature = "debug")]
                         print_with_thread_id!("Prev incr read {:?}", prev_incr_read_val);
 
                         let val = value.to_vec();
                         let delta = val.compute_delta(&prev_incr_read_val);
+                        drop(read_lock);
 
                         #[cfg(feature = "debug")]
                         print_with_thread_id!("Writing to commutative node");
@@ -585,7 +639,10 @@ impl ConcurrentSchedule {
                     }
                 }
              }
-        }
+        };
+
+        #[cfg(feature = "exec_time")]
+        self.timer_set.add_scoped_timer(timer);
     }
 
     /// Given a node, start running over the linked list (previous nodes) & merge all the 
@@ -603,23 +660,26 @@ impl ConcurrentSchedule {
     where
         S: ConcurrentStorage + ?Sized // allows handling both 'S: ConcurrentStorage' and 'dyn ConcurrentStorage'
     {
+        #[cfg(feature = "exec_time")]
+        let timer = self.timer_merge_comm_chain.create_scoped_timer();
+
         let mut starting_node = Arc::clone(node);
         let mut accumulated_deltas =  vec![];
 
         // auxilliary function
-        let mut merge_accumulated_delta = |delta: Vec<u8>| {
+        let mut merge_accumulated_delta = |delta: &Vec<u8>| {
             if accumulated_deltas.is_empty() {
-                accumulated_deltas = delta;
+                accumulated_deltas = delta.clone();
             }
             else {
-                accumulated_deltas.merge(&delta);
+                accumulated_deltas.merge(delta);
             }
         };
 
         #[cfg(feature = "debug")]
         print_with_thread_id!("Mergind deltas");
 
-        loop {
+        let res = loop {
             let node_lock = starting_node.read();
             // Commutative writes -> merge deltas
             if node_lock.data.is_write() {
@@ -651,11 +711,16 @@ impl ConcurrentSchedule {
             } 
             else { // We reached the head without finding any non commutative write -> merge deltas to storage value
                 let val = storage.get_uncharged(key).unwrap();
-                merge_accumulated_delta(val);
+                merge_accumulated_delta(&val);
                 break accumulated_deltas;
  
             }
-        }
+        };
+
+        #[cfg(feature = "exec_time")]
+        let timer = self.timer_merge_comm_chain.add_scoped_timer(timer);
+
+        res
     }
 
 
@@ -677,16 +742,20 @@ impl ConcurrentSchedule {
     /// It must be read from storage.
     pub fn get_value(&self, read_node: &NodeRef<VecOperation>, concurrent_storage: &Arc<dyn ConcurrentStorage>, 
         sc_address: &ScAddr, key: &[u8]) -> Option<Vec<u8>> {
+
+        #[cfg(feature = "exec_time")]
+        let timer = self.timer_get.create_scoped_timer();
+
         // fetch node info
         let node_read_lock = read_node.read();
 
-        if node_read_lock.data.is_read() {
+        let val = if node_read_lock.data.is_read() {
             if node_read_lock.data.is_commutative() {
 
                 let dependency_val = if let Some(dependency) = &node_read_lock.dependency {
                     let node_lock = dependency.read();
                     // println!("Comm Read depnded on: {:?}", node_lock.data);
-                    Some(node_lock.data.wait_for_value())
+                    Some(node_lock.data.wait_for_value().clone())
                 }
                 else {
                     concurrent_storage.get_uncharged(key)
@@ -715,7 +784,7 @@ impl ConcurrentSchedule {
                         Some(merged_deltas)
                     }
                     else {
-                        Some(node_lock.data.wait_for_value())
+                        Some(node_lock.data.wait_for_value().clone())
                     }
                 }
                 else {
@@ -725,10 +794,25 @@ impl ConcurrentSchedule {
         }
         else {
             panic!("This method should only be called for read nodes!")
-        }
+        };
+
+        #[cfg(feature = "exec_time")]
+        self.timer_get.add_scoped_timer(timer);
+
+        val
     }
 
 
+
+    pub fn print_times(&self, n_threads: u16) {
+        println!("CONCURRENT_SCHEDULE ---");
+        println!("timer_get: ~{:?} per thread", self.timer_get.get_value() / (n_threads as u32));
+        println!("timer_set: ~{:?} per thread", self.timer_set.get_value() / (n_threads as u32));
+        println!("timer_merge_comm_chain: ~{:?} per thread", self.timer_merge_comm_chain.get_value() / (n_threads as u32));
+        println!("timer_wait_for_msgs_from_queue: ~{:?} per thread", self.timer_wait_for_msgs_from_queue.get_value() / (n_threads as u32));
+        println!("timer_update_execution_queues_on_tx_finish: ~{:?} per thread", self.timer_update_execution_queues_on_tx_finish.get_value() / (n_threads as u32));
+        println!("---");
+    }
 
     #[cfg(feature = "debug_graph")]
     pub fn generate_debug_graph(&self, graph_name: String, rws:  &Arc<Vec<RWSContext>>) {
@@ -881,7 +965,7 @@ mod tests {
         let read_val = concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         assert_eq!(read_val, Some(val.clone()));
-        assert_eq!(node.read().data.value.get_value(), Some(val));
+        assert_eq!(node.read().data.value.get_value(), Some(&val));
     }
 
     // Storage | <- [Comm Read] <- [Comm Write]
@@ -921,10 +1005,10 @@ mod tests {
             _ => unreachable!("")
         };
  
-        ConcurrentSchedule::set_value(node, "105".as_bytes());
+        concurrent_schedule.set_value(node, "105".as_bytes());
 
         // write commutative node should end up having the delta -> 105 - 100 = 5
-        assert_eq!(node.read().data.value.get_value(), Some("5".as_bytes().to_vec()));
+        assert_eq!(node.read().data.value.get_value(), Some(&"5".as_bytes().to_vec()));
     }
 
     // Storage | [Non Comm Write] <- [Non Comm Read]
@@ -950,7 +1034,7 @@ mod tests {
             _ => unreachable!("")
         };
 
-        ConcurrentSchedule::set_value(write_node, &val);
+        concurrent_schedule.set_value(write_node, &val);
 
         let read_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
         let read_node = match read_operation { 
@@ -1004,8 +1088,8 @@ mod tests {
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        ConcurrentSchedule::set_value(write_node, &comm_write);
-        assert_eq!(write_node.read().data.value.get_value(), Some(delta));
+        concurrent_schedule.set_value(write_node, &comm_write);
+        assert_eq!(write_node.read().data.value.get_value(), Some(&delta));
 
         // NonComm read -> read X + Z = Y
         let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap();
@@ -1049,8 +1133,8 @@ mod tests {
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        ConcurrentSchedule::set_value(write_node, val.as_slice());
-        assert_eq!(write_node.read().data.value.get_value(), Some(val.clone()));
+        concurrent_schedule.set_value(write_node, val.as_slice());
+        assert_eq!(write_node.read().data.value.get_value(), Some(&val.clone()));
 
         // Comm read -> read X
         let read_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
@@ -1067,8 +1151,8 @@ mod tests {
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        ConcurrentSchedule::set_value(write_node, &comm_write);
-        assert_eq!(write_node.read().data.value.get_value(), Some(delta));
+        concurrent_schedule.set_value(write_node, &comm_write);
+        assert_eq!(write_node.read().data.value.get_value(), Some(&delta));
 
         // NonComm read -> read X + Z = Y
         let read_operation = rws.get(3).unwrap().rws.rws.get(0).unwrap();
@@ -1126,8 +1210,8 @@ mod tests {
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        ConcurrentSchedule::set_value(write_node, &comm_write1);
-        assert_eq!(write_node.read().data.value.get_value(), Some(delta1));
+        concurrent_schedule.set_value(write_node, &comm_write1);
+        assert_eq!(write_node.read().data.value.get_value(), Some(&delta1));
 
         // Comm read2
         let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap();
@@ -1144,8 +1228,8 @@ mod tests {
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
-        ConcurrentSchedule::set_value(write_node, &comm_write2);
-        assert_eq!(write_node.read().data.value.get_value(), Some(delta2));
+        concurrent_schedule.set_value(write_node, &comm_write2);
+        assert_eq!(write_node.read().data.value.get_value(), Some(&delta2));
 
         // NonComm read
         let read_operation = rws.get(4).unwrap().rws.rws.get(0).unwrap();
@@ -1182,7 +1266,7 @@ mod tests {
         let write_operation = linked_list.head.read();
 
         // set write node's value
-        ConcurrentSchedule::set_value(&*write_operation, val.as_slice());
+        concurrent_schedule.set_value(&*write_operation, val.as_slice());
 
         let state_manager = mock_state_manager(sc_address.clone());
 
