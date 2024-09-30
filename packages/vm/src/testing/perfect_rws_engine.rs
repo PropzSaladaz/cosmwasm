@@ -1,5 +1,5 @@
 use crate::symb_exec::{ProfileEvaluator, ProfileGenerator, TxRWS};
-use crate::SCProfile;
+use crate::{SCProfile, ScAddr};
 
 pub struct PerfectRWSEngine {
     rws_idx: u64,
@@ -17,7 +17,7 @@ impl ProfileEvaluator for PerfectRWSEngine {
         todo!()
     }
 
-    fn get_rws_execute<'a>    (&self, sc_profile: &SCProfile, deps: &'a crate::DepsMut<'a>, custom: &[u8]) -> TxRWS {
+    fn get_rws_execute<'a>    (&self, sc_addr: &ScAddr, sc_profile: &SCProfile, deps: &'a crate::DepsMut<'a>, custom: &[u8]) -> TxRWS {
         todo!()
     }
     

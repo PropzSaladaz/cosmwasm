@@ -8,7 +8,7 @@ use dashmap::DashMap;
 use wasmer::Module;
 
 use crate::{ 
-    backend::ConcurrentBackend, print_with_thread_id, symb_exec::{ProfileEvaluator, ProfileGenerator, SEEngine, SEEngineParse}, testing::{mock_backend, ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, StorageWrapper}, BackendApi, Instance, Querier, SCProfile, SCProfileParser, Storage, VmResult};
+    backend::ConcurrentBackend, print_with_thread_id, symb_exec::{ProfileEvaluator, ProfileGenerator, SEEngine, SEEngineParse}, testing::{mock_backend, ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, StorageWrapper}, BackendApi, Instance, Querier, SCProfile, SCProfileParser, Storage, SymbolicExecutionEngine, VmResult};
 
 use super::schedule::{ScAddr, TxId};
 
@@ -192,51 +192,14 @@ where
             querier: Arc::new(RwLock::new(MockQuerier::new(&[("", &[])]))),
         }
     }
-}
 
-
-pub struct SCInstance<A, S, W, Q> // TEST - should be private 
-where
-    A: BackendApi, 
-    S: ConcurrentStorage,
-    W: StorageWrapper,
-    Q: Querier
-{
-    code_id: CodeId, // Just to keep track of which code this contract was generated from
-    pub state: Arc<PersistentBackend<A, S, Q>>,
-    pub vm_instances: Arc<ArrayQueue<InstanceController<A, W, Q>>>,
-}
-
-impl<A, S, W, Q> SCInstance<A, S, W, Q> 
-where
-    A: BackendApi, 
-    S: ConcurrentStorage,
-    W: StorageWrapper, 
-    Q: Querier
-{
-    fn new(code_id: CodeId, state: &Arc<PersistentBackend<A, S, Q>>, instances: Vec<InstanceController<A, W, Q>>) -> Self {
-        let queue = ArrayQueue::new(instances.len());
-        for instance in instances {
-            queue.push(instance);
-        };
-
-        Self {
-            code_id,
-            state: Arc::clone(state),
-            vm_instances: Arc::new(queue),
-        }
+    pub fn from_storage(storage: Arc<MockConcurrentStorage>) -> PersistentBackend<MockApi, MockConcurrentStorage, MockQuerier>  {
+        PersistentBackend {
+            api: Arc::new(MockApi::default()),
+            storage: storage,
+            querier: Arc::new(RwLock::new(MockQuerier::new(&[("", &[])]))),
+        }  
     }
-}
-
-
-
-/// Used after applying the algorithm that identifies the keys to partition.
-/// Stores the RWS to partition per each SC. THe address is then used to fetch the storage
-/// and to partition the annotated items.
-#[derive(Clone, PartialEq, Debug)]
-pub struct ContractRWS {
-    pub rws: Vec<Vec<u8>>,
-    pub address: String,
 }
 
 
@@ -257,7 +220,8 @@ where
 /// Stores the SC's vm instance.
 /// for each instantiated contract.
 //                 SC address -> SC instantiation
-type SCStorage<A, S, W, Q> = DashMap<ScAddr, Arc<SCInstance<A, S, W, Q>>>;
+type SCInstance<A, W, Q> = DashMap<ScAddr, Arc<ArrayQueue<InstanceController<A, W, Q>>>>;
+pub type SCStorage<A, S, Q> = DashMap<ScAddr, Arc<PersistentBackend<A, S, Q>>>;
 
 /// Entity responsible for managing Smart Contract state
 /// 
@@ -276,7 +240,8 @@ where
     E: ProfileGenerator
 {
     static_data: Arc<RwLock<SCStaticData>>,
-    pub sc_storage: SCStorage<A, S, W, Q>,
+    pub sc_instances: SCInstance<A, W, Q>,
+    pub sc_storage: Arc<SCStorage<A, S, Q>>,
     symb_exec_engine: Arc<E>,
 
     // timers - profiling
@@ -311,7 +276,8 @@ where
     pub fn new(symb_exec_engine: Arc<E>) -> SCManager<A, S, W, Q, E> {
         SCManager {
             static_data: Arc::new(RwLock::new(SCStaticData::new())),
-            sc_storage: DashMap::new(),
+            sc_storage: Arc::new(DashMap::new()),
+            sc_instances: DashMap::new(),
             symb_exec_engine,
 
             timer_vm_instances_work: ConcurrentTimer::new(),
@@ -322,23 +288,19 @@ where
     /// Saves the storage & compiled module that refers to some instantiated SC
     pub fn save_instances(&self, code_id: CodeId, address: ScAddr, state: Arc<PersistentBackend<A, S, Q>>, instances: Vec<Instance<A, W, Q>>) {
         let mut instance_id = 0;
-        let mut instance_controllers = Vec::with_capacity(instances.len());
+        let queue = ArrayQueue::new(instances.len());
 
         // give a unique ID to each for debugging
         for inst in instances {
-            instance_controllers.push(InstanceController {
+            queue.push(InstanceController {
                 instance_id,
                 instance: inst
             });
             instance_id+=1;
         }
 
-        self.sc_storage.insert(address, Arc::new(
-            SCInstance::new(
-                code_id,
-                &state,
-                instance_controllers)
-            ));
+        self.sc_storage.insert(address.clone(), state);
+        self.sc_instances.insert(address, Arc::new(queue));
         self.static_data.write().unwrap().incr_instantiation(code_id);
     }
 
@@ -351,9 +313,8 @@ where
     {
         // print_with_thread_id!("Inside execute in VM");
 
-        let res = match self.sc_storage.get(address) {
-            Some(sc_instance) => {
-                let instances = &sc_instance.vm_instances;
+        let res = match self.sc_instances.get(address) {
+            Some(instances) => {
                 #[cfg(feature = "debug")]
                 print_with_thread_id!("SC {:?} - Waiting for VM to be free!", address);
 
@@ -400,9 +361,13 @@ where
 
     pub fn get_sc_storage(&self, address: &ScAddr) -> Option<Arc<PersistentBackend<A, S, Q>>> {
         match self.sc_storage.get(address) {
-            Some(sc_instance) => Some(Arc::clone(&sc_instance.state)),
+            Some(sc_instance) => Some(Arc::clone(&sc_instance)),
             None => None
         }
+    }
+
+    pub fn get_sc_storages(&self) -> Arc<SCStorage<A, S, Q>> {
+        Arc::clone(&self.sc_storage)
     }
 
     pub fn get_code(&self, code_id: CodeId) -> std::io::Result<Vec<u8>> {
@@ -449,7 +414,7 @@ where
 
     pub fn get_contract_storage(&self, sc_address: ScAddr) -> Arc<S> {
         let sc_storage = self.sc_storage.get(&sc_address).expect("Smart Contract should have been initialized");
-        let storage = Arc::clone(&sc_storage.state.storage); // TODO we shouldn't have to clone. this should be done serially
+        let storage = Arc::clone(&sc_storage.storage); // TODO we shouldn't have to clone. this should be done serially
         storage
     }
 
@@ -588,6 +553,9 @@ _msg: InstantiateMsg
             let concurrent_store = Arc::new(MockConcurrentStorage::default());
             backend = Arc::new(mock_persistent_backend(&[], Arc::clone(&concurrent_store)));
 
+            let scs = Arc::new(SCStorage::new());
+            scs.insert("".to_owned(), Arc::clone(&backend));
+
             // simulate instantiating N vms - we use runtime engine now, since we already got the module compiled.
             let engine = make_runtime_engine(Some(DEFAULT_MEMORY_LIMIT));
             let store = Store::new(engine);
@@ -596,7 +564,10 @@ _msg: InstantiateMsg
             let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
                 0, 
                 Rc::new(Arc::clone(&concurrent_schedule)),
-                Arc::clone(&backend), SC_ADDR_A.to_owned(), vec![]
+                Arc::clone(&backend), 
+                scs,
+                vec![],
+                "".to_owned()
             );
 
             let instance = instance_from_module(store, &module, concurrent_backend, much_gas.gas_limit, None).unwrap();
@@ -615,10 +586,16 @@ _msg: InstantiateMsg
        
         { // simulate instantiate call in a separate context
             let rws = vec![];
+            let scs = Arc::new(SCStorage::new());
+            scs.insert("".to_owned(), Arc::clone(&backend));
+
             let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
                 0, 
                 Rc::new(Arc::clone(&concurrent_schedule)),
-                Arc::clone(&backend), SC_ADDR_A.to_owned(), rws
+                Arc::clone(&backend), 
+                scs,
+                rws,
+                "".to_owned()
             );
     
             // execute instantiate contract
@@ -646,10 +623,16 @@ _msg: InstantiateMsg
             ]);
             
             let rws = vec![];
+            let scs = Arc::new(SCStorage::new());
+            scs.insert("".to_owned(), Arc::clone(&backend));
+
             let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
                 0, 
                 Rc::new(Arc::clone(&concurrent_schedule)),
-                Arc::clone(&backend), SC_ADDR_A.to_owned(), rws
+                Arc::clone(&backend), 
+                scs,
+                rws,
+                "".to_owned()
             );
 
             // execute instantiate contract

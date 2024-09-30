@@ -10,7 +10,7 @@ mod serial_schedule;
 mod dot_schedule;
 
 pub use vm_manager::{VMManager, InstantiatedEntryPoint, DepsMut, RWSContext, BackendBuilder, ConcurrentBackendBuilder, EnvironmentContext, ReplayLogs, VMTransaction};
-pub use sc_storage::{SCManager, ContractRWS, PersistentBackend, CodeId, ConcurrentTimer};
+pub use sc_storage::{SCManager, PersistentBackend, CodeId, ConcurrentTimer, SCStorage};
 pub use concurrent_schedule::{ConcurrentSchedule, TxState};
 pub use schedule::{Schedule, LastWrites, TxId, ScAddr, NodeRef, VecOperation, DependencyNode, OpType};
 pub use parallel_schedule_builder::ParallelScheduleBuilder;

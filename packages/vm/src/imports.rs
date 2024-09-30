@@ -615,6 +615,7 @@ mod tests {
     use crate::size::Size;
     use crate::testing::{ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper};
     use crate::wasm_backend::{compile, make_compiling_engine};
+    use crate::{PersistentBackend, SCStorage};
 
     static CONTRACT: &[u8] = include_bytes!("../testdata/hackatom.wasm");
 
@@ -713,7 +714,11 @@ mod tests {
         concurrent_storage.set(KEY1, VALUE1).0.expect("error setting");
         concurrent_storage.set(KEY2, VALUE2).0.expect("error setting");
 
-        let storage: MockStorageWrapper = MockStorageWrapper::default(Arc::new(concurrent_storage));
+        let backend = PersistentBackend::<MockApi, MockConcurrentStorage, MockQuerier>::from_storage(Arc::new(concurrent_storage));
+        let storage: SCStorage<MockApi, MockConcurrentStorage, MockQuerier> = SCStorage::new();
+        storage.insert("".to_owned(), Arc::new(backend));
+
+        let storage: MockStorageWrapper = MockStorageWrapper::default(Arc::new(storage));
         let querier: MockQuerier<Empty> =
             MockQuerier::new(&[(INIT_ADDR, &coins(INIT_AMOUNT, INIT_DENOM))]);
         env.move_in(storage, Arc::new(RwLock::new(querier)));
@@ -941,7 +946,7 @@ mod tests {
         fe_mut
             .data()
             .with_storage_from_context::<_, _>(|store| {
-                println!("{store:?}");
+                // println!("{store:?}");
                 Ok(())
             })
             .unwrap();
@@ -951,7 +956,7 @@ mod tests {
         fe_mut
             .data()
             .with_storage_from_context::<_, _>(|store| {
-                println!("{store:?}");
+                // println!("{store:?}");
                 Ok(())
             })
             .unwrap();

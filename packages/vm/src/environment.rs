@@ -456,6 +456,7 @@ mod tests {
     use crate::size::Size;
     use crate::testing::{ConcurrentStorage, MockApi, MockQuerier, MockConcurrentStorage, MockStorageWrapper};
     use crate::wasm_backend::{compile, make_compiling_engine};
+    use crate::{PersistentBackend, SCStorage};
     use cosmwasm_std::{
         coins, from_json, to_json_vec, AllBalanceResponse, BankQuery, Empty, QueryRequest,
     };
@@ -526,8 +527,12 @@ mod tests {
             .0
             .expect("error setting value");
 
+        let backend = PersistentBackend::<MockApi, MockConcurrentStorage, MockQuerier>::from_storage(Arc::new(concurrent_storage));
+        let storage: SCStorage<MockApi, MockConcurrentStorage, MockQuerier> = SCStorage::new();
+        storage.insert("".to_owned(), Arc::new(backend));
+
         // create some mock data
-        let mut storage = MockStorageWrapper::default(Arc::new(concurrent_storage));
+        let mut storage = MockStorageWrapper::default(Arc::new(storage));
 
         let querier: MockQuerier<Empty> =
             MockQuerier::new(&[(INIT_ADDR, &coins(INIT_AMOUNT, INIT_DENOM))]);

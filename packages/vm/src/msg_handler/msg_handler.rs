@@ -5,10 +5,10 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub enum Message<'a> {
+pub enum Message {
     Invocation(SerializableTransaction),
     Deployment {
-        contract_code: &'a [u8],
+        contract_code: Box<[u8]>,
         code_id: Option<CodeId>, // used for replay txs
     }
 }
@@ -66,7 +66,7 @@ where
                     contract_code,
                     code_id 
                 } => {
-                    self.sc_manager.write().unwrap().save_code(contract_code, code_id).unwrap();
+                    self.sc_manager.write().unwrap().save_code(&contract_code, code_id).unwrap();
                 },
                 Message::Invocation (vm_message) => {
                     let vm_tx = VMTransaction {

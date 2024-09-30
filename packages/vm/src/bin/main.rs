@@ -1,13 +1,13 @@
-use std::{collections::HashMap, rc::Rc, sync::{Arc, RwLock}, time::Instant};
+use std::{collections::HashMap, fs::File, io::BufReader, rc::Rc, sync::{Arc, RwLock}, time::Instant};
 
 use cosmwasm_vm::{
-    testing::{mock_persistent_backend, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, vm_transactions::{ExecuteTx, InstantiateTx, SerializableTransaction, TransactionEnum}, ConcurrentBackend, ConcurrentSchedule, InstantiatedEntryPoint, Message, MessageHandler, PersistentBackend, ReadWrite, SCManager, ScAddr, SymbolicExecutionEngine, TxId
+    testing::{mock_persistent_backend, perfect_rws_engine::PerfectRWSEngine, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper}, vm_transactions::{ExecuteTx, InstantiateTx, SerializableTransaction, StoreCodeTx, TransactionEnum}, ConcurrentBackend, ConcurrentSchedule, ContractRWS, InstantiatedEntryPoint, Message, MessageHandler, PersistentBackend, ReadWrite, SCManager, SCStorage, ScAddr, SymbolicExecutionEngine, TxId
 };
 
 const CONTRACT: &[u8] = include_bytes!("../../custom_contracts/empty-contract/target/wasm32-unknown-unknown/release/contract.wasm");
 
 fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128) {
-    let se_engine = SymbolicExecutionEngine::new();
+    let se_engine = PerfectRWSEngine::new();
     let sc_manager = SCManager::new(Arc::new(se_engine));
 
     let backend_builder = |storage| {
@@ -15,8 +15,8 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
     };
 
     let concurrent_backend_builder = |tx_id: TxId, concurrent_schedule: Rc<Arc<ConcurrentSchedule>>, 
-        persistent_backend: Arc<PersistentBackend<MockApi, MockConcurrentStorage, MockQuerier>>, sc_address: ScAddr, rws: Vec<ReadWrite>| {
-        ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(tx_id, concurrent_schedule, persistent_backend, sc_address, rws)
+        persistent_backend: Arc<PersistentBackend<MockApi, MockConcurrentStorage, MockQuerier>>, sc_storages: Arc<SCStorage<MockApi, MockConcurrentStorage, MockQuerier>>, rws: Vec<ContractRWS>, starting_sc_address: ScAddr| {
+        ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(tx_id, concurrent_schedule, persistent_backend, sc_storages, rws, starting_sc_address)
     };
 
     let sc_manager = Arc::new(RwLock::new(sc_manager));
@@ -31,94 +31,20 @@ fn run_n_contracts_n_increments(n_contracts: u128, n_operation_repetitions: u128
     6,
     6);
 
+        // reads txs from file
+    let file = File::open("/home/sidnei-teixeira/Documents/ResumosLEIC/MEIC-1ano/Tese/cosmwasm_original/cosmwasm/packages/vm").unwrap();
+    let reader = BufReader::new(file);
+    let txs: Vec<SerializableTransaction> = serde_json::from_reader(reader).unwrap();
+    // convert txs to MessageHandler wrapper
+    let txs = txs.into_iter().map(|tx| match tx.transaction {
+        TransactionEnum::StoreCode(StoreCodeTx { wasm, log_store_code, ..}) => 
+            Message::Deployment { contract_code: wasm, code_id: Some(log_store_code as u32) },
+        _ => Message::Invocation(tx)
+    }).collect();
 
-    let mut msgs = vec![
-        Message::Deployment { // deploy the contract before all
-            contract_code:  CONTRACT,
-            code_id: None,
-        },  
-    ];
-
-    // instantiations
-    for i in 0..n_contracts {
-        msgs.push(
-            Message::Invocation(
-                SerializableTransaction::with_log_instantiate(
-                    TransactionEnum::Instantiate(InstantiateTx {
-                        code_id: 0,
-                        msg: br#"{}"#.to_vec(),
-                        hash: "".to_owned(),
-                        sender: "".to_owned(),
-                        label: "".to_owned(),
-                        funds: vec![],
-                        reply: None,
-                    }),
-                    HashMap::from([(0u32, vec![format!("{:?}", i)])])
-                )
-            )
-        )
-    }
-
-    for i in 0..n_contracts {
-        for _ in 0..n_operation_repetitions {
-            msgs.push(
-                Message::Invocation(
-                    SerializableTransaction::with_log_execute(
-                        TransactionEnum::Execute(ExecuteTx {
-                            msg: br#"{
-                                "AddOne": {
-                                    "user": "ADMIN"
-                                }
-                            }"#.to_vec(),
-                            contract_addr: format!("{:?}", i),
-                            hash: "".to_owned(),
-                            sender: "".to_owned(),
-                            funds: vec![],
-                            reply: None,
-                        }),
-                        vec![format!("{:?}", i)]
-                    )
-                )
-            );
-
-            msgs.push(
-                Message::Invocation(
-                    SerializableTransaction::with_log_execute(
-                        TransactionEnum::Execute(ExecuteTx {
-                            msg: br#"{
-                                "SetVal": {
-                                    "user": "ADMIN",
-                                    "val": 10
-                                }
-                            }"#.to_vec(),
-                            contract_addr: format!("{:?}", i),
-                            hash: "".to_owned(),
-                            sender: "".to_owned(),
-                            funds: vec![],
-                            reply: None,
-                        }),
-                        vec![format!("{:?}", i)]
-                    )
-                )
-            );
-        }
-    }
-
-    // for m in &msgs {
-    //     match m {
-    //         Message::Deployment { .. } => println!("SC Deployment"),
-    //         Message::Invocation(tx) => {
-    //             match &tx.transaction {
-    //                 TransactionEnum::Instantiate(InstantiateTx { msg, .. }) => println!("Instantiate: {:?}", String::from_utf8(msg.clone())),
-    //                 TransactionEnum::Execute(ExecuteTx { msg, .. }) => println!("Execute: {:?}", String::from_utf8(msg.clone())),
-    //                 _ => ()
-    //             }
-    //         }
-    //     }
-    // }
 
     let start = Instant::now();
-    message_handler.handle_messages(msgs);
+    message_handler.handle_messages(txs);
     let elapsed = start.elapsed();
     println!("Total Exec Time: {:?}", elapsed);
 

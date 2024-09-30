@@ -1,7 +1,8 @@
 use std::sync::{Arc, RwLock};
 
 use cosmwasm_std::Storage;
-use crate::DepsMut;
+use serde::{Deserialize, Serialize};
+use crate::{DepsMut, ScAddr};
 
 use super::{evaluator::eval::SEContext, parser::{
     nodes::*, SCProfile
@@ -28,7 +29,16 @@ pub struct TxRWS {
     pub storage_dependency: StorageDependency,
     pub profile_status: SEStatus,
     pub rws_uid: String,
-    pub rws: Vec<ReadWrite>
+    /// contracts may have nested calls to other contracts, thus we store a vec
+    /// of scoped RWSs
+    pub rws: Vec<ContractRWS>
+}
+
+// Represents a scoped RWS
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct ContractRWS {
+    pub contract_addr: String,
+    pub rws: Vec<ReadWrite>,
 }
 
 impl PartialEq for TxRWS {
@@ -50,7 +60,7 @@ pub trait ProfileGenerator {
 /// given the message inputs as well as the current storage state
 pub trait ProfileEvaluator {
     fn get_rws_instantiate<'a>(&self, sc_profile: &SCProfile, deps: &'a DepsMut<'a>, custom: &[u8]) -> TxRWS;
-    fn get_rws_execute<'a>    (&self, sc_profile: &SCProfile, deps: &'a DepsMut<'a>, custom: &[u8]) -> TxRWS;
+    fn get_rws_execute<'a>    (&self, sc_address: &ScAddr, sc_profile: &SCProfile, deps: &'a DepsMut<'a>, custom: &[u8]) -> TxRWS;
     fn get_rws_reply          (&self) -> TxRWS;
     fn get_rws_migrate        (&self) -> TxRWS;
     fn get_rws_ibc_init       (&self) -> TxRWS;
@@ -158,11 +168,11 @@ _msg: QueryMsg
 impl ProfileEvaluator for SymbolicExecutionEngine {
 
     fn get_rws_instantiate<'a>(&self, sc_profile: &SCProfile, deps: &'a DepsMut<'a>, custom: &[u8]) -> TxRWS {
-        SymbolicExecutionEngine::get_rws(&EntryPoint::Instantiate, sc_profile, deps, custom)
+        SymbolicExecutionEngine::get_rws(&"".to_string(), &EntryPoint::Instantiate, sc_profile, deps, custom)
     }
 
-    fn get_rws_execute<'a>(&self, sc_profile: &SCProfile, deps: &'a DepsMut<'a>, custom: &[u8]) -> TxRWS {
-        SymbolicExecutionEngine::get_rws(&EntryPoint::Execute, sc_profile, deps, custom)
+    fn get_rws_execute<'a>(&self, sc_address: &ScAddr, sc_profile: &SCProfile, deps: &'a DepsMut<'a>, custom: &[u8]) -> TxRWS {
+        SymbolicExecutionEngine::get_rws(sc_address, &EntryPoint::Execute, sc_profile, deps, custom)
     }
     
     fn get_rws_reply(&self) -> TxRWS {
@@ -205,7 +215,7 @@ impl ProfileEvaluator for SymbolicExecutionEngine {
 impl SymbolicExecutionEngine {
 
     /// Auxiliary method to get the root node of the profile for the specified entry point & parse it to retrieve the RWS
-    fn get_rws<'b>(entry_point: &EntryPoint, sc_profile: &SCProfile, deps: &'b DepsMut<'b>, custom: &[u8]) -> TxRWS {
+    fn get_rws<'b>(sc_addr: &ScAddr, entry_point: &EntryPoint, sc_profile: &SCProfile, deps: &'b DepsMut<'b>, custom: &[u8]) -> TxRWS {
         let execute_entry_point = sc_profile.entry_point.get(&entry_point).unwrap();
         let path_cond = &execute_entry_point.root_path_cond.as_ref().unwrap();
         let arg_types = &execute_entry_point.inputs;
@@ -217,7 +227,10 @@ impl SymbolicExecutionEngine {
             storage_dependency,
             profile_status: sc_profile.status,
             rws_uid,
-            rws,
+            rws: vec![ContractRWS {
+                contract_addr: sc_addr.to_owned(),
+                rws
+            }],
         }
     }
 
@@ -405,6 +418,6 @@ _msg: ExecuteMsg
 
         let engine = SymbolicExecutionEngine::default();
 
-        let rws = engine.get_rws_execute(&contract, &mut_deps, custom);
+        let rws = engine.get_rws_execute(&"".to_string(), &contract, &mut_deps, custom);
     }
 }

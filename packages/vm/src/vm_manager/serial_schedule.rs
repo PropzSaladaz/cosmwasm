@@ -287,39 +287,41 @@ impl ScheduleBuilder {
 
             self.transactions.insert(tx_id);
 
-            for operation in &mut tx.rws.rws {
-                match operation {
-                    ReadWrite::Read { 
-                        storage_dependency: _, 
-                        key, 
-                        commutativity,
-                        operation_node
+            for operations in &mut tx.rws.rws {
+                for operation in &mut operations.rws {
+                    match operation {
+                        ReadWrite::Read { 
+                            storage_dependency: _, 
+                            key, 
+                            commutativity,
+                            operation_node
+    
+                        } => {
+                            let key_bytes = match key {
+                                Key::Bytes(bytes) => bytes,
+                                _ => unreachable!("Key should be bytes at this stage"),
+                            };
+                            // println!("Read COmmutativity: {:?}", commutativity);
+                            *operation_node = Some(self.update_schedule_on_read_operation(first_operation, tx_id, contract, &key_bytes, *commutativity));
+                        }
+                        ReadWrite::Write { 
+                            storage_dependency: _, 
+                            key, 
+                            commutativity,
+                            operation_node
+                        } => {
+                            let key_bytes = match key {
+                                Key::Bytes(bytes) => bytes,
+                                _ => unreachable!("Key should be bytes at this stage"),
+                            };
+    
+                            *operation_node = Some(self.update_schedule_on_write_operation(first_operation, tx_id, contract, &key_bytes, *commutativity));
+                        }
+                    };
 
-                    } => {
-                        let key_bytes = match key {
-                            Key::Bytes(bytes) => bytes,
-                            _ => unreachable!("Key should be bytes at this stage"),
-                        };
-                        // println!("Read COmmutativity: {:?}", commutativity);
-                        *operation_node = Some(self.update_schedule_on_read_operation(first_operation, tx_id, contract, key_bytes, *commutativity));
+                    if first_operation {
+                        first_operation = false;
                     }
-                    ReadWrite::Write { 
-                        storage_dependency: _, 
-                        key, 
-                        commutativity,
-                        operation_node
-                    } => {
-                        let key_bytes = match key {
-                            Key::Bytes(bytes) => bytes,
-                            _ => unreachable!("Key should be bytes at this stage"),
-                        };
-
-                        *operation_node = Some(self.update_schedule_on_write_operation(first_operation, tx_id, contract, key_bytes, *commutativity));
-                    }
-                };
-
-                if first_operation {
-                    first_operation = false;
                 }
             }
 
@@ -614,7 +616,7 @@ mod tests {
     use serial_test::serial;
 
     use crate::{
-        symb_exec::{Commutativity, Key, StorageDependency, TxRWS}, testing::mock_tx_operation, vm_manager::{serial_schedule::ScheduleBuilder, vm_manager::VMTransaction}, vm_transactions::{ExecuteTx, TransactionEnum}, DependencyNode, InstantiatedEntryPoint, LastWrites, NodeRef, OpType, RWSContext, ReadWrite, ReplayLogs, SEStatus, ScAddr, Size, VecOperation};
+        symb_exec::{Commutativity, ContractRWS, Key, StorageDependency, TxRWS}, testing::mock_tx_operation, vm_manager::{serial_schedule::ScheduleBuilder, vm_manager::VMTransaction}, vm_transactions::{ExecuteTx, TransactionEnum}, DependencyNode, InstantiatedEntryPoint, LastWrites, NodeRef, OpType, RWSContext, ReadWrite, ReplayLogs, SEStatus, ScAddr, Size, VecOperation};
 
     const CONTRACT: &[u8] = include_bytes!("../../custom_contracts/empty-contract/target/wasm32-unknown-unknown/release/contract.wasm");
     const SC_ADDR_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -671,7 +673,7 @@ mod tests {
         assert!(partial_ready_q.pop_front().is_none());
 
         // check if operation node has been set
-        let rws = block.get(0).unwrap().rws.rws.get(0).unwrap(); 
+        let rws = block.get(0).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap(); 
         match rws {
             ReadWrite::Read { .. } => assert!(false),
             ReadWrite::Write { operation_node, .. } => {
@@ -717,38 +719,40 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "A".to_owned(),
-                    rws: vec![
-                        ReadWrite::Read { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_a.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_a.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_b.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Read { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_c.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_c.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                    ]
+                    rws: vec![ContractRWS {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
+                            ReadWrite::Read { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_a.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_a.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_b.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Read { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_c.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_c.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                        }]
+                    }]
                 }
             },
 
@@ -771,32 +775,34 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "B".to_owned(),
-                    rws: vec![
-                        ReadWrite::Read { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_d.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_a.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Read { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_b.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(key_b.clone()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                    ]
+                    rws: vec![ContractRWS {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
+                            ReadWrite::Read { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_d.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_a.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Read { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_b.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(key_b.clone()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            }]
+                    }]
                 }
             },
 
@@ -819,7 +825,9 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "C".to_owned(),
-                    rws: vec![
+                    rws: vec![ContractRWS {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
                             key: Key::Bytes(key_a.clone()), 
@@ -831,8 +839,8 @@ mod tests {
                             key: Key::Bytes(key_a.clone()), 
                             commutativity: Commutativity::NonCommutative,
                             operation_node: None,
-                        },
-                    ]
+                        }]
+                    }]
                 }
             },
 
@@ -855,7 +863,9 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "D".to_owned(),
-                    rws: vec![
+                    rws: vec![ContractRWS {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
                             key: Key::Bytes(key_c.clone()), 
@@ -867,8 +877,8 @@ mod tests {
                             key: Key::Bytes(key_c.clone()), 
                             commutativity: Commutativity::NonCommutative,
                             operation_node: None,
-                        },
-                    ]
+                        }]
+                    }]
                 }
             },
 
@@ -891,7 +901,9 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "E".to_owned(),
-                    rws: vec![
+                    rws: vec![ContractRWS {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
                             key: Key::Bytes(key_b.clone()), 
@@ -903,8 +915,8 @@ mod tests {
                             key: Key::Bytes(key_b.clone()), 
                             commutativity: Commutativity::NonCommutative,
                             operation_node: None,
-                        },
-                    ]
+                        }]
+                    }]
                 }
             },
 
@@ -927,7 +939,9 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "F".to_owned(),
-                    rws: vec![
+                    rws: vec![ContractRWS {
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
                             key: Key::Bytes(key_d.clone()), 
@@ -939,8 +953,8 @@ mod tests {
                             key: Key::Bytes(key_d.clone()), 
                             commutativity: Commutativity::NonCommutative,
                             operation_node: None,
-                        },
-                    ]
+                        }]
+                    }]
                 }
             },
         ]);

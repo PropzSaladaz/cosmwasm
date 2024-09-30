@@ -10,7 +10,7 @@ use crate::capabilities::capabilities_from_csv;
 use crate::compatibility::check_wasm;
 use crate::instance::{Instance, InstanceOptions};
 use crate::size::Size;
-use crate::{BackendApi, Querier};
+use crate::{BackendApi, Querier, SCManager, SCStorage, SymbolicExecutionEngine};
 
 use super::mock::{MockApi, MOCK_CONTRACT_ADDR};
 use super::querier::MockQuerier;
@@ -148,7 +148,7 @@ pub fn mock_instance_with_options(
 
     let backend = ConcurrentBackend {
         api: api,
-        storage: MockStorageWrapper::default(Arc::new(MockConcurrentStorage::new())),
+        storage: MockStorageWrapper::default(Arc::new(SCStorage::new())),
         querier: Arc::new(RwLock::new(MockQuerier::new(&balances))),
     };
     let memory_limit = options.memory_limit;

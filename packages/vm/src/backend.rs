@@ -7,10 +7,10 @@ use std::ops::AddAssign;
 use std::string::FromUtf8Error;
 use thiserror::Error;
 
-use crate::symb_exec::ReadWrite;
+use crate::symb_exec::{ContractRWS, ReadWrite};
 use crate::testing::{ConcurrentStorage, MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper, StorageWrapper};
 use crate::vm_manager::PersistentBackend;
-use crate::{ConcurrentSchedule, ScAddr, TxId};
+use crate::{ConcurrentSchedule, SCStorage, ScAddr, TxId};
 
 use cosmwasm_std::{Binary, ContractResult, SystemResult};
 #[cfg(feature = "iterator")]
@@ -115,8 +115,9 @@ where
         tx_block_id: TxId,
         concurrent_schedule: Rc<Arc<ConcurrentSchedule>>,
         backend: Arc<PersistentBackend<A, S2, Q>>, 
-        sc_address: ScAddr,
-        rws: Vec<ReadWrite>, 
+        sc_storage: Arc<SCStorage<MockApi, MockConcurrentStorage, MockQuerier>>,
+        rws: Vec<ContractRWS>, 
+        contract_addr: ScAddr,
     ) -> ConcurrentBackend<A, MockStorageWrapper, Q>
     where
         S2: ConcurrentStorage + 'static,
@@ -126,7 +127,7 @@ where
         let storage = Arc::clone(&backend.storage);
         let querier = Arc::clone(&backend.querier);
 
-        let storage_wrapper = MockStorageWrapper::new(tx_block_id, storage, concurrent_schedule, sc_address, rws);
+        let storage_wrapper = MockStorageWrapper::new(tx_block_id, sc_storage, concurrent_schedule, rws, contract_addr);
         
         ConcurrentBackend {
             api: api,
@@ -138,7 +139,7 @@ where
     pub fn default() -> ConcurrentBackend<MockApi, MockStorageWrapper, MockQuerier> {
         ConcurrentBackend {
             api: MockApi::default(),
-            storage: MockStorageWrapper::default(Arc::new(MockConcurrentStorage::new())),
+            storage: MockStorageWrapper::default(Arc::new(SCStorage::new())),
             querier: Arc::new(RwLock::new(MockQuerier::new(&[]))),
         }
     }

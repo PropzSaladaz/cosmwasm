@@ -7,7 +7,7 @@ use wasmer::Store;
 
 use crate::{
     backend::ConcurrentBackend, internals::instance_from_module, 
-    symb_exec::{ProfileEvaluator, ProfileGenerator, ReadWrite, SEStatus, StorageDependency, TxRWS}, 
+    symb_exec::{ContractRWS, ProfileEvaluator, ProfileGenerator, ReadWrite, SEStatus, StorageDependency, TxRWS}, 
     testing::{print_storage_wrapper_times, ConcurrentStorage, StorageWrapper}, 
     vm_transactions::{AckTx, ChannelOpenAckTx, ChannelOpenConfirmTx, ChannelOpenInitTx, ChannelOpenTryTx, RecvPacketTx, TimeoutTx, TransactionEnum}, 
     wasm_backend::{compile, make_compiling_engine}, 
@@ -17,8 +17,11 @@ use crate::{
 use super::{
     sc_storage::{CodeId, ConcurrentTimer, PersistentBackend, SCManager}, 
     schedule::{ScAddr, TxId}, 
-    vm_transactions::{print_vm_transaction_times, ExecuteTx, InstantiateTx, MigrateTx, ReplayLogsMutRef, ReplyTx, SerializableTransaction, Transaction, VMResource}, 
-    ParallelScheduleBuilder
+    vm_transactions::{
+        print_vm_transaction_times, ExecuteTx, InstantiateTx, MigrateTx, ReplayLogsMutRef, 
+        ReplyTx, SerializableTransaction, Transaction, VMResource
+    }, 
+    ParallelScheduleBuilder, SCStorage
 };
 
 #[cfg(feature = "exec_time")]
@@ -70,8 +73,9 @@ pub type ConcurrentBackendBuilder<A, S, W, Q> = dyn Fn(
     TxId,  // tx_block_id
     Rc<Arc<ConcurrentSchedule>>, 
     Arc<PersistentBackend<A, S, Q>>,
-    ScAddr,
-    Vec<ReadWrite>) -> ConcurrentBackend<A, W, Q> + Send + Sync;
+    Arc<SCStorage<A, S, Q>>,
+    Vec<ContractRWS>,
+    ScAddr) -> ConcurrentBackend<A, W, Q> + Send + Sync;
 
 pub struct ThreadExecutionContext<A, S, W, Q, E>
 where
@@ -107,7 +111,6 @@ pub struct RWSContext {
     pub address: ScAddr, 
     pub tx_message: Option<VMTransaction>,
     pub tx_block_id: TxId,
-
 }
 
 impl PartialEq for RWSContext {
@@ -488,7 +491,7 @@ where
                             };
         
        
-                            (self.symb_exec_engine.get_rws_execute(&profile, &mut_deps, message.as_slice()),
+                            (self.symb_exec_engine.get_rws_execute(contract_addr, &profile, &mut_deps, message.as_slice()),
                              contract_addr.clone())
                         }
                         // If invocation on a contract that wasn't yet instantiated
@@ -692,7 +695,8 @@ where
 
         // Get SC code by ID & set the mapping address -> code_id for future invocations on it
         let state_manager_lock = exec_context.thread_exec_context.state_manager.read().unwrap();
-        let code = state_manager_lock.get_code(contract_code_id)?;
+        let code: Vec<u8> = state_manager_lock.get_code(contract_code_id)?;
+        let sc_storages = state_manager_lock.get_sc_storages();
         state_manager_lock.link_address_to_code(contract_code_id, address);
         drop(state_manager_lock);
 
@@ -712,7 +716,10 @@ where
             let concurrent_backend: ConcurrentBackend<A, W, Q> = (exec_context.thread_exec_context.concurrent_backend_builder)(
                 exec_context.tx_block_id, 
                 Rc::clone(&exec_context.schedule),
-                Arc::clone(&backend), address.clone(), vec![]);
+                Arc::clone(&backend), 
+                Arc::clone(&sc_storages),
+                vec![],
+                "".to_owned());
 
             let instance = instance_from_module(
                 store, 
@@ -740,20 +747,23 @@ where
     where 
         F: FnOnce(&mut Instance<A, W, Q>) -> std::io::Result<String>
     {
-
         #[cfg(feature = "debug")]
         print_with_thread_id!("Calling execute in VM");
 
         let tx_block_id = exec_context.tx_block_id;
 
-        let storage = exec_context.thread_exec_context.state_manager.read().unwrap().get_sc_storage(contract_address).unwrap();
+        let lock = exec_context.thread_exec_context.state_manager.read().unwrap();
+        let storage = lock.get_sc_storage(contract_address).unwrap();
+        let sc_storages = lock.get_sc_storages();
+        drop(lock);
 
         let concurrent_backend: ConcurrentBackend<A, W, Q> = (exec_context.thread_exec_context.concurrent_backend_builder)(
             tx_block_id, 
             exec_context.schedule,
             storage, 
-            contract_address.clone(), 
-            exec_context.rws
+            sc_storages,
+            exec_context.rws,
+            contract_address.clone()
         );
 
         let state_manager = exec_context.thread_exec_context.state_manager.read().unwrap();
@@ -766,7 +776,7 @@ where
         F: FnOnce(&mut Instance<A, W, Q>) -> std::io::Result<String>
     {
         // set new VMs to use the new code
-        VMManager::compile_instantiate_vm(&exec_context, contract_addr, new_code_id);
+        VMManager::compile_instantiate_vm(&exec_context, contract_addr, new_code_id)?;
         VMManager::execute_vm(exec_context, contract_addr, execute)
     }
 }
@@ -789,7 +799,7 @@ where
     tx_block_id: TxId,
     schedule: Rc<Arc<ConcurrentSchedule>>,
     thread_exec_context: &'a ThreadExecutionContext<A, S, W, Q, E>,
-    rws: Vec<ReadWrite>,
+    rws: Vec<ContractRWS>,
 }
 
 impl<'a, A, S, W, Q, E> EnvironmentContext<'a, A, S, W, Q, E> 
@@ -828,7 +838,7 @@ mod tests {
             MockApi, MockConcurrentStorage, MockQuerier, MockStorageWrapper
         }, vm_manager::{
             schedule::{ScAddr, ADDR_SIZE}, serial_schedule::ScheduleBuilder, vm_manager::{RWSContext, VMCall, DEFAULT_MEMORY_LIMIT, HIGH_GAS_LIMIT}
-        }, wasm_backend::{compile, make_compiling_engine}, ConcurrentSchedule, EnvironmentContext, InstanceOptions, InstantiatedEntryPoint, SCManager, SEStatus
+        }, wasm_backend::{compile, make_compiling_engine}, ConcurrentSchedule, EnvironmentContext, InstanceOptions, InstantiatedEntryPoint, SCManager, SCStorage, SEStatus
     };
 
     use super::{BackendBuilder, ConcurrentBackendBuilder, VMManager};
@@ -848,8 +858,8 @@ mod tests {
     }
 
     fn mock_concurrent_backend_builder() -> Arc<ConcurrentBackendBuilder<MockApi, MockConcurrentStorage, MockStorageWrapper, MockQuerier>> {
-        Arc::new(|tx_block_id, concurrent_schedule, backend, sc_address, rws| {
-            ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(tx_block_id, concurrent_schedule, backend, sc_address, rws)
+        Arc::new(|tx_block_id, concurrent_schedule, backend, sc_storage,  rws, contract_addr| {
+            ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(tx_block_id, concurrent_schedule, backend, sc_storage, rws, contract_addr)
         })
     }
 
@@ -887,6 +897,9 @@ mod tests {
         let concurrent_storage = Arc::new(MockConcurrentStorage::default());
         let backend = Arc::new(mock_persistent_backend(&[], Arc::clone(&concurrent_storage)));
 
+        let scs = Arc::new(SCStorage::new());
+        scs.insert("".to_owned(), Arc::clone(&backend));
+
         let concurrent_backend = mock_concurrent_backend(&[], concurrent_storage);
 
         let store = Store::new(engine);
@@ -916,7 +929,10 @@ mod tests {
         let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
             0, 
             Rc::new(Arc::clone(&concurrent_schedule)),
-            Arc::clone(&backend), SC_ADDR_A.to_owned(), rws
+            Arc::clone(&backend), 
+            Arc::clone(&scs),
+            rws,
+            "".to_owned()
         );
 
         let msg = br#"{}"#;
@@ -944,7 +960,10 @@ mod tests {
         let concurrent_backend = ConcurrentBackend::<MockApi, MockStorageWrapper, MockQuerier>::new(
             0, 
             Rc::new(Arc::clone(&concurrent_schedule)),
-            Arc::clone(&backend), SC_ADDR_A.to_owned(), vec![]
+            Arc::clone(&backend), 
+            Arc::clone(&scs),
+            vec![],
+            "".to_owned()
         );
         let contract_res = state_manager.execute_instance(&SC_ADDR_A.to_owned(), concurrent_backend, 0, |instance| {
             let c = call_execute::<_, _, _, Empty>(

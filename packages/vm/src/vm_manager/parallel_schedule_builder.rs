@@ -137,40 +137,18 @@ impl ParallelScheduleBuilder {
     /// Keeps a local cache since it may receive schedules out of order.
     /// Merging must always be done lower thread ids first
     fn thread_work(thread_id: u16, shared_states: Arc<Vec<ThreadData>>,mut tx_subset: Vec<RWSContext>, mut ordered_senders: VecDeque<u16>) {
-
-        // #[cfg(feature = "exec_time")]
-        // let schedule_build_timer = Instant::now();
         
         // let mut partial_schedule = ConcurrentSchedule::new();
         let mut partial_schedule = ScheduleBuilder::new();
         partial_schedule.build_from_rws(&mut tx_subset);
 
-        // #[cfg(feature = "exec_time")]
-        // println!("Thread {:?} - Schedule build time: {:?}", thread_id, schedule_build_timer.elapsed());
-
-        // #[cfg(feature = "exec_time")]
-        // let mut schedule_merge_time = Duration::ZERO;
-        // #[cfg(feature = "exec_time")]
-        // let mut total_merges = 0;
-
-
-
         // while there is some thread we need to wait the partial_schedule from
         while let Some(wait_for) = ordered_senders.pop_front() {
 
             shared_states[wait_for as usize].barrier.wait();
-
-            // println!("Thread {:?} merging data from {:?}", thread_id, data.thread_id);
-
-            // #[cfg(feature = "exec_time")]
-            // let schedule_merge_timer = Instant::now();
             let data = shared_states[wait_for as usize].data.lock().take().unwrap();
             partial_schedule.merge(data.schedule.unwrap());
             tx_subset.extend(data.txs.unwrap());
-
-            // #[cfg(feature = "exec_time")]
-            // ParallelScheduleBuilder::add_elapsed_time_and_increase_merge_counter(
-                // &mut total_merges, &mut schedule_merge_time, &schedule_merge_timer);
 
         }
 
@@ -198,7 +176,7 @@ impl ParallelScheduleBuilder {
 #[cfg(test)]
 mod tests {
     use crate::{
-        symb_exec::{Commutativity, Key, StorageDependency, TxRWS}, vm_manager::vm_manager::VMTransaction, vm_transactions::{ExecuteTx, TransactionEnum}, InstantiatedEntryPoint, OpType, RWSContext, ReadWrite, ReplayLogs, SEStatus, ScAddr
+        symb_exec::{Commutativity, ContractRWS, Key, StorageDependency, TxRWS}, vm_manager::vm_manager::VMTransaction, vm_transactions::{ExecuteTx, TransactionEnum}, InstantiatedEntryPoint, OpType, RWSContext, ReadWrite, ReplayLogs, SEStatus, ScAddr
     };
 
     const SC_ADDR_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -236,7 +214,9 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "A".to_owned(),
-                    rws: vec![
+                    rws: vec![ContractRWS { 
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
                             key: Key::Bytes(KEY_A.to_vec()), 
@@ -266,8 +246,8 @@ mod tests {
                             key: Key::Bytes(KEY_C.to_vec()), 
                             commutativity: Commutativity::NonCommutative,
                             operation_node: None,
-                        },
-                    ]
+                        }]
+                    }]
                 }
             },
 
@@ -290,32 +270,34 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "B".to_owned(),
-                    rws: vec![
-                        ReadWrite::Read { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(KEY_D.to_vec()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(KEY_A.to_vec()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Read { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(KEY_B.to_vec()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(KEY_B.to_vec()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                    ]
+                    rws: vec![ContractRWS { 
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
+                            ReadWrite::Read { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(KEY_D.to_vec()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(KEY_A.to_vec()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Read { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(KEY_B.to_vec()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(KEY_B.to_vec()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            }]
+                    }]
                 }
             },
 
@@ -338,20 +320,23 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "C".to_owned(),
-                    rws: vec![
-                        ReadWrite::Read { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(KEY_A.to_vec()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(KEY_A.to_vec()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                    ]
+                    rws: vec![ContractRWS { 
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
+                            ReadWrite::Read { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(KEY_A.to_vec()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(KEY_A.to_vec()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                        ]
+                    }]
                 }
             },
 
@@ -374,7 +359,9 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "D".to_owned(),
-                    rws: vec![
+                    rws: vec![ContractRWS { 
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
                             key: Key::Bytes(KEY_C.to_vec()), 
@@ -386,8 +373,8 @@ mod tests {
                             key: Key::Bytes(KEY_C.to_vec()), 
                             commutativity: Commutativity::NonCommutative,
                             operation_node: None,
-                        },
-                    ]
+                        }]
+                    }]
                 }
             },
 
@@ -410,7 +397,9 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "E".to_owned(),
-                    rws: vec![
+                    rws: vec![ContractRWS { 
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
                         ReadWrite::Read { 
                             storage_dependency: StorageDependency::Independent, 
                             key: Key::Bytes(KEY_B.to_vec()), 
@@ -422,8 +411,8 @@ mod tests {
                             key: Key::Bytes(KEY_B.to_vec()), 
                             commutativity: Commutativity::NonCommutative,
                             operation_node: None,
-                        },
-                    ]
+                        },]
+                    }]
                 }
             },
 
@@ -446,20 +435,22 @@ mod tests {
                     storage_dependency: StorageDependency::Independent,
                     profile_status: SEStatus::Complete,
                     rws_uid: "F".to_owned(),
-                    rws: vec![
-                        ReadWrite::Read { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(KEY_D.to_vec()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                        ReadWrite::Write { 
-                            storage_dependency: StorageDependency::Independent, 
-                            key: Key::Bytes(KEY_D.to_vec()), 
-                            commutativity: Commutativity::NonCommutative,
-                            operation_node: None,
-                        },
-                    ]
+                    rws: vec![ContractRWS { 
+                        contract_addr: SC_ADDR_A.to_owned(),
+                        rws: vec![
+                            ReadWrite::Read { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(KEY_D.to_vec()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            },
+                            ReadWrite::Write { 
+                                storage_dependency: StorageDependency::Independent, 
+                                key: Key::Bytes(KEY_D.to_vec()), 
+                                commutativity: Commutativity::NonCommutative,
+                                operation_node: None,
+                            }]
+                    }]
                 }
             },
         ]

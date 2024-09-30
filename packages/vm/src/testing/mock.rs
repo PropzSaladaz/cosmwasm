@@ -11,10 +11,10 @@ use super::querier::MockQuerier;
 use super::storage::MockStorage;
 use super::{MockConcurrentStorage, MockStorageWrapper};
 use crate::backend::{unwrap_or_return_with_gas, ConcurrentBackend};
-use crate::symb_exec::{Commutativity, Key, ReadWrite, StorageDependency, TxRWS};
+use crate::symb_exec::{Commutativity, ContractRWS, Key, ReadWrite, StorageDependency, TxRWS};
 use crate::vm_manager::PersistentBackend;
 use crate::vm_transactions::{ExecuteTx, TransactionEnum};
-use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, RWSContext, ReplayLogs, SEStatus, ScAddr, TxId, VMTransaction};
+use crate::{Backend, BackendApi, BackendError, BackendResult, GasInfo, RWSContext, ReplayLogs, SCStorage, SEStatus, ScAddr, TxId, VMTransaction};
 
 pub const MOCK_CONTRACT_ADDR: &str = "cosmwasmcontract"; // TODO: use correct address
 const GAS_COST_HUMANIZE: u64 = 44; // TODO: these seem very low
@@ -44,9 +44,11 @@ pub fn mock_persistent_backend(contract_balance: &[Coin], storage: Arc<MockConcu
 }
 
 pub fn mock_concurrent_backend(contract_balance: &[Coin], storage: Arc<MockConcurrentStorage>) -> ConcurrentBackend<MockApi, MockStorageWrapper, MockQuerier> {
+    let scs = Arc::new(SCStorage::new());
+    scs.insert("".to_owned(), Arc::new(PersistentBackend::<MockApi, MockConcurrentStorage, MockQuerier>::from_storage(storage)));
     ConcurrentBackend {
         api: MockApi::default(),
-        storage: MockStorageWrapper::default(storage),
+        storage: MockStorageWrapper::default(scs),
         querier: Arc::new(RwLock::new(MockQuerier::new(&[(MOCK_CONTRACT_ADDR, contract_balance)]))),
     }
 }
@@ -59,7 +61,7 @@ pub fn mock_tx_operation(sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId,
         address: sc_address.clone(),
         tx_message: Some(VMTransaction {
             transaction: TransactionEnum::Execute(ExecuteTx {
-                contract_addr: sc_address,
+                contract_addr: sc_address.clone(),
                 msg: br#""#.to_vec(),
                 hash: "".to_owned(),
                 sender: "".to_owned(),
@@ -73,7 +75,9 @@ pub fn mock_tx_operation(sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId,
             storage_dependency: StorageDependency::Independent,
             profile_status: SEStatus::Complete,
             rws_uid,
-            rws: vec![
+            rws: vec![ ContractRWS {
+                contract_addr: sc_address.clone(),
+                rws: vec![
                 match op_type {
                     ReadWrite::Write { .. } => ReadWrite::Write { 
                         storage_dependency: StorageDependency::Independent, 
@@ -87,8 +91,8 @@ pub fn mock_tx_operation(sc_address: ScAddr, key: &Vec<u8>, tx_id: TxId,
                         commutativity,
                         operation_node: None,
                     },
-                }
-            ]
+                }]
+            }]
         }
     }
 }

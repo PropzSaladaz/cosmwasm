@@ -57,7 +57,6 @@ pub fn main() {
                 0,
                 Rc::new(Arc::new(ConcurrentSchedule::new())), 
                 backend, 
-                "a".to_owned(), 
                 vec![]);
             let mut instance = cache
                 .get_instance(&checksum, concurrent_backend, DEFAULT_INSTANCE_OPTIONS)

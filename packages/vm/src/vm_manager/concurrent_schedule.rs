@@ -6,7 +6,7 @@ use dashmap::DashSet;
 use parking_lot::{Mutex, Condvar};
 
 use crate::{
-    symb_exec::{Commutativity, ProfileGenerator}, testing::{ConcurrentStorage, StorageWrapper}, vm_manager::schedule::MergeableValue, BackendApi, Querier, SCManager
+    symb_exec::{Commutativity, ProfileGenerator}, testing::{ConcurrentStorage, MockConcurrentStorage, StorageWrapper}, vm_manager::schedule::MergeableValue, BackendApi, Querier, SCManager
 };
 use std::time::{Duration, Instant};
 
@@ -374,9 +374,6 @@ impl ConcurrentSchedule {
         }
 
         let execution_queues = ConcurrentQueues::from_serial_queues(schedule.execution_queues);
-
-        // println!("Deps: {:#?}", deps_hash_sets);
-        // println!("dependent_txs: {:#?}", schedule.partial_ready_tx);
 
         ConcurrentSchedule {
             total: schedule.total,
@@ -799,7 +796,7 @@ impl ConcurrentSchedule {
     /// 
     /// If the node has no dependency, then cannot read any value from schedule.
     /// It must be read from storage.
-    pub fn get_value(&self, read_node: &NodeRef<VecOperation>, concurrent_storage: &Arc<dyn ConcurrentStorage>, 
+    pub fn get_value(&self, read_node: &NodeRef<VecOperation>, concurrent_storage: &Arc<MockConcurrentStorage>, 
         sc_address: &ScAddr, key: &[u8]) -> Option<Vec<u8>> {
 
         #[cfg(feature = "exec_time")]
@@ -966,13 +963,13 @@ mod tests {
 
         let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
-        let operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
+        let operation = rws.get(0).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let node = match operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
 
-        let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
+        let concurrent_storage = Arc::new(MockConcurrentStorage::new());
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap(); 
 
 
@@ -1000,13 +997,13 @@ mod tests {
         builder.build_from_rws(&mut rws);
 
         let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
-        let operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
+        let operation = rws.get(0).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let node = match operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
 
-        let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
+        let concurrent_storage = Arc::new(MockConcurrentStorage::new());
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap(); 
 
 
@@ -1035,11 +1032,11 @@ mod tests {
 
         let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
                 
-        let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
+        let concurrent_storage = Arc::new(MockConcurrentStorage::new());
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
         // read node
-        let operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
+        let operation = rws.get(0).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let node = match operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1047,7 +1044,7 @@ mod tests {
         concurrent_schedule.get_value(node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
         // write node
-        let operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
+        let operation = rws.get(1).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let node = match operation { 
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1076,7 +1073,7 @@ mod tests {
 
         let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
-        let write_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
+        let write_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let write_node = match write_operation { 
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1084,13 +1081,13 @@ mod tests {
 
         concurrent_schedule.set_value(write_node, &val);
 
-        let read_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
+        let read_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
         };
 
-        let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
+        let concurrent_storage = Arc::new(MockConcurrentStorage::new());
 
         let read_val = concurrent_schedule.get_value(read_node, &concurrent_storage, &SC_ADDR_A.to_owned(), &key);
 
@@ -1118,11 +1115,11 @@ mod tests {
 
         let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
-        let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
+        let concurrent_storage = Arc::new(MockConcurrentStorage::new());
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
         // Comm read -> read X
-        let read_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
+        let read_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1131,7 +1128,7 @@ mod tests {
         assert_eq!(read_val, Some(val));
 
         // Comm write -> write Z = Y - X
-        let write_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
+        let write_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let write_node = match write_operation { 
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1140,7 +1137,7 @@ mod tests {
         assert_eq!(write_node.read().data.value.get_value(), Some(delta));
 
         // NonComm read -> read X + Z = Y
-        let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap();
+        let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1173,10 +1170,10 @@ mod tests {
 
         let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
-        let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
+        let concurrent_storage = Arc::new(MockConcurrentStorage::new());
 
         // NonComm write -> write X
-        let write_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
+        let write_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let write_node = match write_operation { 
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1185,7 +1182,7 @@ mod tests {
         assert_eq!(write_node.read().data.value.get_value(), Some(val.clone()));
 
         // Comm read -> read X
-        let read_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
+        let read_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1194,7 +1191,7 @@ mod tests {
         assert_eq!(read_val, Some(val));
 
         // Comm write -> write Z = Y - X
-        let write_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap();
+        let write_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let write_node = match write_operation { 
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1203,7 +1200,7 @@ mod tests {
         assert_eq!(write_node.read().data.value.get_value(), Some(delta));
 
         // NonComm read -> read X + Z = Y
-        let read_operation = rws.get(3).unwrap().rws.rws.get(0).unwrap();
+        let read_operation = rws.get(3).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1240,11 +1237,11 @@ mod tests {
 
         let concurrent_schedule = ConcurrentSchedule::from_schedule_builder(builder);
 
-        let concurrent_storage: Arc<dyn ConcurrentStorage> = Arc::new(MockConcurrentStorage::new());
+        let concurrent_storage = Arc::new(MockConcurrentStorage::new());
         concurrent_storage.set(key.as_slice(), val.as_slice()).0.unwrap();
 
         // Comm read1
-        let read_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap();
+        let read_operation = rws.get(0).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1253,7 +1250,7 @@ mod tests {
         assert_eq!(read_val, Some(val.clone()));
 
         // Comm write1
-        let write_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap();
+        let write_operation = rws.get(1).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let write_node = match write_operation { 
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1262,7 +1259,7 @@ mod tests {
         assert_eq!(write_node.read().data.value.get_value(), Some(delta1));
 
         // Comm read2
-        let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap();
+        let read_operation = rws.get(2).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1271,7 +1268,7 @@ mod tests {
         assert_eq!(read_val, Some(val));
 
         // Comm write2
-        let write_operation = rws.get(3).unwrap().rws.rws.get(0).unwrap();
+        let write_operation = rws.get(3).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let write_node = match write_operation { 
             ReadWrite::Write { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
@@ -1280,7 +1277,7 @@ mod tests {
         assert_eq!(write_node.read().data.value.get_value(), Some(delta2));
 
         // NonComm read
-        let read_operation = rws.get(4).unwrap().rws.rws.get(0).unwrap();
+        let read_operation = rws.get(4).unwrap().rws.rws.get(0).unwrap().rws.get(0).unwrap();
         let read_node = match read_operation { 
             ReadWrite::Read { operation_node, .. } => operation_node.as_ref().unwrap(),
             _ => unreachable!("")
